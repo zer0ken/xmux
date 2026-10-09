@@ -2,7 +2,7 @@
 
 `prefix ?` opens the in-app help with every key and glyph. This document lists the
 keys and describes what the help does not show: how the nav is placed and walked, what
-the longer commands do, the prefix indicator, popups, toasts, the mouse, and
+the longer commands do, the prefix hint, popups, toasts, the mouse, and
 automation.
 
 ## Everyday Keys
@@ -34,10 +34,8 @@ and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
 | `prefix Tab` | toggle focus between the nav and the terminal view      |
 | `prefix p`   | place nav on the next side of the view                  |
 
-Pressing the prefix opens a box beside the prefix indicator that lists every key it
+Pressing the prefix opens a box beside the prefix hint that lists every key it
 unlocks. A click on a card selects it, and a click on the terminal view focuses it.
-The first key pressed after installation briefly points out the configured prefix and
-help key. xmux records that the introduction has been shown.
 
 ## The Prefix
 
@@ -64,8 +62,8 @@ removes the collision.
 | `prefix :` | open the command palette |
 | `prefix t` | toggle auto-hide-nav |
 | `prefix z` | collapse or expand the nav |
-| `prefix Ctrl-←` / `prefix Ctrl-→` | move a side nav's view border, then bare `Ctrl-←` / `Ctrl-→` keep resizing until another key |
-| `prefix Ctrl-↑` / `prefix Ctrl-↓` | move a band's view border, then bare `Ctrl-↑` / `Ctrl-↓` keep resizing until another key |
+| `prefix Ctrl-←` / `prefix Ctrl-→` | move a side nav's nav border, then bare `Ctrl-←` / `Ctrl-→` keep resizing until another key |
+| `prefix Ctrl-↑` / `prefix Ctrl-↓` | move a horizontal nav's nav border, then bare `Ctrl-↑` / `Ctrl-↓` keep resizing until another key |
 | the prefix arrow pair facing the terminal | focus the terminal view |
 | the other prefix arrow pair | focus the nav |
 | `prefix prefix` | send one literal prefix byte to the focused pane |
@@ -83,27 +81,27 @@ Shift+Enter, when the terminal running xmux has the protocol too.
 ## Nav Placement
 
 The nav rides on one of four sides of the terminal view: a left or right column, or a
-top or bottom band. `[ui] nav-position` (`left`, `top`, `right`, or `bottom`; an unknown
+top or bottom horizontal nav. `[ui] nav-position` (`left`, `top`, `right`, or `bottom`; an unknown
 word falls back to `left`) names the default, and `prefix p` pins the next side
 clockwise in `~/.xmux/nav_position` until the key cycles back to the default. The nav
 never moves on its own.
 
 The layout inside the nav is identical at every side: a right column is the same list
-as a left one, and a bottom band is the same down-then-right flow as a top one, a whole
-section per column. A band column that continues a split section starts with session
+as a left one, and a bottom horizontal nav is the same down-then-right flow as a top one, a whole
+section per column. A horizontal nav column that continues a split section starts with session
 cards on its top row; the machine/host title appears only where the section starts.
-A band one row tall runs titles and cards along its row and scrolls sideways.
+A horizontal nav one row tall runs titles and cards along its row and scrolls sideways.
 
 The prefix arrow pair facing the terminal's side focuses the terminal: `prefix →` and
 `prefix ↓` with the nav on the left or above, `prefix ←` and `prefix ↑` with it on the
-right or below. The resize keys move the view border the way they point, so the nav grows
+right or below. The resize keys move the nav border the way they point, so the nav grows
 on a left or top nav and shrinks on a right or bottom one. An expanded side nav is never
-narrower than a card's indent, a two-digit number, and eight cells of name; a band is at
+narrower than a card's indent, a two-digit number, and eight cells of name; a horizontal nav is at
 least one row.
 
-`prefix z` collapses the nav to its prefix indicator: a side nav keeps a column as wide
-as the prefix, with the view border running down its edge, and a band keeps only its
-view border row. Dragging the view border past the minimum collapses the nav too, and
+`prefix z` collapses the nav to its prefix hint: a side nav keeps a column as wide
+as the prefix, with the nav border running down its edge, and a horizontal nav keeps only its
+nav border row. Dragging the nav border past the minimum collapses the nav too, and
 dragging back out in the same drag expands it. A click anywhere on the collapsed nav, or
 focusing the nav by keyboard, expands it. Auto-hide takes the whole nav away and returns
 it in the state it left.
@@ -113,19 +111,19 @@ draws in at all, hides the way auto-hide hides it whenever the terminal view hol
 focus, whatever auto-hide is set to. In a small window the view the user works in then
 has the whole window: focusing the nav or pressing the prefix brings the nav back.
 
-Moving the focus from a session card into the terminal view leaves the band of machine
+Moving the focus from a session card into the terminal view leaves the run of machine
 and host cards without sessions off the nav, so the nav lists only the sessions. The
-band shows again while the nav holds the focus, while a card of it is selected, and while
+run shows again while the nav holds the focus, while a card of it is selected, and while
 the prefix is armed, so a `prefix <digit>` jump can see the numbers of those cards. The
-card numbers and the selection are the same whether the band shows.
+card numbers and the selection are the same whether the run shows.
 
 ## Walking the Nav
 
 The nav is a list of numbered cards in sections, not a tree. `←`/`→` step one section:
-a host with sessions, entered at its first session, or the whole band of machine cards
+a host with sessions, entered at its first session, or the whole run of machine cards
 at once, entered at its first card, so a run of idle machines is one stop rather than a
 long walk. Both steps wrap, and neither depends on where a card sits on screen, so they
-mean the same thing in a column and in a band. The card step never stops on a section
+mean the same thing in a column and in a horizontal nav. The card step never stops on a section
 title, and a title takes no number.
 
 The hierarchy of sessions, hosts, and machines is reached three ways: `Ctrl-↑`/`Ctrl-↓`,
@@ -135,7 +133,7 @@ sessions; a machine on the `{machine}` part, or on its card when none of its hos
 connected. `Ctrl-↓` returns to the child the walk came from, else the first host by
 name or the first session in card order. From a title part, `↑`/`↓` go to the adjacent
 card and `←`/`→` to the adjacent section. A bare `Ctrl-↑`/`Ctrl-↓` right after
-`prefix Ctrl-↑`/`prefix Ctrl-↓` still resizes the band.
+`prefix Ctrl-↑`/`prefix Ctrl-↓` still resizes the horizontal nav.
 
 The terminal view shows a machine screen for a machine and a host screen for one mux
 on it. Each reads from the top as its level and path, such as `machine db-01` or
@@ -198,14 +196,16 @@ zero is only a spelling. `Enter` closes the popup on a card's number and otherwi
 in the popup that no card carries it, with the range in its top border; `Esc` returns to
 where the jump started.
 
-## Prefix Indicator and Hint Bar
+## Prefix Hint
 
-At rest the prefix sits on the bottom row of a side column, or at the right end of a
-band's view border row, as a label sized to its text. A side list that overflows thickens
-the stretch of the view border beside the cards on screen to `┃`; a band writes `‹ 5` and
-`7 ›` on its view border row, counting the cards scrolled off each side.
+The prefix hint is a chip on the nav's start, at the card flow's beginning: a vertical
+nav carries it on its own first row, aligned against the nav border, and a horizontal
+nav writes it at the leftmost cell of its nav border row. A vertical nav's list that
+overflows thickens the stretch of the nav border beside the cards on screen to `┃`; a
+horizontal nav writes `‹ 5` and `7 ›` on its nav border row, counting the cards
+scrolled off each side.
 
-Pressing the prefix opens the key list from the indicator toward the terminal view,
+Pressing the prefix opens the key list from the prefix hint toward the terminal view,
 floating over it without moving a card. Its bottom border carries the xmux version,
 followed by a newer release and `xmux update` while one is recorded. A terminal view too narrow beside a side column
 lends the box the window's whole width. When the keys do not fit, the box shortens every
@@ -219,13 +219,12 @@ the box cancels the prefix; dragging the box moves it.
 A held prefix sends one literal per repeat and blinks the box, because a terminal sends
 no key-up.
 
-The hint bar shows one thing at a time, in this order: the prefix alone while the key
-list or an input is open, the scan progress, the active filter, and the resting prefix.
-What a key did, or why it did nothing, is a toast. Moving the selection leaves the bar
-as it is: while the nav holds the focus, a selected standalone card can show `⏎`, the
-key that opens it, when there is room. A part of a shared item carries no mark. With the nav auto-hidden, a prefix
-interaction brings the nav back until it ends, and the key list and the bar open over
-the window's bottom left.
+The prefix hint states the armed prefix alone. What a key did, or why it did nothing, is
+a toast. The active filter paints its match cell by cell in the warning background on
+the cards it matches, and a rescan opened by `prefix r` or `prefix R` states its
+`scanning hosts n/m…` progress in a box beside the prefix hint. With the nav
+auto-hidden, a prefix interaction brings the nav back until it ends, and the key list
+and the rescan box open over the window's bottom left.
 
 ## Popups
 
@@ -284,7 +283,7 @@ toasts off; the history still records every result.
 | left-click a collapsed nav | expand the nav |
 | left-click `‹ 5` or `7 ›` | select the nearest card scrolled off that side |
 | wheel over the nav | move the selection |
-| drag the view border | resize the nav, collapsing it past the minimum |
+| drag the nav border | resize the nav, collapsing it past the minimum |
 | drag the key list or a popup | move it |
 | left-click a popup item | execute it, as `Enter` would |
 | left-click a toast | dismiss it |

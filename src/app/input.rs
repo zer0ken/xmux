@@ -1,7 +1,7 @@
 //! The PURE, stateless input-routing core: the decode/resolve functions and the small
 //! value types they use. Nav-focus key resolution ([`resolve_nav_key`]), the mouse
 //! focus×position router ([`resolve_mouse_chain`]/[`ChainAction`]), the gesture/geometry
-//! predicates ([`to_grid_local`], [`leading_ctrl_arrow`], [`view_border_drag_width`]),
+//! predicates ([`to_grid_local`], [`leading_ctrl_arrow`], [`nav_border_drag_width`]),
 //! and the per-read gesture/outcome carriers
 //! ([`MouseState`]/[`StdinOutcome`]). None of these touch app or switcher state, so they
 //! are unit-testable in isolation; the stateful handlers in `runtime/` thread the
@@ -13,12 +13,12 @@ use crate::app::model::{nav_width_min, NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH
 use crate::display::dispatch::Action;
 use crate::model::keys::{prefix_command, Chord, KeyCommand};
 
-/// The nav width a view border drag to 1-based screen column `col` sets, capped at the
+/// The nav width a nav border drag to 1-based screen column `col` sets, capped at the
 /// max, or `None` when the drag is narrower than the expanded nav's minimum, which
 /// collapses the nav. With the nav on the left the dragged column becomes the border
 /// position (= the nav width); with the nav on the right the mirror applies and the size
 /// is the window minus the dragged column.
-pub(crate) fn view_border_drag_width(
+pub(crate) fn nav_border_drag_width(
     col: u16,
     ui_prefix: &str,
     window_cols: u16,
@@ -32,13 +32,13 @@ pub(crate) fn view_border_drag_width(
     (w >= nav_width_min(ui_prefix)).then(|| w.min(NAV_WIDTH_MAX))
 }
 
-/// The band-layout nav height a horizontal view border drag to 1-based screen row `row`
-/// sets, capped at the max, or `None` when the drag leaves the band less than its minimum,
-/// which collapses the band. With the nav on top the dragged row becomes the border
+/// The horizontal-nav layout nav height a horizontal nav border drag to 1-based screen row `row`
+/// sets, capped at the max, or `None` when the drag leaves the horizontal nav less than its minimum,
+/// which collapses the horizontal nav. With the nav on top the dragged row becomes the border
 /// position (0-based), which is the nav height; with the nav on the bottom the mirror
 /// applies and the size is the window minus the dragged row. compute_regions clamps
 /// further to the live body height.
-pub(crate) fn view_border_drag_height(
+pub(crate) fn nav_border_drag_height(
     row: u16,
     window_rows: u16,
     nav_on_bottom: bool,
@@ -126,8 +126,8 @@ fn wheel_targets_nav(nav_focused: bool, over_mux: bool) -> bool {
     nav_focused && !over_mux
 }
 
-/// What a mouse event resolves to once the modal/gesture gates (menu, view border drag,
-/// idle-view border-hover, menu-open) have declined it - the focus×position routing core.
+/// What a mouse event resolves to once the modal/gesture gates (menu, nav border drag,
+/// idle-nav border-hover, menu-open) have declined it - the focus×position routing core.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ChainAction {
     /// Scroll the nav by one row (wheel, nav focus, over nav). `down` = scroll down.
@@ -267,10 +267,10 @@ fn nav_action(command: KeyCommand, key: ratatui::crossterm::event::KeyEvent) -> 
 /// must persist across reads). Field-for-field the loop locals `run_app` held.
 #[derive(Default)]
 pub(crate) struct MouseState {
-    /// True while the left button is dragging the nav/terminal view border rule to resize.
-    pub(crate) dragging_view_border: bool,
-    /// True while the mouse hovers the view border rule (no button) - the drag-resize cue.
-    pub(crate) hovered_view_border: bool,
+    /// True while the left button is dragging the nav/terminal nav border rule to resize.
+    pub(crate) dragging_nav_border: bool,
+    /// True while the mouse hovers the nav border rule (no button) - the drag-resize cue.
+    pub(crate) hovered_nav_border: bool,
     /// The resize mode a prefix resize starts: bare Ctrl+arrows keep resizing until
     /// another key ends it.
     pub(crate) resizing: bool,
@@ -372,7 +372,7 @@ mod tests {
             "prefix Right focuses mux"
         );
         // An arrow names the view it focuses, whichever way the two are stacked: the
-        // terminal is right of the nav in a column and below it in a band, so ↓
+        // terminal is right of the nav in a column and below it in a horizontal nav, so ↓
         // focuses it too.
         assert_eq!(
             rt(b"\x07\x1b[B", false),
@@ -397,7 +397,7 @@ mod tests {
             vec![Action::Width(-1)],
             "prefix Ctrl-Left narrows"
         );
-        // prefix Ctrl+↑/↓ resize the HEIGHT (vertical axis); the runtime applies it only in a band.
+        // prefix Ctrl+↑/↓ resize the HEIGHT (vertical axis); the runtime applies it only in a horizontal nav.
         assert_eq!(
             rt(b"\x07\x1b[1;5B", false),
             vec![Action::Height(1)],
@@ -893,7 +893,7 @@ mod tests {
 
     #[test]
     fn a_command_consumes_ready() {
-        // A command key CONSUMES the prefix: ready clears, so the hint bar hides.
+        // A command key CONSUMES the prefix: ready clears, so the prefix hint hides.
         // Resize continuation is the RUNTIME resize mode (bare Ctrl-arrows), not a
         // re-armed prefix, so a plain `h` after consumption is a bare nav key again.
         use ratatui::crossterm::event::KeyEvent;
@@ -986,47 +986,47 @@ mod tests {
     }
 
     #[test]
-    fn view_border_drag_width_caps_and_collapses_past_the_floor() {
+    fn nav_border_drag_width_caps_and_collapses_past_the_floor() {
         // The dragged 1-based column becomes the 0-based nav width, capped at the max.
         // Narrower than the expanded floor is a collapse, not a clamp.
         let floor = crate::app::model::nav_width_min("C-g");
-        assert_eq!(view_border_drag_width(51, "C-g", 140, false), Some(50));
+        assert_eq!(nav_border_drag_width(51, "C-g", 140, false), Some(50));
         assert_eq!(
-            view_border_drag_width(floor + 1, "C-g", 140, false),
+            nav_border_drag_width(floor + 1, "C-g", 140, false),
             Some(floor),
             "the floor itself is still an expanded nav"
         );
         assert_eq!(
-            view_border_drag_width(floor, "C-g", 140, false),
+            nav_border_drag_width(floor, "C-g", 140, false),
             None,
             "one cell narrower collapses"
         );
         assert_eq!(
-            view_border_drag_width(500, "C-g", 140, false),
+            nav_border_drag_width(500, "C-g", 140, false),
             Some(NAV_WIDTH_MAX),
             "too far right caps at max"
         );
     }
 
     #[test]
-    fn view_border_drag_mirrors_to_the_right_and_bottom() {
+    fn nav_border_drag_mirrors_to_the_right_and_bottom() {
         // On the right/bottom the drag measures from the FAR edge: the dragged 1-based
         // column/row is where the border lands, so the size is the window minus it.
         // Dragging the right border (0-based col 91 at a 48 width) to SGR 100 gives 40.
-        assert_eq!(view_border_drag_width(91, "C-g", 140, true), Some(49));
-        assert_eq!(view_border_drag_width(100, "C-g", 140, true), Some(40));
+        assert_eq!(nav_border_drag_width(91, "C-g", 140, true), Some(49));
+        assert_eq!(nav_border_drag_width(100, "C-g", 140, true), Some(40));
         assert_eq!(
-            view_border_drag_width(135, "C-g", 140, true),
+            nav_border_drag_width(135, "C-g", 140, true),
             None,
             "dragging the right border past the floor collapses"
         );
         // Same mirror on the height: dragging the bottom border (0-based row 35 at
         // the auto 24) to SGR 30 in a 60-row window gives 30; one row from the window's
-        // bottom edge is the one-row band, and the edge itself collapses it.
-        assert_eq!(view_border_drag_height(30, 60, true), Some(30));
-        assert_eq!(view_border_drag_height(59, 60, true), Some(NAV_HEIGHT_MIN));
+        // bottom edge is the one-row horizontal nav, and the edge itself collapses it.
+        assert_eq!(nav_border_drag_height(30, 60, true), Some(30));
+        assert_eq!(nav_border_drag_height(59, 60, true), Some(NAV_HEIGHT_MIN));
         assert_eq!(
-            view_border_drag_height(60, 60, true),
+            nav_border_drag_height(60, 60, true),
             None,
             "dragging the bottom border onto the edge collapses the band"
         );

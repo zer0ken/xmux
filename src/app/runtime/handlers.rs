@@ -65,7 +65,7 @@ impl Runtime {
         } = self;
         let (cols, rows) = (*cols, *rows);
         // The nav's live size as one value, read once for this effect: the width the user
-        // set, the width on screen, the band height, the attachment side, and whether it
+        // set, the width on screen, the horizontal nav height, the attachment side, and whether it
         // is collapsed. Every geometry below is cut from it, so none re-derives a part.
         let mut followups = Vec::new();
         match effect {
@@ -693,7 +693,7 @@ impl Runtime {
         } else {
             nav_width_natural
         };
-        // Restore the band-layout nav height (0 = auto ~40%); a stale value is clamped at
+        // Restore the horizontal nav-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::app::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
         // The runtime host registry, keyed by id (local first, then each ssh alias in
@@ -800,7 +800,6 @@ impl Runtime {
         switcher.set_palette(palette);
         // The help modal must show the prefix the user configured, not a literal.
         state.chrome.set_ui_prefix(env.ui_prefix.clone());
-        state.chrome.first_key_seen = crate::app::prefs::first_key_help_seen(&env.xmux_dir);
         drop(roster);
 
         // The live mutate ops (create/rename/kill) - NOT nav probing. They resolve each
@@ -908,7 +907,7 @@ impl Runtime {
     /// width persist, then draw the gated frame. `term` is the loop-local ratatui
     /// terminal.
     /// The nav's live size, in one place: the width the user set, the width on screen
-    /// (0 while auto-hide has taken it), the band height the user set, the side the nav is
+    /// (0 while auto-hide has taken it), the horizontal nav height the user set, the side the nav is
     /// attached to, and the collapsed state. Every geometry the loop computes reads this instead of picking
     /// fields out of `self`, so a resize while xmux runs cannot reach one consumer and
     /// miss another.
@@ -924,7 +923,7 @@ impl Runtime {
     ) {
         // Advance the spinner from wall-clock so it animates regardless of which arm fired.
         let spinner_frame = spinner_frame_at(self.spinner_start.elapsed());
-        let view_border_hovered = self.model.mouse_state.hovered_view_border;
+        let nav_border_hovered = self.model.mouse_state.hovered_nav_border;
         // Compare before storing: a bar whose interaction just ended must repaint even
         // when nothing else in the pass moved.
         let prefix_active = self.prefix_active();
@@ -937,7 +936,7 @@ impl Runtime {
             Msg::SyncFrame {
                 spinner_frame,
                 animation_ms: self.spinner_start.elapsed().as_millis() as u64,
-                view_border_hovered,
+                nav_border_hovered,
                 prefix_active,
             },
         );
@@ -976,7 +975,7 @@ impl Runtime {
             .nav_position_pinned
             .unwrap_or(self.model.nav_default);
         // Resize when ANY dimension of the split moved: the width (focus / hide / prefix
-        // Ctrl-←/→ in a column), the band height (border drag / resize keys), or the side the
+        // Ctrl-←/→ in a column), the horizontal nav height (border drag / resize keys), or the side the
         // nav is attached to. All change the mux terminal region, so all must resize the
         // PTYs or the grid mismatches the draw.
         if want_nav_width != self.model.nav_width
@@ -1068,7 +1067,7 @@ impl Runtime {
                 },
             );
             let terminal_focused = self.model.state.focus.is_terminal_focused();
-            // The view border glyph reflects auto-hide-nav mode (║ on, │ off).
+            // The nav border glyph reflects auto-hide-nav mode (║ on, │ off).
             let t_draw = std::time::Instant::now();
             let previous_plan = self.model.render_plan.clone();
             let mut next_plan = None;
@@ -1970,7 +1969,7 @@ impl Runtime {
         false
     }
 
-    /// Whether a prefix interaction is live, in EITHER focus. The hint bar and the
+    /// Whether a prefix interaction is live, in EITHER focus. The prefix hint and the
     /// auto-hide nav show ask the same question, so every form of "live" is OR'd here
     /// rather than making the chrome know about focus or about which command ran.
     ///
@@ -2397,7 +2396,7 @@ impl Runtime {
 
     /// Live config reload, called on the redraw cadence. When [`poll_ui_config`] sees
     /// the file change it re-applies the `[ui]` presentation settings - theme /
-    /// selection-style (the palette) and the hint-bar / view-border styles - so a
+    /// selection-style (the palette) and the prefix-hint / nav-border styles - so a
     /// config edit lands without restarting. Returns true when something was
     /// re-applied so the loop marks the frame dirty.
     ///

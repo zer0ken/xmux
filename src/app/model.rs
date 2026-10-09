@@ -10,15 +10,16 @@ use crate::ui::switcher::{NavPosition, NavSize, RenderPlan, Switcher};
 pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
 /// The narrowest expanded side nav: a card's indent, a two-digit number with the cells
-/// around it, and eight cells of name. Always wider than the padded prefix indicator, so
-/// a wide configured prefix raises it. A seam dragged narrower than this collapses the nav.
+/// around it, and eight cells of name. Always wider than the padded prefix hint, so
+/// a wide configured prefix raises it. A nav border dragged narrower than this collapses the nav.
 pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
     const CARD_FLOOR: u16 = 14;
     CARD_FLOOR.max(crate::ui::switcher::prefix_chip_width(ui_prefix) + 1)
 }
 
-/// The band-layout nav height drag range. A band one row tall still lists its cards
-/// along that row, so the min is one row, and a seam dragged past it collapses the band;
+/// The horizontal-nav layout nav height drag range. A horizontal nav one row tall still lists its cards
+/// along that row, so the min is one row, and a nav border dragged past it collapses the
+/// horizontal nav;
 /// compute_regions clamps the max down to the body so the terminal always keeps room.
 pub(crate) const NAV_HEIGHT_MIN: u16 = 1;
 pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
@@ -209,10 +210,9 @@ pub(crate) enum Msg {
     SyncSelection,
     /// A read that carried keys arrived. Any key ends the hint after a selection move; a
     /// key that moves the selection again raises a new one as it is applied.
-    KeysRead,
     Key(KeyEvent),
     /// A click on a nav target. `execute` opens the target's screen and gives the terminal
-    /// view the focus, as Enter does; a band's overflow count only selects the card it
+    /// view the focus, as Enter does; a horizontal nav's overflow count only selects the card it
     /// stands for.
     MouseSelect {
         col: u16,
@@ -322,7 +322,7 @@ pub(crate) enum Msg {
     SetMouseDragging(bool),
     SetViewDrag(bool),
     EndNavDrag {
-        band: bool,
+        horizontal: bool,
     },
     SetMouseHovered(bool),
     SetResizing(bool),
@@ -359,7 +359,7 @@ pub(crate) enum Msg {
     SyncFrame {
         spinner_frame: usize,
         animation_ms: u64,
-        view_border_hovered: bool,
+        nav_border_hovered: bool,
         prefix_active: bool,
     },
     ReconcileNav {
@@ -429,7 +429,6 @@ pub(crate) enum Effect {
     PersistNavHeight(u16),
     PersistNavCollapsed(bool),
     PersistNavPosition(Option<NavPosition>),
-    PersistFirstKeyHelpSeen,
     PersistSshLogins(HashMap<String, crate::model::RecordedLogin>),
     ReattachDisplay(Selection),
     /// Searches the machine's key files for this machine's public keys, ending first the
@@ -495,7 +494,6 @@ impl std::fmt::Debug for Effect {
             Self::PersistNavPosition(position) => {
                 f.debug_tuple("PersistNavPosition").field(position).finish()
             }
-            Self::PersistFirstKeyHelpSeen => f.write_str("PersistFirstKeyHelpSeen"),
             Self::PersistSshLogins(logins) => {
                 f.debug_tuple("PersistSshLogins").field(logins).finish()
             }
@@ -1649,13 +1647,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             sync_selection(model);
             Vec::new()
         }
-        Msg::KeysRead => {
-            if model.state.chrome.key_read() {
-                vec![Effect::PersistFirstKeyHelpSeen]
-            } else {
-                Vec::new()
-            }
-        }
         Msg::Key(key) => {
             let commands = model.switcher.handle_key(key, &mut model.state);
             // A logout confirm scrolls no further than the offset that shows its last fact
@@ -2130,19 +2121,19 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::SetMouseDragging(dragging) => {
-            model.mouse_state.dragging_view_border = dragging;
+            model.mouse_state.dragging_nav_border = dragging;
             Vec::new()
         }
-        Msg::EndNavDrag { band } => {
-            model.mouse_state.dragging_view_border = false;
-            if band {
+        Msg::EndNavDrag { horizontal } => {
+            model.mouse_state.dragging_nav_border = false;
+            if horizontal {
                 vec![Effect::PersistNavHeight(model.nav_height)]
             } else {
                 vec![Effect::PersistNavWidth(model.nav_width_natural)]
             }
         }
         Msg::SetMouseHovered(hovered) => {
-            model.mouse_state.hovered_view_border = hovered;
+            model.mouse_state.hovered_nav_border = hovered;
             Vec::new()
         }
         Msg::SetResizing(resizing) => {
@@ -2177,7 +2168,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::ToggleNavCollapsed => {
             model.nav_collapsed = !model.nav_collapsed;
-            model.mouse_state.hovered_view_border = false;
+            model.mouse_state.hovered_nav_border = false;
             vec![Effect::PersistNavCollapsed(model.nav_collapsed)]
         }
         Msg::SetNavCollapsed(collapsed) => {
@@ -2201,7 +2192,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             body_rows,
             ui_prefix,
         } => {
-            let top = model.render_plan.layout == crate::ui::switcher::ViewLayout::Band;
+            let top = model.render_plan.layout == crate::ui::switcher::ViewLayout::Horizontal;
             let delta = if model.nav_position.forward_arrows_face_terminal() {
                 delta
             } else {
@@ -2256,7 +2247,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         Msg::SyncFrame {
             spinner_frame,
             animation_ms,
-            view_border_hovered,
+            nav_border_hovered,
             prefix_active,
         } => {
             model.state.chrome.set_spinner_frame(spinner_frame);
@@ -2264,7 +2255,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model
                 .state
                 .chrome
-                .set_view_border_hovered(view_border_hovered);
+                .set_nav_border_hovered(nav_border_hovered);
             model.state.chrome.set_armed(prefix_active);
             model.state.chrome.resizing = model.mouse_state.resizing;
             model.switcher.sync_prefix_armed(prefix_active);
@@ -2451,7 +2442,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     &mut model.state,
                 );
             }
-            model.state.chrome.expire_selection_hint(now);
             let history_open =
                 matches!(model.state.modal, Some(crate::state::Modal::History { .. }));
             model.state.notify.tick(now, history_open);
@@ -2556,39 +2546,6 @@ mod tests {
         Msg::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
     }
 
-    fn hint_text(model: &AppModel) -> String {
-        model.state.chrome.hint_bar_text(200, &model.state)
-    }
-
-    #[test]
-    fn first_interactive_key_introduces_prefix_and_help_once() {
-        let mut m = model();
-        assert!(!m.state.chrome.first_key_seen);
-        assert!(matches!(
-            update(&mut m, Msg::KeysRead).as_slice(),
-            [Effect::PersistFirstKeyHelpSeen]
-        ));
-        assert!(m.state.chrome.first_key_seen);
-        assert!(hint_text(&m).contains("C-g prefix"));
-        assert!(hint_text(&m).contains("C-g ? help"));
-        assert!(update(&mut m, Msg::KeysRead).is_empty());
-        assert!(!m.state.chrome.first_key_notice);
-        assert!(!hint_text(&m).contains("C-g ? help"));
-    }
-
-    #[test]
-    fn a_selection_xmux_was_told_to_make_raises_no_hint() {
-        let mut model = model_with_cards();
-        update(
-            &mut model,
-            Msg::FollowDisplay(crate::session::Address::new("local", "editor")),
-        );
-        assert!(
-            model.state.chrome.selection_hint.is_none(),
-            "only the user's own moves are answered with a hint"
-        );
-    }
-
     #[test]
     fn key_rescan_and_ctl_rescan_produce_the_same_effects() {
         let key = update(
@@ -2683,7 +2640,7 @@ mod tests {
     #[test]
     fn clamped_band_resize_does_not_persist_an_unchanged_height() {
         let mut model = model();
-        model.render_plan.layout = crate::ui::switcher::ViewLayout::Band;
+        model.render_plan.layout = crate::ui::switcher::ViewLayout::Horizontal;
         model.nav_height = super::NAV_HEIGHT_MIN;
 
         let effects = update(
@@ -3425,7 +3382,7 @@ mod tests {
             Msg::SyncFrame {
                 spinner_frame: 0,
                 animation_ms: 0,
-                view_border_hovered: false,
+                nav_border_hovered: false,
                 prefix_active: false,
             },
         )
@@ -4745,21 +4702,11 @@ mod tests {
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "b", &["y"], None);
         update(&mut m, lower_r());
-        m.state.chrome.show_selection_hint(
-            Vec::new(),
-            "1 window".into(),
-            std::time::Instant::now(),
-        );
         let effects = update(
             &mut m,
             Msg::Commands(vec![crate::model::Command::RescanMachine("b".to_owned())]),
         );
         assert!(effects.is_empty(), "{effects:?}");
-        assert_eq!(
-            m.state.chrome.hint_bar_text(200, &m.state).trim(),
-            "1 window",
-            "the refusal leaves the hint bar on its advice"
-        );
         assert_eq!(
             m.state.notify.last_report(),
             Some((

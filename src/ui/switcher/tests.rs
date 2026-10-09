@@ -121,31 +121,35 @@ impl Harness {
         h
     }
 
-    /// The hint bar's row, read at the width it actually paints: the nav column at
-    /// rest, the whole window while a floating bar (a selection hint) is up. Reading the nav width unconditionally would clip the floating bar.
-    fn hint_bar_text(&self) -> String {
+    /// The prefix hint chip, read from its dedicated row: the chip is aligned toward the
+    /// nav border (a vertical nav's first row, a horizontal nav's border row's left end).
+    /// The row is blank past the chip, so only the chip's cells are read and trimmed.
+    fn prefix_hint_text(&self) -> String {
         let buf = self.buf();
-        let y = buf.area.height - 1;
-        let limit = if hint_bar_floats(&self.state) {
-            buf.area.width
-        } else {
-            NAV_WIDTH.min(buf.area.width)
-        };
+        let row = self.plan.regions.prefix_hint;
+        if row.is_empty() {
+            return String::new();
+        }
+        let chip = super::render::prefix_hint_chip(
+            row,
+            self.plan.nav_position,
+            super::prefix_chip_width(&self.state.chrome.ui_prefix),
+        );
         let mut line = String::new();
-        for x in 0..limit {
-            line.push_str(buf[(x, y)].symbol());
+        for x in chip.x..chip.right() {
+            line.push_str(buf[(x, row.y)].symbol());
         }
         line.trim_end().to_string()
     }
 
-    /// Only the nav's CARD rows: the nav column minus the hint bar's bottom row, so a
-    /// card assertion cannot be satisfied by the bar's own global scan indicator (both
-    /// turn the same spinner).
+    /// Only the nav's CARD rows: the nav column minus the prefix hint's first row, so a
+    /// card assertion cannot be satisfied by the chip. The scan box is a popup surface,
+    /// not a column of this text.
     fn nav_cards_text(&self) -> String {
         let buf = self.buf();
         let limit = NAV_WIDTH.min(buf.area.width);
         let mut out = String::new();
-        for y in 0..buf.area.height.saturating_sub(1) {
+        for y in 1..buf.area.height {
             for x in 0..limit {
                 out.push_str(buf[(x, y)].symbol());
             }
@@ -169,7 +173,7 @@ impl Harness {
         out
     }
 
-    /// Only the terminal-view region (past the nav column and its view border) - so a
+    /// Only the terminal-view region (past the nav column and its nav border) - so a
     /// host-screen assertion is not satisfied by the nav card that says the same word.
     fn view_text(&self) -> String {
         let buf = self.buf();
@@ -301,6 +305,13 @@ impl Harness {
 
     fn nav_mod_of(&self, text: &str) -> Option<Modifier> {
         mod_of(self.buf(), text, NAV_WIDTH)
+    }
+
+    /// The bg of the cell `text` starts at, in the nav's card rows.
+    fn nav_bg_of(&self, text: &str) -> Color {
+        let buf = self.buf();
+        let (x, y) = locate(buf, text, NAV_WIDTH).expect("the cell is painted");
+        buf[(x, y)].bg
     }
 
     /// Row `i` of the open popup, its top border being row 0; empty with no popup.
@@ -793,7 +804,7 @@ async fn apply_host_result_turns_scanning_into_sessions() {
         "session appears after result:\n{out}"
     );
     assert!(
-        !h.hint_bar_text().contains("scanning"),
+        !h.prefix_hint_text().contains("scanning"),
         "the scan indicator clears once the only host resolves"
     );
     assert!(
@@ -1371,18 +1382,25 @@ async fn open_filter_reports_matches_and_bolds_matching_cells() {
     h.ch('l').await;
     h.ch('p').await;
     let top = h.popup_row(0);
+    if std::env::var("XMUX_DEBUG").is_ok() {
+        let buf = h.buf();
+        for y in 0..6 {
+            let r: String = (0..24).map(|x| buf[(x, y)].symbol()).collect();
+            println!("{y}: {r:?}");
+        }
+    }
     assert!(top.contains(" 2 of 2 "), "match count:\n{top}");
     assert!(h.popup_row(1).contains(" / lp"), "{}", h.popup_row(1));
-    assert!(
-        h.nav_mod_of("l")
-            .is_some_and(|m| m.contains(Modifier::BOLD)),
-        "a matching session-name cell is bold:\n{}",
+    assert_eq!(
+        h.nav_bg_of("pi"),
+        h.sw.palette().warning,
+        "a matching host label cell wears the warning bg:\n{}",
         h.nav_cards_text()
     );
-    assert!(
-        h.nav_mod_of("a")
-            .is_some_and(|m| !m.contains(Modifier::BOLD)),
-        "a non-matching session-name cell is not bold:\n{}",
+    assert_ne!(
+        h.nav_bg_of("a"),
+        h.sw.palette().warning,
+        "a non-matching session-name cell does not:\n{}",
         h.nav_cards_text()
     );
 }
@@ -1393,11 +1411,12 @@ async fn filter_highlights_the_session_part_of_the_matched_address() {
         groups: vec![Group {
             host: "host".into(),
             err: None,
-            sessions: vec![Session {
-                host: "host".into(),
-                name: "alpha".into(),
-                ..Default::default()
-            }],
+            sessions: vec![
+                // A decoy sorting first, so the card under test is NOT the selected one:
+                // the selection pair flattens every colour on the card it is on.
+                sess("host", "aa", 1, false),
+                sess("host", "alpha", 1, false),
+            ],
         }],
     });
     h.key(KeyCode::Char('/')).await;
@@ -1409,10 +1428,10 @@ async fn filter_highlights_the_session_part_of_the_matched_address() {
         "section titles keep their fixed bold weight:\n{}",
         h.nav_cards_text()
     );
-    assert!(
-        h.nav_mod_of("l")
-            .is_some_and(|m| m.contains(Modifier::BOLD)),
-        "the session character that completes the address match is bold:\n{}",
+    assert_eq!(
+        h.nav_bg_of("l"),
+        h.sw.palette().warning,
+        "the session character that completes the address match wears the warning bg:\n{}",
         h.nav_cards_text()
     );
 }
@@ -1453,10 +1472,10 @@ async fn filter_matches_and_marks_the_three_level_path_of_a_one_mux_machine() {
         let buf = h.buf();
         let (x, y) = locate(buf, "train-llm", NAV_WIDTH)
             .unwrap_or_else(|| panic!("{typed} keeps train-llm:\n{}", h.nav_cards_text()));
-        let bold: Vec<bool> = (x..x + 9)
-            .map(|x| buf[(x, y)].modifier.contains(Modifier::BOLD))
+        let marks: Vec<bool> = (x..x + 9)
+            .map(|x| buf[(x, y)].bg == h.sw.palette().warning)
             .collect();
-        assert_eq!(bold, vec![marked; 9], "{typed}:\n{}", h.nav_cards_text());
+        assert_eq!(marks, vec![marked; 9], "{typed}:\n{}", h.nav_cards_text());
     }
 }
 
@@ -2290,10 +2309,6 @@ fn login_hint_is_visible_on_first_focus_before_any_field_is_edited() {
         .set_view_focus(crate::state::ViewFocus::Terminal);
     h.draw_terminal_focused();
     assert_eq!(h.plan.view_screen, Some(crate::model::ViewScreen::Login));
-    assert!(
-        !h.plan.floating_hint_bar,
-        "no bar floats over the window for the pane"
-    );
     let out = h.view_text();
     let keys = out
         .lines()
@@ -3069,36 +3084,47 @@ async fn streaming_preserves_cursor_once_user_moves() {
 }
 
 #[tokio::test]
-async fn hint_bar_shows_scanning_progress_then_clears() {
+async fn the_scan_box_shows_scanning_progress_then_clears() {
     let mut h = Harness::from_hosts(&["local", "jupiter00"]);
-    let hint_bar = h.hint_bar_text();
+    h.sw.request_rescan(&mut h.state);
+    h.draw();
+    let (rect, _) = h
+        .plan
+        .scan_box
+        .clone()
+        .expect("a scan in flight floats its box");
+    let text: String = (rect.y..rect.bottom())
+        .map(|y| {
+            (rect.x..rect.right())
+                .map(|x| h.buf()[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        hint_bar.contains("scanning"),
-        "hint_bar shows a global scanning indicator:\n{hint_bar:?}"
+        text.contains("scanning"),
+        "the box states the scan:\n{text}"
     );
-    assert!(
-        hint_bar.contains("/2"),
-        "hint_bar shows the host progress fraction:\n{hint_bar:?}"
-    );
+    assert!(text.contains("/2"), "the box states the fraction:\n{text}");
     h.sw.apply_host_result("local".into(), vec![], None, &mut h.state);
     h.sw.apply_host_result("jupiter00".into(), vec![], None, &mut h.state);
     h.draw();
-    let hint_bar = h.hint_bar_text();
     assert!(
-        !hint_bar.contains("scanning"),
-        "the scanning indicator clears once all hosts settle:\n{hint_bar:?}"
+        h.plan.scan_box.is_none(),
+        "the box clears once all hosts settle"
     );
     assert_eq!(
-        hint_bar.trim(),
-        "C-g",
-        "the resting hint bar is the prefix alone:\n{hint_bar:?}"
+        h.prefix_hint_text(),
+        " C-g",
+        "the resting chip is the prefix alone:\n{:?}",
+        h.prefix_hint_text()
     );
 }
 
 #[tokio::test]
 async fn the_armed_prefix_indicator_fits_a_narrow_nav() {
-    // A live prefix names its keys in the key list beside the nav, so the indicator in
-    // the nav column keeps the prefix alone and never clips.
+    // A live prefix names its keys in the key list beside the nav, so the chip on the
+    // nav column's first row keeps the prefix alone and never clips.
     let mut state = crate::state::State::from_scan(sample());
     state.chrome.set_armed(true);
     let sw = Switcher::new(&mut state);
@@ -3109,19 +3135,19 @@ async fn the_armed_prefix_indicator_fits_a_narrow_nav() {
     term.draw(|f| sw.render_test(f, None, false, NavSize::visible(nav_w), &state))
         .unwrap();
     let buf = term.backend().buffer();
-    let y = buf.area.height - 1;
-    let mut hint_bar = String::new();
+    let y = 0; // the chip rests on the nav column's first row
+    let mut chip = String::new();
     for x in 0..nav_w {
-        hint_bar.push_str(buf[(x, y)].symbol());
+        chip.push_str(buf[(x, y)].symbol());
     }
-    let hint_bar = hint_bar.trim_end().to_string();
+    let chip = chip.trim_end().to_string();
     assert!(
-        UnicodeWidthStr::width(hint_bar.as_str()) <= nav_w as usize,
-        "the armed indicator fits the nav column:\n{hint_bar:?}"
+        UnicodeWidthStr::width(chip.as_str()) <= nav_w as usize,
+        "the prefix hint fits the nav column:\n{chip:?}"
     );
     assert!(
-        hint_bar.contains("C-g"),
-        "it still names the armed prefix:\n{hint_bar:?}"
+        chip.contains("C-g"),
+        "it still names the configured prefix:\n{chip:?}"
     );
 }
 
@@ -3131,86 +3157,102 @@ fn the_nav_renders_at_the_minimum_width() {
     // visible and the cards clip.
     let min = crate::app::model::nav_width_min("C-g");
     let mut state = crate::state::State::from_scan(sample());
-    let sw = Switcher::new(&mut state);
+    let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
     term.draw(|f| sw.render_test(f, None, false, NavSize::visible(min), &state))
         .unwrap();
     let buf = term.backend().buffer();
-    let y = buf.area.height - 1;
+    let y = 0; // the chip rests on the nav column's first row
     let text: String = (0..min).map(|x| buf[(x, y)].symbol()).collect();
-    assert_eq!(text.trim_end(), " C-g", "resting bar at min width");
+    assert_eq!(text.trim(), "C-g", "resting chip at min width");
 
-    state.scanning.insert("local".into());
+    // A rescan key floats its advice box beside the prefix, clipped to the terminal view.
+    sw.request_rescan(&mut state);
     term.draw(|f| sw.render_test(f, None, false, NavSize::visible(min), &state))
         .unwrap();
     let buf = term.backend().buffer();
-    let text: String = (0..min).map(|x| buf[(x, y)].symbol()).collect();
-    let total = state.groups.len();
-    let done = total.saturating_sub(state.scanning.len());
+    let text: String = (min + 1..(min + 41).min(120))
+        .map(|x| buf[(x, 1)].symbol())
+        .collect();
     assert!(
-        text.contains(&format!("{done}/{total}")),
-        "scan progress stays intact: {text:?}"
+        text.contains("scanning"),
+        "the rescan's box states the scan: {text:?}"
     );
 }
 
 #[test]
-fn hint_bar_has_status_bar_background() {
-    // The hint bar is a solid dark status bar fit to what it has to say: at rest the
-    // prefix sits on the nav's last row. The cells it owns carry the
-    // dark bar background, while columns outside the controls remain with the view below.
+fn prefix_hint_has_status_bar_background() {
+    // The prefix hint is a chip on its own dark bar background: the prefix sits on the
+    // nav's first row, aligned toward the nav border. The cells it owns carry the dark
+    // bar background, while columns outside the chip keep the view below.
     let mut state = crate::state::State::from_scan(sample());
     let sw = Switcher::new(&mut state);
-    // Wide enough that the terminal view stays landscape, so the layout is a column and the
-    // nav column runs the full height (its last row IS the hint bar).
+    // Wide enough that the terminal view stays landscape, so the layout is a vertical
+    // nav and the nav column runs the full height (its first row IS the prefix hint).
     let mut term = Terminal::new(TestBackend::new(140, 20)).unwrap();
     term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer();
-    let y = buf.area.height - 1; // the one-line hint bar sits on the nav's last row
-    let bg = crate::ui::palette::Palette::default().bar_bg;
-    assert_eq!(buf[(1, y)].bg, bg, "a text cell has the dark bar bg");
+    let y = 0; // the prefix hint sits on the nav column's first row
+    let pal = crate::ui::palette::Palette::default();
+    let bg = pal.bar_bg;
+    // Left nav: the chip hugs the nav border, so it owns the nav column's last cells.
     assert_eq!(
-        buf[(1, y)].fg,
-        crate::ui::palette::Palette::default().bar_accent,
+        buf[(NAV_WIDTH - 5, y)].fg,
+        pal.bar_accent,
         "the leading key token is accented with the bar's own accent"
     );
-    // Resting text is " C-g" (4 cells) plus one cell of padding = 5 cells; the bar is
-    // fit to that, so it stops well short of the nav column's width instead of filling it.
-    let bar_w = 5;
     assert_eq!(
-        buf[(bar_w - 1, y)].bg,
+        buf[(NAV_WIDTH - 4, y)].bg,
         bg,
-        "the last padded cell of the bar is also bar bg"
+        "a text cell has the dark bar bg"
+    );
+    // The chip is fit to the prefix plus a cell of padding each side = 5 cells; it stops
+    // short of the nav column's width instead of filling it.
+    assert_eq!(
+        buf[(NAV_WIDTH - 1, y)].bg,
+        bg,
+        "the last padded cell of the chip is also bar bg"
     );
     assert_ne!(
-        buf[(bar_w, y)].bg,
+        buf[(NAV_WIDTH - 6, y)].bg,
         bg,
-        "the bar is fit to content - cells past the text are not painted"
+        "the chip is fit to content - cells past it are not painted"
     );
 }
 
 #[test]
-fn hint_bar_text_reflects_configured_prefix() {
-    // The hint_bar always-visible key-hints must show the active prefix, not a
-    // hardcoded "C-g", so a user who sets a different binding sees the right hint.
-    let mut state = crate::state::State::default();
+fn prefix_hint_reflects_configured_prefix() {
+    // The prefix hint must show the active prefix, not a hardcoded "C-g", so a user who
+    // sets a different binding sees the right hint.
+    let mut state = crate::state::State::from_hosts(vec!["pending".into()]);
     state.chrome.set_ui_prefix("C-Space".into());
-    let text = state.chrome.hint_bar_text(200, &state);
+    let sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(140, 20)).unwrap();
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let row: String = (0..NAV_WIDTH).map(|x| buf[(x, 0)].symbol()).collect();
     assert!(
-        text.contains("C-Space"),
-        "custom prefix must appear in hint_bar:\n{text:?}"
+        row.contains("C-Space"),
+        "custom prefix must appear in the prefix hint:\n{row:?}"
     );
     assert!(
-        !text.contains("C-g"),
-        "hardcoded C-g must not appear when prefix is C-Space:\n{text:?}"
+        !row.contains("C-g"),
+        "hardcoded C-g must not appear when prefix is C-Space:\n{row:?}"
     );
 
     // Default prefix (no setter) must still show C-g.
-    let state_default = crate::state::State::default();
-    let text_default = state_default.chrome.hint_bar_text(200, &state_default);
+    let mut state_default = crate::state::State::from_hosts(vec!["pending".into()]);
+    let sw = Switcher::new(&mut state_default);
+    let mut term = Terminal::new(TestBackend::new(140, 20)).unwrap();
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state_default))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let row: String = (0..NAV_WIDTH).map(|x| buf[(x, 0)].symbol()).collect();
     assert!(
-        text_default.contains("C-g"),
-        "default prefix C-g must appear in hint_bar:\n{text_default:?}"
+        row.contains("C-g"),
+        "default prefix C-g must appear in the prefix hint:\n{row:?}"
     );
 }
 
@@ -3306,10 +3348,6 @@ async fn filter_narrows() {
         !out.contains("build"),
         "filter should drop non-matches:\n{out}"
     );
-    assert!(
-        out.contains("filter: infer"),
-        "the applied filter shows on the hint bar:\n{out}"
-    );
 }
 
 #[tokio::test]
@@ -3404,31 +3442,31 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
 }
 
 /// Asserts that the newest toast is the refusal `reason` under `title`, a warning that
-/// leaves by itself, and that the hint bar still says `bar`, what it said before the key.
+/// leaves by itself, and that the prefix hint still says `bar`, what it said before the key.
 fn assert_refused(h: &Harness, bar: &str, title: &str, reason: &str) {
     use crate::state::notify::{Level, Note};
     let toast = h.state.notify.toasts.last().expect("a refusal is a toast");
     assert_eq!(toast.title, title);
     assert_eq!(toast.notes, vec![Note::new(Level::Warning, reason)]);
     assert!(toast.until.is_some(), "a refusal leaves by itself");
-    assert_eq!(h.hint_bar_text(), bar, "the hint bar keeps its advice");
+    assert_eq!(h.prefix_hint_text(), bar, "the prefix hint keeps its text");
 }
 
-/// What an action did or why it did nothing is a notification, never hint-bar text:
-/// every refused key reports a toast and leaves the hint bar on its contextual text.
+/// What an action did or why it did nothing is a notification, never prefix-hint text:
+/// every refused key reports a toast and leaves the prefix hint as it was.
 #[tokio::test]
-async fn a_refused_key_is_a_notification_and_the_hint_bar_keeps_its_advice() {
+async fn a_refused_key_is_a_notification_and_the_prefix_hint_stays_put() {
     // The local machine is not reached over SSH, so it has no login to log out of.
     let mut h = Harness::new(sample());
     h.key(KeyCode::Home).await;
-    let bar = h.hint_bar_text();
+    let bar = h.prefix_hint_text();
     h.ch('L').await;
     assert!(h.state.modal.is_none(), "no logout confirm opens");
     assert_refused(&h, &bar, "logout local", "this machine does not use SSH");
 
     // A session lives in a host, and the unreachable machine has none to create it in.
     h.key(KeyCode::End).await;
-    let bar = h.hint_bar_text();
+    let bar = h.prefix_hint_text();
     h.ch('n').await;
     assert!(!h.state.is_inputting(), "no new-session input opens");
     assert_refused(
@@ -3442,7 +3480,7 @@ async fn a_refused_key_is_a_notification_and_the_hint_bar_keeps_its_advice() {
     h.key(KeyCode::Home).await;
     h.ctrl(KeyCode::Up);
     h.ctrl(KeyCode::Up);
-    let bar = h.hint_bar_text();
+    let bar = h.prefix_hint_text();
     h.ch('n').await;
     assert!(!h.state.is_inputting(), "no new-session input opens");
     assert_refused(
@@ -3456,7 +3494,7 @@ async fn a_refused_key_is_a_notification_and_the_hint_bar_keeps_its_advice() {
     h.key(KeyCode::Home).await;
     h.state.scanning.insert("local".into());
     h.draw();
-    let bar = h.hint_bar_text();
+    let bar = h.prefix_hint_text();
     h.ch('r').await;
     assert_refused(
         &h,
@@ -4130,7 +4168,7 @@ async fn a_host_screen_counts_its_sessions_under_its_headline() {
         assert_eq!(lines[headline + 1], word, "{screen}");
     }
     assert_eq!(
-        crate::ui::tree::host_state_word(false, false, false, false),
+        crate::ui::cards::host_state_word(false, false, false, false),
         "no sessions",
         "the empty host card and screen read one word"
     );
@@ -4569,7 +4607,7 @@ async fn a_section_title_stands_alone_over_its_cards() {
     // The dim title and the indent under it mark a group at every position, so the
     // title row and the card rows carry no rule or connector glyph.
     let side = Harness::new(sample());
-    assert_eq!(side.plan.layout, ViewLayout::Column, "landscape → Side");
+    assert_eq!(side.plan.layout, ViewLayout::Vertical, "landscape → Side");
     let y = side.nav_row_of("local").expect("the section title");
     let painted = nav_line(&side, y);
     assert!(
@@ -4578,7 +4616,7 @@ async fn a_section_title_stands_alone_over_its_cards() {
     );
 
     let top = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(top.plan.layout, ViewLayout::Band, "portrait → Top");
+    assert_eq!(top.plan.layout, ViewLayout::Horizontal, "portrait → Top");
     let w = top.buf().area.width;
     let y = row_of(top.buf(), "local", w).expect("the section title");
     let painted = band_line(&top, y);
@@ -4601,7 +4639,7 @@ async fn a_split_sections_cards_read_at_one_offset_in_every_column() {
     // landed in, a continuation included. Measured against the rect the plan recorded,
     // since the columns start wherever the widths put them.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
-    assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
+    assert_eq!(h.plan.layout, ViewLayout::Horizontal, "portrait → Top");
     let w = h.buf().area.width;
     let (s0, _) = locate(h.buf(), "s0", w).expect("s0");
     let (s5, _) = locate(h.buf(), "s5", w).expect("s5");
@@ -4615,7 +4653,7 @@ async fn a_split_sections_cards_read_at_one_offset_in_every_column() {
 async fn the_selections_padding_stays_inside_the_card() {
     // The card owns its inner padding; the surrounding indent remains unpainted.
     let h = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
+    assert_eq!(h.plan.layout, ViewLayout::Horizontal, "portrait → Top");
     let sel = h.sw.selected;
     let (_, rect) = h
         .plan
@@ -4641,7 +4679,7 @@ async fn the_selections_padding_stays_inside_the_card() {
 #[tokio::test]
 async fn a_split_sections_continuation_columns_start_with_cards() {
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
-    assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
+    assert_eq!(h.plan.layout, ViewLayout::Horizontal, "portrait → Top");
     let band = h.plan.nav_inner;
     let painted: String = (band.y..band.y + band.height)
         .map(|y| band_line(&h, y))
@@ -4696,7 +4734,7 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
     );
     h.sw.rebuild(&mut h.state);
     h.draw();
-    assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
+    assert_eq!(h.plan.layout, ViewLayout::Horizontal, "portrait → Top");
     let band = h.plan.nav_inner;
     let painted: String = (band.y..band.y + band.height)
         .map(|y| band_line(&h, y))
@@ -4899,7 +4937,7 @@ async fn the_bands_never_touch_on_screen() {
     );
     // The list scrolls a row before the cards themselves would need it, so the seam
     // carries the thumb.
-    let seam_x = h.plan.regions.view_border.x;
+    let seam_x = h.plan.regions.nav_border.x;
     assert!(
         (h.plan.nav_inner.y..h.plan.nav_inner.y + h.plan.nav_inner.height)
             .any(|y| h.buf()[(seam_x, y)].symbol() == "┃"),
@@ -4938,8 +4976,8 @@ async fn scanning_hosts_start_at_the_top_until_found() {
             .iter()
             .position(|r| matches!(&r.reference, RowRef::Section { .. }))
             .expect("the resolved host gains a section title");
-    assert_eq!(card_rect(&h, section).y, 0, "the section leads the list");
-    assert_eq!(card_rect(&h, section + 1).y, 1, "its card follows");
+    assert_eq!(card_rect(&h, section).y, 1, "the section leads the list");
+    assert_eq!(card_rect(&h, section + 1).y, 2, "its card follows");
     let host =
         h.sw.rows
             .iter()
@@ -5041,8 +5079,8 @@ async fn focus_changes_only_the_address_column() {
     ));
     let beta_row = h.nav_row_of("beta").expect("beta detail");
     assert_eq!(
-        beta_row, 2,
-        "beta is a one-row card under the title and alpha"
+        beta_row, 3,
+        "beta is a one-row card under the title and alpha, past the chip row"
     );
     h.key(KeyCode::Down).await; // select beta
     assert_eq!(
@@ -5063,7 +5101,7 @@ async fn focus_changes_only_the_address_column() {
         "the card above stays where it was"
     );
     assert!(
-        nav_line(&h, 0).contains("srv"),
+        nav_line(&h, 1).contains("srv"),
         "the section title row is untouched by the selection"
     );
     h.key(KeyCode::Up).await; // move off
@@ -5397,7 +5435,7 @@ fn render_terminal_view_none_grid_is_blank_not_attaching() {
     );
 }
 
-// --- j/k nav, select=attach, spinner, hint_bar/help, title --------
+// --- j/k nav, select=attach, spinner, prefix_hint/help, title --------
 
 fn cur_row_label(h: &Harness) -> String {
     h.sw.rows
@@ -5469,148 +5507,131 @@ fn hiding_the_nav_leaves_the_layout_where_it_was() {
     let shown = compute_regions(
         portrait,
         NavSize::visible(31).with_position(NavPosition::Top),
-        1,
     );
     let gone = compute_regions(
         portrait,
         NavSize::hidden(31).with_position(NavPosition::Top),
-        1,
     );
-    assert_eq!(shown.layout, ViewLayout::Band);
+    assert_eq!(shown.layout, ViewLayout::Horizontal);
     assert_eq!(
         gone.layout,
-        ViewLayout::Band,
+        ViewLayout::Horizontal,
         "hiding the nav is not a reflow"
     );
     assert_eq!(
         gone.terminal, portrait,
         "and the terminal owns the whole area"
     );
-    assert_eq!(gone.tree, Rect::default());
-    // The same holds the other way round: a wide window stays a column while hidden.
+    assert_eq!(gone.nav, Rect::default());
+    // The same holds the other way round: a wide window stays a vertical nav while hidden.
     let landscape = Rect::new(0, 0, 260, 40);
     assert_eq!(
-        compute_regions(landscape, NavSize::hidden(31), 1).layout,
-        ViewLayout::Column
+        compute_regions(landscape, NavSize::hidden(31)).layout,
+        ViewLayout::Vertical
     );
     assert_eq!(
-        compute_regions(landscape, NavSize::visible(31), 1).layout,
-        ViewLayout::Column
+        compute_regions(landscape, NavSize::visible(31)).layout,
+        ViewLayout::Vertical
     );
     // And on the mirrored column: the aspect cannot move a pinned placement either.
     assert_eq!(
         compute_regions(
             landscape,
             NavSize::visible(31).with_position(NavPosition::Right),
-            1
         )
         .layout,
-        ViewLayout::Column
+        ViewLayout::Vertical
     );
     assert_eq!(
         compute_regions(
             landscape,
             NavSize::hidden(31).with_position(NavPosition::Right),
-            1
         )
         .layout,
-        ViewLayout::Column
+        ViewLayout::Vertical
     );
 }
 
 #[test]
 fn compute_regions_side_top_and_hidden() {
     use ratatui::layout::Rect;
-    // Landscape → Column: tree left, 1-col border, terminal right. The hint bar is the
-    // NAV column's bottom row, so the border and the terminal keep the full height.
+    // Landscape → vertical nav: nav left, 1-col border, terminal right. The prefix hint
+    // is the nav column's first row, so the cards keep the rows below it.
     let land = Rect::new(0, 0, 140, 30);
-    let s = compute_regions(land, NavSize::visible(48), 1);
-    assert_eq!(s.layout, ViewLayout::Column);
-    assert_eq!(s.tree, Rect::new(0, 0, 48, 29));
-    assert_eq!(s.view_border, Rect::new(48, 0, 1, 30));
+    let s = compute_regions(land, NavSize::visible(48));
+    assert_eq!(s.layout, ViewLayout::Vertical);
+    assert_eq!(s.nav, Rect::new(0, 1, 48, 29));
+    assert_eq!(s.nav_border, Rect::new(48, 0, 1, 30));
     assert_eq!(s.terminal, Rect::new(49, 0, 91, 30));
-    assert_eq!(s.hint_bar, Rect::new(0, 29, 48, 1));
-    // A landscape SCREEN can still carry the band when the side tree would squeeze the
-    // terminal view into a portrait shape; the pinned Top states that placement directly:
-    // 100 wide, tree 48 → terminal view ~51 wide vs 80 tall, so a band beats a column
-    // even though the screen itself is wider than tall.
+    assert_eq!(s.prefix_hint, Rect::new(0, 0, 48, 1));
+    // A landscape SCREEN can still carry the horizontal nav when the side nav would
+    // squeeze the terminal view into a portrait shape; the pinned Top states that
+    // placement directly:
+    // 100 wide, nav 48 → terminal view ~51 wide vs 80 tall, so a horizontal nav beats a
+    // vertical one even though the screen itself is wider than tall.
     let squeezed = compute_regions(
         Rect::new(0, 0, 140, 60),
         NavSize::visible(48).with_position(NavPosition::Top),
-        1,
     );
-    assert_eq!(squeezed.layout, ViewLayout::Band);
-    // Portrait → band on top: tree band on top, 1-row border, terminal below. Every band
-    // row holds cards, and the hint bar rests on the view border row itself.
+    assert_eq!(squeezed.layout, ViewLayout::Horizontal);
+    // Portrait → horizontal nav on top: nav band on top, 1-row border, terminal below.
+    // Every band row holds cards, and the prefix hint rests on the border row itself.
     let port = Rect::new(0, 0, 40, 100);
-    let t = compute_regions(
-        port,
-        NavSize::visible(48).with_position(NavPosition::Top),
-        1,
-    );
-    assert_eq!(t.layout, ViewLayout::Band);
-    assert_eq!(t.tree.y, 0);
-    assert_eq!(t.tree.width, 40);
-    let band_h = t.tree.height;
-    assert_eq!(t.view_border, Rect::new(0, band_h, 40, 1));
-    assert_eq!(t.hint_bar, t.view_border);
+    let t = compute_regions(port, NavSize::visible(48).with_position(NavPosition::Top));
+    assert_eq!(t.layout, ViewLayout::Horizontal);
+    assert_eq!(t.nav.y, 0);
+    assert_eq!(t.nav.width, 40);
+    let band_h = t.nav.height;
+    assert_eq!(t.nav_border, Rect::new(0, band_h, 40, 1));
+    assert_eq!(t.prefix_hint, t.nav_border);
     assert_eq!(t.terminal.x, 0);
     assert_eq!(t.terminal.y, band_h + 1);
     assert_eq!(t.terminal.width, 40);
-    // Tree-hidden sentinel: the terminal owns the whole area, no hint bar / border.
-    let hidden = compute_regions(land, NavSize::hidden(48), 1);
+    // Hidden sentinel: the terminal owns the whole area, no prefix hint / border.
+    let hidden = compute_regions(land, NavSize::hidden(48));
     assert_eq!(hidden.terminal, land);
-    assert_eq!(hidden.hint_bar, Rect::default());
-    assert_eq!(hidden.view_border, Rect::default());
+    assert_eq!(hidden.prefix_hint, Rect::default());
+    assert_eq!(hidden.nav_border, Rect::default());
 }
 
 #[test]
 fn compute_regions_right_column() {
     use ratatui::layout::Rect;
-    // Pinned right: terminal left, 1-col border, tree right. The nav region's inner
+    // Pinned right: terminal left, 1-col border, nav right. The nav region's inner
     // layout is the left column's unchanged - the mirror flips only what sits on which
-    // side of the view border - so the hint bar is still the nav region's bottom row.
+    // side of the nav border - so the prefix hint is still the nav region's first row.
     let land = Rect::new(0, 0, 140, 30);
-    let s = compute_regions(
-        land,
-        NavSize::visible(48).with_position(NavPosition::Right),
-        1,
-    );
-    assert_eq!(s.layout, ViewLayout::Column);
+    let s = compute_regions(land, NavSize::visible(48).with_position(NavPosition::Right));
+    assert_eq!(s.layout, ViewLayout::Vertical);
     assert_eq!(s.terminal, Rect::new(0, 0, 91, 30));
-    assert_eq!(s.view_border, Rect::new(91, 0, 1, 30));
-    assert_eq!(s.tree, Rect::new(92, 0, 48, 29));
-    assert_eq!(s.hint_bar, Rect::new(92, 29, 48, 1));
+    assert_eq!(s.nav_border, Rect::new(91, 0, 1, 30));
+    assert_eq!(s.nav, Rect::new(92, 1, 48, 29));
+    assert_eq!(s.prefix_hint, Rect::new(92, 0, 48, 1));
     // The hidden sentinel keeps the position's shape: the terminal owns the whole area,
-    // the tree/border/hint bar default, and the layout stays the pinned column.
-    let gone = compute_regions(
-        land,
-        NavSize::hidden(48).with_position(NavPosition::Right),
-        1,
-    );
+    // the nav/border/prefix hint default, and the layout stays the pinned vertical nav.
+    let gone = compute_regions(land, NavSize::hidden(48).with_position(NavPosition::Right));
     assert_eq!(gone.terminal, land);
-    assert_eq!(gone.layout, ViewLayout::Column);
-    assert_eq!(gone.tree, Rect::default());
-    assert_eq!(gone.view_border, Rect::default());
-    assert_eq!(gone.hint_bar, Rect::default());
+    assert_eq!(gone.layout, ViewLayout::Vertical);
+    assert_eq!(gone.nav, Rect::default());
+    assert_eq!(gone.nav_border, Rect::default());
+    assert_eq!(gone.prefix_hint, Rect::default());
 }
 
 #[test]
 fn compute_regions_bottom_band() {
     use ratatui::layout::Rect;
-    // Pinned bottom: terminal above, 1-row border, tree band below. Every band row holds
-    // cards, and the hint bar rests on the view border row above them.
+    // Pinned bottom: terminal above, 1-row border, nav band below. Every band row holds
+    // cards, and the prefix hint rests on the border row above them.
     let port = Rect::new(0, 0, 40, 100);
     let b = compute_regions(
         port,
         NavSize::visible(48).with_position(NavPosition::Bottom),
-        1,
     );
-    assert_eq!(b.layout, ViewLayout::Band);
+    assert_eq!(b.layout, ViewLayout::Horizontal);
     assert_eq!(b.terminal, Rect::new(0, 0, 40, 59));
-    assert_eq!(b.view_border, Rect::new(0, 59, 40, 1));
-    assert_eq!(b.tree, Rect::new(0, 60, 40, 40));
-    assert_eq!(b.hint_bar, b.view_border);
+    assert_eq!(b.nav_border, Rect::new(0, 59, 40, 1));
+    assert_eq!(b.nav, Rect::new(0, 60, 40, 40));
+    assert_eq!(b.prefix_hint, b.nav_border);
 }
 
 #[tokio::test]
@@ -5850,7 +5871,7 @@ fn the_armed_key_list_covers_the_grid_beside_the_nav_and_moves_no_card() {
     );
     let (list, _) = plan.key_list.clone().expect("the key list is open");
     assert!(list.x > NAV_WIDTH, "it opens past the nav: {list:?}");
-    assert_eq!(list.bottom(), 30, "against the indicator's row: {list:?}");
+    assert_eq!(list.y, 0, "at the card flow's start: {list:?}");
     // Covering, not just recolouring: the grid's own characters would otherwise show
     // through the cells the keys do not reach.
     let text: String = (list.y..list.bottom())
@@ -5870,10 +5891,10 @@ fn the_armed_key_list_covers_the_grid_beside_the_nav_and_moves_no_card() {
 }
 
 #[tokio::test]
-async fn with_the_nav_hidden_the_filter_opens_at_the_window_bottom_left() {
+async fn with_the_nav_hidden_the_filter_opens_at_the_window_bottom_right() {
     // An open input must be seen even with the nav hidden (auto-hide + terminal
-    // focus): its box opens where the key list does there, the window's bottom left,
-    // over the grid.
+    // focus): its box opens where the key list does there, the window's bottom right,
+    // the corner farthest from where the nav would sit, over the grid.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.open_input(InputMode::Filter, &mut state);
@@ -5893,8 +5914,8 @@ async fn with_the_nav_hidden_the_filter_opens_at_the_window_bottom_left() {
         .map(|x| term.backend().buffer()[(x, y)].symbol())
         .collect();
     assert!(
-        row.starts_with("╰") && row.contains("Enter apply · Esc cancel ╯"),
-        "with the nav hidden the filter box opens at the window's bottom left: {row:?}"
+        row.ends_with('╯') && row.contains("Enter apply · Esc cancel"),
+        "with the nav hidden the filter box opens at the window's bottom right: {row:?}"
     );
 }
 
@@ -5933,7 +5954,7 @@ async fn a_jump_holds_out_of_range_numbers_and_vets_at_enter() {
         "the refused number shows in the jump box: {row:?}"
     );
     assert!(h.popup_row(0).contains(" 1-"), "the meta keeps the range");
-    assert_eq!(h.hint_bar_text(), " C-g", "the bar keeps resting");
+    assert_eq!(h.prefix_hint_text(), " C-g", "the chip keeps resting");
     // A fresh edit clears the refusal and the input line returns.
     h.key(KeyCode::Backspace).await;
     // In range, the popup opens and each further digit is taken as typed.
@@ -6197,13 +6218,14 @@ fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
     );
 
     // Armed: the prefix must still answer, so its key list opens over the window's
-    // bottom left even with the nav hidden.
+    // bottom right even with the nav hidden, the corner farthest from where the nav
+    // would sit.
     state.chrome.set_armed(true);
     draw(&mut term, &mut sw, &state);
     let armed = row(&term);
     assert!(
-        armed.starts_with('╰') && armed.contains("╯X"),
-        "an armed prefix opens its key list over a hidden nav: {armed:?}"
+        armed.ends_with('╯'),
+        "an armed prefix opens its key list over a hidden nav's bottom right: {armed:?}"
     );
     state.chrome.set_armed(false);
 
@@ -6219,18 +6241,18 @@ fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
 }
 
 #[tokio::test]
-async fn hint_bar_and_help_reflect_new_model() {
+async fn prefix_hint_and_help_reflect_new_model() {
     let mut h = Harness::new(sample());
-    // At rest the bar names the prefix alone. The keys it unlocks are one keypress away,
-    // so they do not crowd the nav's bottom row.
-    let resting = h.hint_bar_text();
+    // At rest the chip names the prefix alone. The keys it unlocks are one keypress away,
+    // so they do not crowd the nav's first row.
+    let resting = h.prefix_hint_text();
     assert_eq!(resting.trim(), "C-g");
 
-    // Armed, the key list beside it names exactly those keys, and the bar keeps the
+    // Armed, the key list beside it names exactly those keys, and the chip keeps the
     // prefix.
     h.state.chrome.set_armed(true);
     h.draw();
-    assert_eq!(h.state.chrome.hint_bar_text(200, &h.state).trim(), "C-g");
+    assert_eq!(h.prefix_hint_text().trim(), "C-g");
     let armed = h.text();
     assert!(
         armed.contains("quit") && armed.contains("help"),
@@ -6270,14 +6292,14 @@ async fn hint_bar_and_help_reflect_new_model() {
 }
 
 #[tokio::test]
-async fn view_border_uses_configured_colors() {
-    // The `[ui] view-*-border-style` colours drive the whole view border: active for
+async fn nav_border_uses_configured_colors() {
+    // The `[ui] view-*-border-style` colours drive the whole nav border: active for
     // nav focus, inactive for terminal focus, and hover overrides either state.
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let sw = Switcher::new(&mut state);
-    state.chrome.set_view_border_colors(ViewBorderColors {
+    state.chrome.set_nav_border_colors(NavBorderColors {
         active: Color::Blue,
         inactive: Color::Gray,
         hover: Color::Red,
@@ -6309,7 +6331,7 @@ async fn view_border_uses_configured_colors() {
     assert_eq!(fg(&buf, bottom), Color::Gray);
 
     // Hovering the rule overrides with the configured hover colour.
-    state.chrome.set_view_border_hovered(true);
+    state.chrome.set_nav_border_hovered(true);
     term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
@@ -6321,7 +6343,7 @@ async fn view_border_uses_configured_colors() {
 }
 
 #[tokio::test]
-async fn view_border_uses_one_color_for_both_focus_states() {
+async fn nav_border_uses_one_color_for_both_focus_states() {
     let pal = crate::ui::palette::Palette::default();
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
@@ -6335,7 +6357,7 @@ async fn view_border_uses_one_color_for_both_focus_states() {
     term.draw(|f| sw.render_test(f, None, true, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
+    assert_eq!(buf[(x, top)].symbol(), "│", "nav border still drawn");
     assert_eq!(
         fg(&buf, bottom),
         pal.disabled,
@@ -6374,15 +6396,14 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
             position: NavPosition::Left,
             collapsed: true,
         },
-        1,
     );
     assert_eq!(width, 3, "exactly the prefix wide");
-    assert_eq!(left.tree, Rect::default());
-    assert_eq!(left.hint_bar, Rect::new(0, 29, width, 1));
+    assert_eq!(left.nav, Rect::default());
+    assert_eq!(left.prefix_hint, Rect::new(0, 0, width, 1));
     assert_eq!(
-        left.view_border,
-        Rect::new(width - 1, 0, 1, 29),
-        "on the prefix's last column, above the prefix row"
+        left.nav_border,
+        Rect::new(width - 1, 1, 1, 29),
+        "on the prefix's last column, below the prefix row"
     );
     assert_eq!(left.terminal, Rect::new(width, 0, 140 - width, 30));
 
@@ -6395,14 +6416,13 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
             position: NavPosition::Right,
             collapsed: true,
         },
-        1,
     );
-    assert_eq!(right.tree, Rect::default());
-    assert_eq!(right.hint_bar, Rect::new(140 - width, 29, width, 1));
+    assert_eq!(right.nav, Rect::default());
+    assert_eq!(right.prefix_hint, Rect::new(140 - width, 0, width, 1));
     assert_eq!(
-        right.view_border,
-        Rect::new(140 - width, 0, 1, 29),
-        "on the prefix's terminal-side column, above the prefix row"
+        right.nav_border,
+        Rect::new(140 - width, 1, 1, 29),
+        "on the prefix's terminal-side column, below the prefix row"
     );
     assert_eq!(right.terminal, Rect::new(0, 0, 140 - width, 30));
 
@@ -6413,16 +6433,15 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
             position: NavPosition::Top,
             ..NavSize::visible(48)
         },
-        1,
     );
     assert!(
-        top.tree.is_empty(),
-        "a collapsed band is the seam line only"
+        top.nav.is_empty(),
+        "a collapsed horizontal nav is the border line only"
     );
-    assert_eq!(top.view_border, Rect::new(0, 0, 140, 1));
+    assert_eq!(top.nav_border, Rect::new(0, 0, 140, 1));
     assert_eq!(
-        top.hint_bar, top.view_border,
-        "the prefix rests on the seam"
+        top.prefix_hint, top.nav_border,
+        "the prefix rests on the border row"
     );
     assert_eq!(top.terminal, Rect::new(0, 1, 140, 29));
 
@@ -6433,39 +6452,21 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
             position: NavPosition::Bottom,
             ..NavSize::visible(48)
         },
-        1,
     );
     assert!(
-        bottom.tree.is_empty(),
-        "a collapsed band is the seam line only"
+        bottom.nav.is_empty(),
+        "a collapsed horizontal nav is the border line only"
     );
     assert_eq!(bottom.terminal, Rect::new(0, 0, 140, 29));
-    assert_eq!(bottom.view_border, Rect::new(0, 29, 140, 1));
+    assert_eq!(bottom.nav_border, Rect::new(0, 29, 140, 1));
     assert_eq!(
-        bottom.hint_bar, bottom.view_border,
-        "the prefix rests on the seam"
+        bottom.prefix_hint, bottom.nav_border,
+        "the prefix rests on the border row"
     );
-}
-
-#[test]
-fn a_floating_bar_opens_from_the_prefix_indicator_toward_the_terminal() {
-    use super::render::hint_bar_rect;
-    let area = Rect::new(0, 0, 24, 8);
-    // A side column opens across the whole row of its indicator.
-    let left = hint_bar_rect(Rect::new(0, 7, 7, 1), area, true);
-    assert_eq!(left, Rect::new(0, 7, 24, 1));
-    let right = hint_bar_rect(Rect::new(17, 7, 7, 1), area, true);
-    assert_eq!(right, Rect::new(0, 7, 24, 1));
-    // A hidden nav has no indicator: the bar borrows the window's bottom row.
-    let hidden = hint_bar_rect(Rect::default(), area, true);
-    assert_eq!(hidden, Rect::new(0, 7, 24, 1));
-    // At rest the bar is the indicator itself.
-    let rest = hint_bar_rect(Rect::new(0, 7, 7, 1), area, false);
-    assert_eq!(rest, Rect::new(0, 7, 7, 1));
 }
 
 #[tokio::test]
-async fn view_border_color_is_independent_of_nav_position() {
+async fn nav_border_color_is_independent_of_nav_position() {
     let pal = crate::ui::palette::Palette::default();
     let fg = |buf: &Buffer, x: u16, y: u16| buf[(x, y)].fg;
 
@@ -6514,9 +6515,9 @@ async fn view_border_color_is_independent_of_nav_position() {
     let mut state = crate::state::State::from_scan(sample());
     let sw = Switcher::new(&mut state);
     state.chrome.set_nav_position(NavPosition::Bottom);
-    // The far end of the seam row holds the resting prefix, so the right sample stands
-    // clear of it.
-    let (y, left, right_col) = (59u16, 0u16, 30u16);
+    // The border row's left end holds the resting prefix chip, so the left sample
+    // stands clear of it.
+    let (y, left, right_col) = (59u16, 10u16, 30u16);
 
     // Nav focused: both ends use the active colour.
     term.draw(|f| sw.render_test(f, None, false, bottom, &state))
@@ -6550,14 +6551,14 @@ async fn view_border_color_is_independent_of_nav_position() {
 }
 
 #[tokio::test]
-async fn view_border_highlights_on_hover() {
+async fn nav_border_highlights_on_hover() {
     // Hover swaps the rule to the HEAVY vertical (┃) - box-drawing has no bold form,
     // so the thicker glyph IS the weight cue - and recolours it brighter. No fill.
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
     let mut state = crate::state::State::from_scan(sample());
     let sw = Switcher::new(&mut state);
     let x = NAV_WIDTH;
-    state.chrome.set_view_border_hovered(true);
+    state.chrome.set_nav_border_hovered(true);
     term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
@@ -6581,7 +6582,7 @@ async fn view_border_highlights_on_hover() {
 }
 
 #[tokio::test]
-async fn view_border_glyph_reflects_auto_hide_mode() {
+async fn nav_border_glyph_reflects_auto_hide_mode() {
     // ║ (double) when auto-hide-nav mode is on, │ (single) when off - so a visible
     // tree that will vanish on blur is distinguishable from a pinned one.
     let backend = TestBackend::new(140, 30);
@@ -6712,7 +6713,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
         sw.begin_popup_drag_in_plan(&before_plan, bx, by, &state),
         "press on the border grabs"
     );
-    sw.drag_popup(bx + 5, by - 1);
+    sw.drag_popup(bx - 5, by - 1);
     let after_plan = sw.layout(
         Rect::new(0, 0, 140, 80),
         NavSize::hidden(NAV_WIDTH),
@@ -6721,7 +6722,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
     );
     term.draw(|f| sw.render(f, None, false, &state, &after_plan))
         .unwrap();
-    assert_eq!(after_plan.popup_rect.x, before.x + 5, "moved right by 5");
+    assert_eq!(after_plan.popup_rect.x, before.x - 5, "moved left by 5");
     assert_eq!(after_plan.popup_rect.y, before.y - 1, "moved up by 1");
     sw.end_popup_drag();
     assert!(!sw.popup_drag_active());
@@ -6807,7 +6808,7 @@ fn a_press_anywhere_on_a_popup_grabs_it_and_outside_does_not() {
         sw.begin_popup_drag_in_plan(&plan, r.x + 2, r.y + 4, &state),
         "an interior press grabs the popup"
     );
-    sw.drag_popup(r.x + 12, r.y + 2);
+    sw.drag_popup(r.x - 12, r.y + 2);
     sw.end_popup_drag();
     let moved = sw.layout(
         Rect::new(0, 0, 140, 30),
@@ -6817,7 +6818,7 @@ fn a_press_anywhere_on_a_popup_grabs_it_and_outside_does_not() {
     );
     assert_eq!(
         moved.popup_rect.x,
-        r.x + 10,
+        r.x - 14,
         "the popup follows the pointer"
     );
 }
@@ -7019,11 +7020,11 @@ fn a_click_on_a_help_tab_executes_it_and_a_drag_from_it_moves_the_popup() {
     let before = h.plan.popup_rect;
     let (col, row) = h.tab_cell(0, false);
     assert!(h.sw.begin_popup_drag_in_plan(&h.plan, col, row, &h.state));
-    h.sw.drag_popup(col + 4, row);
+    h.sw.drag_popup(col - 4, row);
     h.sw.end_popup_drag_in_plan(&h.plan, &mut h.state);
     assert_eq!(h.help().1, Some(2), "the drag executed nothing");
     h.paint();
-    assert_eq!(h.plan.popup_rect.x, before.x + 4, "the popup moved");
+    assert_eq!(h.plan.popup_rect.x, before.x - 4, "the popup moved");
     // A click between tabs names no tab and executes nothing.
     let (col, row) = h.tab_cell(0, true);
     assert!(h.sw.begin_popup_drag_in_plan(&h.plan, col, row, &h.state));
@@ -7087,14 +7088,20 @@ async fn a_small_window_shows_the_whole_help_by_scrolling() {
     h.sw.show_help(&mut h.state);
     h.draw();
     let r = h.plan.popup_rect;
+    if std::env::var("XMUX_DEBUG").is_ok() {
+        println!("popup rect={rect:?}", rect = r);
+    }
     assert!(r.width <= 40 && r.height <= 12 && !r.is_empty(), "{r:?}");
     let inner = (r.width - 2, r.height - 2);
     let mut seen = String::new();
+    // The body visible at the top first, then each ↓ reveals one new body row at the
+    // bottom; capturing just that row keeps the accumulated body contiguous even when
+    // the popup holds several body rows at once.
+    seen.push_str(&popup_rows(&h)[modal::help_lead(inner.1)..].concat());
     for _ in 0..200 {
-        let rows = popup_rows(&h);
-        seen.push_str(&rows[modal::help_lead(inner.1)..].concat());
         h.sw.feed_reader_key(b"\x1b[B", 0x07, &mut false, inner, &mut h.state);
         h.draw();
+        seen.push_str(&popup_rows(&h)[inner.1 as usize - 1..].concat());
     }
     let seen: String = seen.split_whitespace().collect();
     let squeeze = |t: &str| t.split_whitespace().collect::<String>();
@@ -7301,11 +7308,7 @@ async fn the_filter_opens_as_a_box_where_the_key_list_opens() {
     let pop = h.plan.popup_rect;
     let term = h.plan.regions.terminal;
     assert_eq!(pop.x, term.x, "beside the column");
-    assert_eq!(
-        pop.bottom(),
-        h.plan.hint_bar_rect.bottom(),
-        "against the indicator row"
-    );
+    assert_eq!(pop.y, term.y, "against the nav border row");
     assert!(h.popup_row(0).contains("╭ filter "), "{}", h.popup_row(0));
     assert!(
         h.popup_row(2).contains("Enter apply · Esc cancel ╯"),
@@ -7485,7 +7488,7 @@ fn selection_survives_a_rebuild() {
 fn render_nav_width_zero_gives_terminal_full_width() {
     use crate::display::grid::Grid;
     // A settled selection is enough. With nav_width == 0 the tree column and
-    // its view border are gone, so the terminal view owns the left edge (x=0): the
+    // its nav border are gone, so the terminal view owns the left edge (x=0): the
     // live grid's content begins at column 0.
     let mut state = crate::state::State::from_scan(sample());
     let sw = Switcher::new(&mut state);
@@ -7494,15 +7497,15 @@ fn render_nav_width_zero_gives_terminal_full_width() {
     let mut g = Grid::new(10, 60);
     g.feed(b"EDGE-CONTENT");
 
-    // nav_width == 0 → no tree column, no view border: the terminal view starts at x=0.
+    // nav_width == 0 → no tree column, no nav border: the terminal view starts at x=0.
     term.draw(|f| sw.render_test(f, Some(&g), true, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    // Column 0 row 0 must NOT be the view border rule '│' (the view border is gone).
+    // Column 0 row 0 must NOT be the nav border rule '│' (the nav border is gone).
     assert_ne!(
         buf[(0, 0)].symbol(),
         "│",
-        "view border must be absent when tree hidden"
+        "nav border must be absent when tree hidden"
     );
     // The live grid content begins at x=0, proving the terminal view owns the left edge.
     let row0: String = (0..60).map(|x| buf[(x, 0)].symbol().to_string()).collect();
@@ -7511,14 +7514,14 @@ fn render_nav_width_zero_gives_terminal_full_width() {
         "terminal view fills row 0 from x=0: {row0:?}"
     );
 
-    // Sanity: with a normal width the view border rule IS present at the tree edge.
+    // Sanity: with a normal width the nav border rule IS present at the tree edge.
     term.draw(|f| sw.render_test(f, Some(&g), true, NavSize::visible(20), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
         buf[(20, 0)].symbol(),
         "│",
-        "view border present at x=nav_width when shown"
+        "nav border present at x=nav_width when shown"
     );
 }
 
@@ -7590,7 +7593,7 @@ fn help_lines_reflects_configured_prefix() {
 #[test]
 fn select_address_moves_cursor_to_named_session() {
     use crate::session::Session;
-    use crate::ui::tree::Group;
+    use crate::ui::cards::Group;
     let scan = Scan {
         groups: vec![Group {
             host: "jup".into(),
@@ -7641,22 +7644,6 @@ fn select_address_moves_cursor_to_named_session() {
     );
 }
 
-#[test]
-fn fit_selects_by_display_width() {
-    // "한국" has display width 4. A budget of 3 cannot fit it; a budget of 4 can.
-    let cands = vec!["한국".to_string(), "x".to_string()];
-    assert_eq!(
-        fit(&cands, 3),
-        "x",
-        "width-4 candidate rejected at budget 3"
-    );
-    assert_eq!(
-        fit(&cands, 4),
-        "한국",
-        "width-4 candidate accepted at budget 4"
-    );
-}
-
 // --- the portrait band's column flow ------------------------------------
 
 /// `n` hosts of two sessions each, named so every card is the same width.
@@ -7698,7 +7685,7 @@ fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, RenderPlan, Terminal<TestB
         .unwrap();
     assert_eq!(
         plan.layout,
-        ViewLayout::Band,
+        ViewLayout::Horizontal,
         "the backend must be portrait"
     );
     (sw, plan, term)
@@ -7755,7 +7742,7 @@ async fn moving_selection_does_not_reflow_machine_cards_in_a_band() {
         .collect(),
     };
     let mut h = Harness::new_sized(scan, 60, 12);
-    assert_eq!(h.plan.layout, ViewLayout::Band);
+    assert_eq!(h.plan.layout, ViewLayout::Horizontal);
     let before = cells_of(&h.plan);
     h.key(KeyCode::Down).await;
     for (i, rect) in cells_of(&h.plan) {
@@ -7908,7 +7895,7 @@ fn hidden_card_counts_use_the_focused_nav_border_color() {
             &[("aa", 2), ("bb", 3), ("cc", 2)],
             26,
         ));
-        state.chrome.set_view_border_colors(ViewBorderColors {
+        state.chrome.set_nav_border_colors(NavBorderColors {
             active: Color::Blue,
             inactive: Color::Gray,
             hover: Color::Red,
@@ -7924,7 +7911,7 @@ fn hidden_card_counts_use_the_focused_nav_border_color() {
             term.draw(|f| sw.render(f, None, false, &state, &plan))
                 .unwrap();
             let buf = term.backend().buffer();
-            let y = plan.regions.view_border.y;
+            let y = plan.regions.nav_border.y;
             let arrow = if last { "‹" } else { "›" };
             let x = (0..buf.area.width)
                 .find(|x| buf[(*x, y)].symbol() == arrow)
@@ -7957,8 +7944,8 @@ fn the_hidden_columns_are_counted_on_the_seam() {
     };
     let at_left = row(&term);
     assert!(
-        at_left.trim_end().ends_with("C-g"),
-        "the prefix owns the far end of the seam: {at_left:?}"
+        at_left.starts_with(" C-g"),
+        "the prefix starts the border row: {at_left:?}"
     );
     assert!(
         at_left.contains(" \u{203a}"),
@@ -8007,11 +7994,14 @@ fn the_portrait_prefix_is_a_label_until_the_prefix_is_armed() {
         let row: String = (0..buf.area.width)
             .map(|x| buf[(x, seam_y)].symbol())
             .collect();
-        assert!(row.contains("C-g"), "the seam names the prefix: {row:?}");
+        assert!(
+            row.contains("C-g"),
+            "the border row names the prefix: {row:?}"
+        );
         assert_eq!(
-            buf[(buf.area.width - 1, seam_y)].bg,
+            buf[(4, seam_y)].bg,
             bar_bg,
-            "on its own background at the right end: {row:?}"
+            "on its own background at the row's left end: {row:?}"
         );
         let lit = (0..buf.area.width)
             .filter(|x| buf[(*x, seam_y)].bg == bar_bg)
@@ -8022,8 +8012,8 @@ fn the_portrait_prefix_is_a_label_until_the_prefix_is_armed() {
             buf.area.width
         );
     }
-    // Arming the prefix opens the key list below the seam at its right end, where the
-    // indicator is, and the seam keeps the prefix.
+    // Arming the prefix opens the key list under the border row at its left end, where
+    // the chip is, and the border row keeps the prefix.
     let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
     let sw = Switcher::new(&mut state);
     state.chrome.set_armed(true);
@@ -8036,13 +8026,13 @@ fn the_portrait_prefix_is_a_label_until_the_prefix_is_armed() {
             .collect::<String>()
     };
     assert!(
-        text(seam_y + 1).trim_end().ends_with('╮') && text(seam_y + 1).contains("C-g"),
-        "the box's titled top border runs under the seam to its right end: {:?}",
+        text(seam_y + 1).starts_with("╭") && text(seam_y + 1).contains("C-g"),
+        "the box's titled top border runs under the border row from its left end: {:?}",
         text(seam_y + 1)
     );
     assert!(
-        text(seam_y).trim_end().ends_with("C-g"),
-        "the seam keeps the prefix: {:?}",
+        text(seam_y).starts_with(" C-g"),
+        "the border row keeps the prefix: {:?}",
         text(seam_y)
     );
 }
@@ -8061,13 +8051,13 @@ fn the_side_lists_overflow_thickens_the_seam_and_spares_every_card() {
     );
     term.draw(|f| sw.render(f, None, false, &state, &plan))
         .unwrap();
-    assert_eq!(plan.layout, ViewLayout::Column);
+    assert_eq!(plan.layout, ViewLayout::Vertical);
     let buf = term.backend().buffer();
     let seam: String = (0..buf.area.height)
         .map(|y| buf[(NAV_WIDTH, y)].symbol())
         .collect();
     assert!(seam.contains('┃'), "the seam thickens: {seam:?}");
-    let thumb = plan.seam_thumb;
+    let thumb = plan.border_thumb;
     let thick_rows: Vec<u16> = (0..buf.area.height)
         .filter(|&y| buf[(NAV_WIDTH, y)].symbol() == "┃")
         .collect();

@@ -1,6 +1,6 @@
 //! The app's focus state machine. Every state draws the SAME split (the nav on
 //! the left, the selection session's live grid on the right); focus only chooses
-//! where keys go and which view border rule is highlighted. There are four states
+//! where keys go and which nav border rule is highlighted. There are four states
 //! along two dimensions: the VIEW dimension (`Nav` ⇄ `Terminal`, driven by prefix-key
 //! focus moves and a click on the unfocused view) and a MODAL dimension layered on top
 //! (`Popup` for every modal popup, and `Menu`, a context-menu state that no input opens:

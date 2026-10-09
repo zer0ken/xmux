@@ -64,24 +64,24 @@ against, naming no source file, function, or test.
   names a mux only once that mux is confirmed.
 - **FR-B8** - The session xmux itself runs in is never mirrored into the terminal view
   and shows a screen saying why instead, while its card stays selectable.
-- **FR-B9** - The nav carries a prefix indicator that names the prefix at rest and opens
+- **FR-B9** - The nav carries a prefix hint that names the prefix at rest and opens
   the key list over the terminal view when the prefix is armed, without moving any card.
 - **FR-B10** - Every card carries a number, and `prefix <digit>` jumps to the card with
   that number.
 - **FR-B11** - Every colour xmux paints is an ANSI-16 slot chosen by the `[ui] theme`
   (`auto-dark` or `auto-light`), so the terminal's own scheme resolves every hue.
 - **FR-B12** - A group is drawn the same way at every nav position, as a `{machine}/{mux}`
-  title over its indented cards, flowing into whole-section columns in a band.
-- **FR-B13** - The nav marks off-screen cards on its seam line only, with a thickened
-  `┃` stretch beside a side list and `‹ N` / `N ›` counts on a band.
+  title over its indented cards, flowing into whole-section columns in a horizontal nav.
+- **FR-B13** - The nav marks off-screen cards on its nav border only, with a thickened
+  `┃` stretch beside a side list and `‹ N` / `N ›` counts on a horizontal nav.
 - **FR-B14** - With the prefix, the arrow pair facing the terminal focuses the terminal
   and the other pair focuses the nav, while bare arrows move between cards.
 - **FR-B15** - The nav's side is a placement pinned at runtime by `prefix p` when one
   exists, else the `[ui] nav-position` default, and the nav never moves on its own.
-- **FR-B16** - The nav's width, band height, side, and collapsed state are live and
-  persisted, set by resize keys, border drag, `prefix z`, and auto-hide.
-- **FR-B17** - The resting prefix indicator is a label sized to its text, and the hint
-  bar carries only advice for the current state, never the result of an action.
+- **FR-B16** - The nav's width, horizontal nav height, side, and collapsed state are live and
+  persisted, set by resize keys, nav border drag, `prefix z`, and auto-hide.
+- **FR-B17** - The prefix hint is a chip naming the prefix, and the active filter paints
+  its match cell by cell; a result of an action is a toast, never advice.
 - **FR-B18** - A prefix interaction lasts until the function it starts ends, and the key
   list and an auto-hidden nav show for exactly that span. While the terminal view holds
   the focus, a nav that would leave it smaller than 24 columns by 4 rows hides as an
@@ -140,7 +140,7 @@ against, naming no source file, function, or test.
 - **FR-B37** - While the nav holds the focus, the selected standalone card may end in
   `⏎` when it fits inside the card without covering text or padding, and a selected
   part of a shared item carries none; a move of the selection leaves the
-  hint bar as it is.
+  prefix hint as it is.
 - **FR-B38** - The help lists every key by section and a legend of every glyph, with
   section tabs, scrolling, and case-insensitive search, closed by `Esc` or `prefix ?`.
 - **FR-B41** - Every popup body row wraps to the popup's width, except a text field, and

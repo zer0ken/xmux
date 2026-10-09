@@ -391,7 +391,7 @@ mod tests {
         assert!(matches!(parse_notif("%client-detached"), Notif::Other));
         // `%unlinked-window-*` (a structural change in a session that is not the
         // control client's own) maps to the same variants as the linked form so the
-        // app refetches the tree for it too.
+        // app refetches the card list for it too.
         assert!(matches!(
             parse_notif("%unlinked-window-add @9"),
             Notif::WindowAdd { window: "@9" }

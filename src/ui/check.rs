@@ -15,17 +15,17 @@ fn cause(kind: FailureKind, palette: &Palette) -> (&'static str, Style, &'static
         FailureKind::Blocked => (
             crate::ui::chrome::BLOCK_MARK,
             Style::default().fg(palette.warning),
-            crate::ui::tree::host_state_word(false, true, false, false),
+            crate::ui::cards::host_state_word(false, true, false, false),
         ),
         FailureKind::Unreachable => (
             crate::ui::chrome::UNREACHABLE_MARK,
             Style::default().fg(palette.error),
-            crate::ui::tree::host_state_word(false, false, false, true),
+            crate::ui::cards::host_state_word(false, false, false, true),
         ),
         FailureKind::ListFailed => (
             crate::ui::chrome::LIST_FAILED_MARK,
             Style::default().fg(palette.primary),
-            crate::ui::tree::host_state_word(false, false, true, false),
+            crate::ui::cards::host_state_word(false, false, true, false),
         ),
     }
 }

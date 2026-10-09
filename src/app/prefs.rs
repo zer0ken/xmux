@@ -15,11 +15,11 @@ use crate::ui::switcher::NavPosition;
 const LAST_SESSION_FILE: &str = "last_session";
 
 /// The file under the xmux dir holding the nav view width the user last set (a resize
-/// key or a view border drag), so the next launch restores it instead of the default.
+/// key or a nav border drag), so the next launch restores it instead of the default.
 const NAV_WIDTH_FILE: &str = "nav_width";
 
-/// The file under the xmux dir holding the nav height (portrait band layout) the
-/// user last set by dragging the horizontal view border, so the next launch restores it.
+/// The file under the xmux dir holding the nav height (portrait horizontal nav layout) the
+/// user last set by dragging the horizontal nav border, so the next launch restores it.
 const NAV_HEIGHT_FILE: &str = "nav_height";
 
 /// The file under the xmux dir holding the auto-hide-nav mode the user last set
@@ -88,16 +88,6 @@ pub fn save_ssh_logins(xmux_dir: &Path, logins: &HashMap<String, RecordedLogin>)
 }
 
 /// A marker written after the first interactive key has introduced the prefix.
-const FIRST_KEY_HELP_FILE: &str = "first_key_help_seen";
-
-pub fn first_key_help_seen(xmux_dir: &Path) -> bool {
-    xmux_dir.join(FIRST_KEY_HELP_FILE).exists()
-}
-
-pub fn mark_first_key_help_seen(xmux_dir: &Path) {
-    let _ = std::fs::write(xmux_dir.join(FIRST_KEY_HELP_FILE), "1");
-}
-
 /// Reads the persisted collapsed state. Missing or unrecognised values mean expanded.
 pub fn load_nav_collapsed(xmux_dir: &Path) -> bool {
     std::fs::read_to_string(xmux_dir.join(NAV_COLLAPSED_FILE))
@@ -155,27 +145,27 @@ pub fn save_nav_position(xmux_dir: &Path, pinned: Option<NavPosition>) {
     let _ = std::fs::write(xmux_dir.join(NAV_POSITION_FILE), word);
 }
 
-/// Reads the persisted tree width. `None` when the file is absent, unreadable, or
+/// Reads the persisted navigation view width. `None` when the file is absent, unreadable, or
 /// not a `u16` - the caller falls back to the default width.
 pub fn load_nav_width(xmux_dir: &Path) -> Option<u16> {
     let raw = std::fs::read_to_string(xmux_dir.join(NAV_WIDTH_FILE)).ok()?;
     raw.trim().parse::<u16>().ok()
 }
 
-/// Persists the tree width. Best-effort: a write failure only loses the next
+/// Persists the navigation view width. Best-effort: a write failure only loses the next
 /// launch's width restore.
 pub fn save_nav_width(xmux_dir: &Path, width: u16) {
     let _ = std::fs::write(xmux_dir.join(NAV_WIDTH_FILE), width.to_string());
 }
 
-/// Reads the persisted band-layout tree height. `None` when absent or unparsable - the
+/// Reads the persisted horizontal nav's height. `None` when absent or unparsable - the
 /// caller falls back to the auto height (~40% of the body).
 pub fn load_nav_height(xmux_dir: &Path) -> Option<u16> {
     let raw = std::fs::read_to_string(xmux_dir.join(NAV_HEIGHT_FILE)).ok()?;
     raw.trim().parse::<u16>().ok()
 }
 
-/// Persists the band-layout tree height. Best-effort: a write failure only loses the
+/// Persists the horizontal nav's height. Best-effort: a write failure only loses the
 /// next launch's height restore.
 pub fn save_nav_height(xmux_dir: &Path, height: u16) {
     let _ = std::fs::write(xmux_dir.join(NAV_HEIGHT_FILE), height.to_string());
@@ -196,15 +186,6 @@ pub fn save_last_session(xmux_dir: &Path, address: &Address) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn first_key_help_marker_survives_the_run() {
-        let dir = temp_dir("first-key-help");
-        assert!(!first_key_help_seen(&dir));
-        mark_first_key_help_seen(&dir);
-        assert!(first_key_help_seen(&dir));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("xmux-state-{}-{tag}", std::process::id()));

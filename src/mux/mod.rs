@@ -1571,7 +1571,7 @@ Usage: zellij [OPTIONS]",
 
     /// A poll sweep whose enumeration ERRORS must still surface `err` on the emitted
     /// `Sessions` event: the event payload is the signal that a transient failure
-    /// happened (the tree shows it, attachments are kept), not just a debug-log line. A
+    /// happened (the navigation view shows it, attachments are kept), not just a debug-log line. A
     /// remote psmux enumerates via list-sessions over ssh, so a failed run becomes
     /// `Sessions { err: Some(_) }`.
     #[tokio::test]

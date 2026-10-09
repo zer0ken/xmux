@@ -186,7 +186,7 @@ impl TermInput {
                     // the chord (tmux `send-prefix` parity). A terminal reports no key-up,
                     // so a held prefix's autorepeat is byte-identical to a second tap and
                     // takes this path too: holding the prefix streams literals and blinks
-                    // the hint bar. xmux never asks the terminal for key releases for its
+                    // the prefix hint. xmux never asks the terminal for key releases for its
                     // own reading: the keyboard protocol flags in force are the session's,
                     // and binding the prefix to releases would tie it to what the terminal,
                     // and every enclosing mux, chooses to pass through.

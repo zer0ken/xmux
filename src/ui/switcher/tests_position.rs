@@ -1,5 +1,5 @@
 //! The nav's position-independent layout, checked at every attachment side on fixed
-//! backend sizes: the group grammar, the one seam, the prefix indicator, the overflow
+//! backend sizes: the group grammar, the one seam, the prefix hint, the overflow
 //! marks, the collapsed shape, the one-row band, and the hit-test that reads them back.
 
 use super::*;
@@ -19,7 +19,7 @@ const ALL: [NavPosition; 4] = [
 ];
 
 fn is_band(position: NavPosition) -> bool {
-    position.layout() == ViewLayout::Band
+    position.layout() == ViewLayout::Horizontal
 }
 
 fn nav_at(position: NavPosition) -> NavSize {
@@ -223,17 +223,17 @@ impl Shot {
                 x: 0,
                 width: W,
                 ..if self.nav.position == NavPosition::Top {
-                    Rect::new(0, 0, W, r.view_border.y)
+                    Rect::new(0, 0, W, r.nav_border.y)
                 } else {
-                    Rect::new(0, r.view_border.bottom(), W, H - r.view_border.bottom())
+                    Rect::new(0, r.nav_border.bottom(), W, H - r.nav_border.bottom())
                 }
             }
         } else if self.nav.position == NavPosition::Left {
-            Rect::new(0, 0, r.view_border.x, H)
+            Rect::new(0, 0, r.nav_border.x, H)
         } else {
-            Rect::new(r.view_border.right(), 0, W - r.view_border.right(), H)
+            Rect::new(r.nav_border.right(), 0, W - r.nav_border.right(), H)
         };
-        nav.union(r.view_border)
+        nav.union(r.nav_border)
     }
 
     fn row(&self, y: u16, x0: u16, x1: u16) -> String {
@@ -267,7 +267,7 @@ impl Shot {
     }
 
     fn seam_text(&self) -> String {
-        self.area_text(self.plan.regions.view_border)
+        self.area_text(self.plan.regions.nav_border)
     }
 }
 
@@ -289,7 +289,7 @@ fn pl1_group_titles_are_dim_and_their_cards_indent_at_every_position() {
             .unwrap_or_else(|| panic!("{position:?}: the card is painted"));
         assert_eq!(cy, ty + 1, "{position:?}: the card hangs under its title");
         assert_eq!(cx, tx + 2, "{position:?}: the card indents under its title");
-        let after = shot.row(ty, tx + 9, shot.plan.regions.tree.right());
+        let after = shot.row(ty, tx + 9, shot.plan.regions.nav.right());
         assert!(
             !after.contains('─') && !after.contains('│'),
             "{position:?}: no rule or connector marks the group: {after:?}"
@@ -340,30 +340,30 @@ fn pl2_the_selected_card_is_highlighted_in_both_focus_states() {
 }
 
 #[test]
-fn pl3_the_prefix_sits_on_the_column_bottom_or_the_band_seam() {
+fn pl3_the_prefix_starts_at_the_nav_start() {
     for position in ALL {
         let shot = Shot::new(two_groups(), nav_at(position), false);
         if is_band(position) {
             let seam = shot.seam_text();
             assert!(
-                seam.trim_end().ends_with("C-g"),
-                "{position:?}: the seam ends with the prefix: {seam:?}"
+                seam.starts_with(" C-g"),
+                "{position:?}: the border row starts with the prefix: {seam:?}"
             );
             assert_eq!(
-                shot.plan.regions.tree.height, BAND_H,
+                shot.plan.regions.nav.height, BAND_H,
                 "{position:?}: every band row holds cards"
             );
             assert!(
-                !shot.area_text(shot.plan.regions.tree).contains("C-g"),
+                !shot.area_text(shot.plan.regions.nav).contains("C-g"),
                 "{position:?}: no band row is spent on the prefix"
             );
         } else {
             let nav = shot.nav_area();
-            let bottom = shot.row(H - 1, nav.x, nav.right());
-            let bottom = bottom.trim_matches(|c: char| c == ' ' || c == '│');
+            let top = shot.row(0, nav.x, nav.right());
+            let top = top.trim_matches(|c: char| c == ' ' || c == '│');
             assert_eq!(
-                bottom, "C-g",
-                "{position:?}: the column's bottom line is the prefix alone"
+                top, "C-g",
+                "{position:?}: the nav's first line is the prefix alone"
             );
         }
     }
@@ -384,7 +384,7 @@ fn pl4_overflow_is_a_thick_seam_segment_or_counts_on_the_band_seam() {
                 seam.contains(" ›"),
                 "{position:?}: the band seam counts the cards off to the right: {seam:?}"
             );
-            let (x, y) = shot.find_in(shot.plan.regions.view_border, " ›").unwrap();
+            let (x, y) = shot.find_in(shot.plan.regions.nav_border, " ›").unwrap();
             assert!(
                 shot.buf[(x - 1, y)]
                     .symbol()
@@ -393,10 +393,10 @@ fn pl4_overflow_is_a_thick_seam_segment_or_counts_on_the_band_seam() {
                 "{position:?}: a count stands before the mark: {seam:?}"
             );
         } else {
-            let thumb = shot.plan.seam_thumb;
-            let thick_rows: Vec<u16> = (shot.plan.regions.view_border.y
-                ..shot.plan.regions.view_border.bottom())
-                .filter(|&y| shot.buf[(shot.plan.regions.view_border.x, y)].symbol() == "┃")
+            let thumb = shot.plan.border_thumb;
+            let thick_rows: Vec<u16> = (shot.plan.regions.nav_border.y
+                ..shot.plan.regions.nav_border.bottom())
+                .filter(|&y| shot.buf[(shot.plan.regions.nav_border.x, y)].symbol() == "┃")
                 .collect();
             assert_eq!(
                 thick_rows,
@@ -429,19 +429,19 @@ fn pl5_a_collapsed_nav_is_the_seam_line_or_a_prefix_wide_column() {
                 assert_eq!(
                     r.terminal.height,
                     H - 1,
-                    "{position:?}: the collapsed band is the seam line only"
+                    "{position:?}: the collapsed horizontal nav is the border line only"
                 );
                 assert!(
-                    shot.seam_text().trim_end().ends_with("C-g"),
-                    "{position:?}: the seam still carries the prefix"
+                    shot.seam_text().starts_with(" C-g"),
+                    "{position:?}: the border row still carries the prefix"
                 );
             }
             NavPosition::Left => {
-                assert_eq!(r.view_border.x, 2, "on the prefix's last column");
+                assert_eq!(r.nav_border.x, 2, "on the prefix's last column");
                 assert_eq!(r.terminal.x, 3);
             }
             NavPosition::Right => {
-                assert_eq!(r.view_border.x, W - 3, "on the prefix's first column");
+                assert_eq!(r.nav_border.x, W - 3, "on the prefix's first column");
                 assert_eq!(r.terminal.width, W - 3);
             }
         }
@@ -456,7 +456,7 @@ fn pl5_a_collapsed_nav_is_the_seam_line_or_a_prefix_wide_column() {
 fn pl7_a_one_row_band_runs_title_and_cards_on_one_line() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
         let shot = Shot::new(two_groups(), nav_at(position).with_height(1), false);
-        let tree = shot.plan.regions.tree;
+        let tree = shot.plan.regions.nav;
         assert_eq!(tree.height, 1, "{position:?}");
         let line = shot.row(tree.y, 0, W);
         // Each card owns its padding and Enter mark without touching the next card.
@@ -474,7 +474,7 @@ fn pl7_a_one_row_band_scrolls_to_the_selection() {
         let mut shot = Shot::new(many_sessions(30, 6), nav_at(position).with_height(1), false);
         shot.sw.move_to(-1);
         shot.draw(false);
-        let tree = shot.plan.regions.tree;
+        let tree = shot.plan.regions.nav;
         assert!(
             shot.row(tree.y, 0, W).contains("000029"),
             "{position:?}: the last card scrolled into view"
@@ -500,7 +500,7 @@ fn pl9_the_resting_nav_text_carries_no_arrow_glyphs() {
 fn hit_test_reads_every_band_row_as_cards() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
         let mut shot = Shot::new(many_sessions(20, 4), nav_at(position), false);
-        let tree = shot.plan.regions.tree;
+        let tree = shot.plan.regions.nav;
         let last_row = tree.bottom() - 1;
         let (x, y) = shot
             .find_in(
@@ -529,7 +529,7 @@ fn hit_test_reads_every_band_row_as_cards() {
 fn hit_test_a_band_overflow_count_selects_the_nearest_hidden_card() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
         let mut shot = Shot::new(many_sessions(60, 12), nav_at(position), false);
-        let seam = shot.plan.regions.view_border;
+        let seam = shot.plan.regions.nav_border;
         let (x, y) = shot
             .find_in(seam, " ›")
             .unwrap_or_else(|| panic!("{position:?}: {}", shot.seam_text()));
@@ -670,27 +670,27 @@ fn the_prefix_key_list_opens_toward_the_terminal_and_the_indicator_keeps_the_pre
         shot.draw(false);
         let r = shot.plan.regions;
         let (list, _) = shot.plan.key_list.clone().expect("the key list is open");
-        // Against the indicator, on the terminal view's side of the seam.
+        // At the card flow's start, against the nav border on the terminal view's side.
         match position {
             NavPosition::Left => {
                 assert_eq!(list.x, r.terminal.x, "{position:?}: {list:?}");
-                assert_eq!(list.bottom(), r.hint_bar.bottom(), "{position:?}: {list:?}");
+                assert_eq!(list.y, r.terminal.y, "{position:?}: {list:?}");
             }
             NavPosition::Right => {
                 assert_eq!(list.right(), r.terminal.right(), "{position:?}: {list:?}");
-                assert_eq!(list.bottom(), r.hint_bar.bottom(), "{position:?}: {list:?}");
+                assert_eq!(list.y, r.terminal.y, "{position:?}: {list:?}");
             }
             // A list that would leave a sliver of one or two cells at the left edge
             // snaps to that edge instead.
             NavPosition::Top => {
-                assert_eq!(list.y, r.view_border.bottom(), "{position:?}: {list:?}");
+                assert_eq!(list.y, r.nav_border.bottom(), "{position:?}: {list:?}");
                 assert!(
                     list.right() == W || (list.x == 0 && list.width + 2 >= W),
                     "{position:?}: {list:?}"
                 );
             }
             NavPosition::Bottom => {
-                assert_eq!(list.bottom(), r.view_border.y, "{position:?}: {list:?}");
+                assert_eq!(list.bottom(), r.nav_border.y, "{position:?}: {list:?}");
                 assert!(
                     list.right() == W || (list.x == 0 && list.width + 2 >= W),
                     "{position:?}: {list:?}"
@@ -698,8 +698,8 @@ fn the_prefix_key_list_opens_toward_the_terminal_and_the_indicator_keeps_the_pre
             }
         }
         assert!(
-            !list.intersects(r.tree) && !list.intersects(r.view_border),
-            "{position:?}: the list covers no card and no seam: {list:?}"
+            !list.intersects(r.nav) && !list.intersects(r.nav_border),
+            "{position:?}: the list covers no card and no border: {list:?}"
         );
         // A boxed list titled with the prefix, its sections named.
         assert_eq!(shot.buf[(list.x, list.y)].symbol(), "╭", "{position:?}");
@@ -710,79 +710,15 @@ fn the_prefix_key_list_opens_toward_the_terminal_and_the_indicator_keeps_the_pre
         for word in ["C-g", "navigate", "sessions", "view", "app", "history"] {
             assert!(text.contains(word), "{position:?}: {word} in {text}");
         }
-        let indicator = shot.row(r.hint_bar.y, r.hint_bar.x, r.hint_bar.right());
+        let chip = shot.row(r.prefix_hint.y, r.prefix_hint.x, r.prefix_hint.right());
         assert!(
-            indicator.contains("C-g"),
-            "{position:?}: the indicator keeps the prefix: {indicator:?}"
+            chip.contains("C-g"),
+            "{position:?}: the prefix hint keeps the prefix: {chip:?}"
         );
         // The prefix ends and the list closes.
         shot.state.chrome.set_armed(false);
         shot.draw(false);
         assert!(shot.plan.key_list.is_none(), "{position:?}");
-    }
-}
-
-#[test]
-fn the_selection_hint_uses_the_seam_or_the_side_layout_bottom_row() {
-    for position in ALL {
-        let mut shot = Shot::new(two_groups(), nav_at(position), false);
-        shot.state.chrome.set_nav_position(position);
-        shot.state.chrome.show_selection_hint(
-            vec![(
-                "Enter".into(),
-                "focus the terminal".into(),
-                "terminal".into(),
-            )],
-            "3 windows".into(),
-            std::time::Instant::now(),
-        );
-        shot.draw(false);
-        let bar = shot.plan.hint_bar_rect;
-        let r = shot.plan.regions;
-        if matches!(position, NavPosition::Left | NavPosition::Right) {
-            assert_eq!(bar, Rect::new(0, H - 1, W, 1), "{position:?}");
-        } else {
-            assert_eq!(bar.y, r.view_border.y, "{position:?}");
-            assert!(bar.right() < r.hint_bar.right(), "{position:?}");
-        }
-        assert!(
-            !bar.intersects(r.tree),
-            "{position:?}: the hint covers no card: {bar:?}"
-        );
-        let text = shot.row(bar.y, bar.x, bar.right());
-        assert!(
-            text.contains("Enter focus the terminal · 3 windows"),
-            "{position:?}: {text:?}"
-        );
-        let indicator = shot.row(r.hint_bar.y, r.hint_bar.x, r.hint_bar.right());
-        if is_band(position) {
-            assert!(
-                indicator.contains("C-g"),
-                "{position:?}: the indicator keeps the prefix: {indicator:?}"
-            );
-        }
-    }
-}
-
-#[test]
-fn a_band_selection_hint_owns_the_seam_until_it_expires() {
-    for position in [NavPosition::Top, NavPosition::Bottom] {
-        let mut shot = Shot::new(many_sessions(60, 12), nav_at(position), false);
-        let (mark_x, mark_y) = shot.find_in(shot.plan.regions.view_border, " ›").unwrap();
-        assert!(shot.plan.overflow_target(mark_x, mark_y).is_some());
-        shot.state.chrome.show_selection_hint(
-            vec![("Enter".into(), "focus".into(), "focus".into())],
-            "3 windows".into(),
-            std::time::Instant::now(),
-        );
-        shot.draw(false);
-        assert!(shot.plan.overflow_target(mark_x, mark_y).is_none());
-        assert_eq!(shot.plan.hint_bar_rect.y, shot.plan.regions.view_border.y);
-        assert!(shot.seam_text().contains("3 windows"), "{position:?}");
-        assert!(shot.seam_text().contains("C-g"), "{position:?}");
-        shot.state.chrome.clear_selection_hint();
-        shot.draw(false);
-        assert!(shot.plan.overflow_target(mark_x, mark_y).is_some());
     }
 }
 
@@ -867,34 +803,26 @@ fn every_prefix_surface_opens_where_the_key_list_opens() {
             assert!(pop.right() <= area.right() && pop.bottom() <= area.bottom());
             match position {
                 Some(NavPosition::Left) => {
-                    assert_eq!(
-                        (pop.x, pop.bottom()),
-                        (r.terminal.x, r.hint_bar.bottom()),
-                        "#{n}"
-                    )
+                    assert_eq!((pop.x, pop.y), (r.terminal.x, r.terminal.y), "#{n}")
                 }
                 Some(NavPosition::Right) => {
                     assert_eq!(
-                        (pop.right(), pop.bottom()),
-                        (r.terminal.right(), r.hint_bar.bottom()),
+                        (pop.right(), pop.y),
+                        (r.terminal.right(), r.terminal.y),
                         "#{n}"
                     )
                 }
                 Some(NavPosition::Bottom) => {
-                    assert_eq!(
-                        (pop.right(), pop.bottom()),
-                        (area.right(), r.view_border.y),
-                        "#{n}"
-                    )
+                    assert_eq!((pop.x, pop.bottom()), (area.x, r.nav_border.y), "#{n}")
                 }
                 Some(NavPosition::Top) => {
-                    assert_eq!(
-                        (pop.right(), pop.y),
-                        (area.right(), r.view_border.bottom()),
-                        "#{n}"
-                    )
+                    assert_eq!((pop.x, pop.y), (area.x, r.nav_border.bottom()), "#{n}")
                 }
-                None => assert_eq!((pop.x, pop.bottom()), (area.x, area.bottom()), "#{n}"),
+                None => assert_eq!(
+                    (pop.right(), pop.bottom()),
+                    (area.right(), area.bottom()),
+                    "#{n}"
+                ),
             }
             if let Some(p) = position.filter(|p| is_band(*p)) {
                 let card = plan
@@ -925,8 +853,8 @@ fn an_input_popup_too_short_for_its_rows_keeps_its_field() {
 }
 
 /// The collapsed side column, cell by cell, at rest, armed, hovered, and under auto-hide:
-/// the prefix keeps all three of its cells on the bottom row, the border runs down the
-/// prefix's terminal-side column on every row above it, and the terminal view starts
+/// the prefix keeps all three of its cells on the first row, the border runs down the
+/// prefix's terminal-side column on every row below it, and the terminal view starts
 /// on the next column.
 /// A named chrome state to draw in, and the border glyph that state paints.
 type ChromeCase = (&'static str, fn(&mut crate::state::State), &'static str);
@@ -936,7 +864,7 @@ fn pl5_b_a_collapsed_column_is_the_prefix_with_the_border_on_its_edge() {
     let cases: [ChromeCase; 4] = [
         ("rest", |_| {}, "│"),
         ("armed", |s| s.chrome.armed = true, "│"),
-        ("hovered", |s| s.chrome.view_border_hovered = true, "┃"),
+        ("hovered", |s| s.chrome.nav_border_hovered = true, "┃"),
         ("auto-hide", |s| s.chrome.auto_hide = true, "║"),
     ];
     for position in [NavPosition::Left, NavPosition::Right] {
@@ -950,8 +878,8 @@ fn pl5_b_a_collapsed_column_is_the_prefix_with_the_border_on_its_edge() {
                 _ => (W - 3, W - 3, 0),
             };
             assert_eq!(
-                r.hint_bar,
-                Rect::new(nav_x, H - 1, 3, 1),
+                r.prefix_hint,
+                Rect::new(nav_x, 0, 3, 1),
                 "{position:?} {name}"
             );
             assert_eq!(
@@ -960,11 +888,11 @@ fn pl5_b_a_collapsed_column_is_the_prefix_with_the_border_on_its_edge() {
                 "{position:?} {name}"
             );
             assert_eq!(
-                shot.row(H - 1, nav_x, nav_x + 3),
+                shot.row(0, nav_x, nav_x + 3),
                 "C-g",
                 "{position:?} {name}: the prefix keeps every cell, no padding"
             );
-            for y in 0..H - 1 {
+            for y in 1..H {
                 assert_eq!(
                     shot.buf[(edge_x, y)].symbol(),
                     glyph,
@@ -977,7 +905,7 @@ fn pl5_b_a_collapsed_column_is_the_prefix_with_the_border_on_its_edge() {
                 W - 1
             };
             assert!(
-                (0..H - 1).all(|y| shot.buf[(off_edge, y)].symbol() == " "),
+                (1..H).all(|y| shot.buf[(off_edge, y)].symbol() == " "),
                 "{position:?} {name}: the rest of the column is blank"
             );
         }

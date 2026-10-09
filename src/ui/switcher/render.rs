@@ -7,29 +7,17 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::state::PaletteChoice;
 use crate::ui::palette;
 
-/// Where the hint bar actually paints. At rest it is the prefix indicator's rect: a
-/// column's bottom row, or the right end of a band's view border row (empty when the nav
-/// is hidden, so the mux keeps every row).
-///
-/// Floating, it spans the full row of a side layout's indicator; a band shares its seam
-/// with the prefix instead. With the nav hidden there is no indicator, so it borrows the
-/// window's bottom row. Only the paint moves; the layout is untouched, so nothing
-/// reflows.
-pub(super) fn hint_bar_rect(indicator: Rect, area: Rect, floating: bool) -> Rect {
-    if !floating || area.height == 0 {
-        return indicator;
-    }
-    Rect {
-        x: area.x,
-        y: if indicator.height == 0 {
-            // Nav hidden: no row was reserved, so borrow the window's bottom row.
-            area.bottom() - 1
-        } else {
-            indicator.y
-        },
-        width: area.width,
-        height: 1,
-    }
+/// The prefix hint chip inside its row: aligned toward the nav border (a vertical nav's
+/// terminal-side edge) or to the row's left (a horizontal nav's nav border row). A
+/// collapsed vertical nav's column is exactly as wide as the prefix, so the chip fills
+/// the row.
+pub(super) fn prefix_hint_chip(row: Rect, position: NavPosition, prefix_w: u16) -> Rect {
+    let w = prefix_w.min(row.width);
+    let x = match position {
+        NavPosition::Left => row.right().saturating_sub(w),
+        NavPosition::Right | NavPosition::Top | NavPosition::Bottom => row.x,
+    };
+    Rect { x, width: w, ..row }
 }
 
 pub(crate) const MIDDLE_ELLIPSIS: char = '…';
@@ -76,18 +64,30 @@ fn middle_ellipsize(text: &str, width: usize) -> String {
     format!("{front}{MIDDLE_ELLIPSIS}{back}")
 }
 
-fn highlighted(text: String, filter: &str, style: Style) -> Vec<Span<'static>> {
-    highlighted_after("", text, filter, style)
+fn highlighted(
+    text: String,
+    filter: &str,
+    style: Style,
+    palette: &palette::Palette,
+) -> Vec<Span<'static>> {
+    highlighted_after("", text, filter, style, palette)
 }
 
-/// `text` as spans that bold what `filter` marks when `text` is read after `before`: a
-/// session card writes only its session, but the filter matched the whole path the card
-/// stands for, so the marks are taken over that path and painted on its session part.
-fn highlighted_after(before: &str, text: String, filter: &str, style: Style) -> Vec<Span<'static>> {
+/// `text` as spans whose matched graphemes wear the filter highlight: a session card
+/// writes only its session, but the filter matched the whole path the card stands for,
+/// so the marks are taken over that path and painted on its session part. A matched
+/// grapheme wears the `warning` background; its own colours stay on the text.
+fn highlighted_after(
+    before: &str,
+    text: String,
+    filter: &str,
+    style: Style,
+    palette: &palette::Palette,
+) -> Vec<Span<'static>> {
     if filter.is_empty() {
         return vec![Span::styled(text, style)];
     }
-    let marks = crate::ui::tree::match_marks(filter, &format!("{before}{text}"));
+    let marks = crate::ui::cards::match_marks(filter, &format!("{before}{text}"));
     let mut marks = marks.into_iter().skip(before.chars().count());
     text.graphemes(true)
         .map(|grapheme| {
@@ -98,7 +98,7 @@ fn highlighted_after(before: &str, text: String, filter: &str, style: Style) -> 
             Span::styled(
                 grapheme.to_string(),
                 if matched {
-                    style.add_modifier(Modifier::BOLD)
+                    style.bg(palette.warning)
                 } else {
                     style
                 },
@@ -107,11 +107,11 @@ fn highlighted_after(before: &str, text: String, filter: &str, style: Style) -> 
         .collect()
 }
 
-/// The thick segment of a side nav's view border: where the cards on screen sit in the
+/// The thick segment of a side nav's nav border: where the cards on screen sit in the
 /// whole list, as a scrollbar thumb would, drawn on the border rather than in a column of
 /// its own, without taking space from card content. Counted in cards over the placement
 /// the cards were painted with. Empty when everything fits.
-fn seam_thumb(track: Rect, total: usize, offset: usize, visible: usize) -> Rect {
+fn border_thumb(track: Rect, total: usize, offset: usize, visible: usize) -> Rect {
     if track.height == 0 || total == 0 || visible >= total {
         return Rect::default();
     }
@@ -134,9 +134,10 @@ enum NavRule {
     Horizontal(Rect),
 }
 
-/// A band's count of the cards scrolled off one side, written on the seam: `‹ 5` at the
-/// left end and `7 ›` at the right end, before the prefix. `target` is the hidden card
-/// nearest the visible ones, which a click on the count selects so the band scrolls to it.
+/// A horizontal nav's count of the cards scrolled off one side, written on the nav
+/// border row: `‹ 5` after the prefix hint and `7 ›` at the right end. `target` is the
+/// hidden card nearest the visible ones, which a click on the count selects so the nav
+/// scrolls to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct OverflowMark {
     rect: Rect,
@@ -181,16 +182,15 @@ pub struct RenderPlan {
     pub nav_row_offset: usize,
     pub nav_col_offset: usize,
     pub popup_rect: Rect,
-    pub(super) hint_bar_rect: Rect,
-    /// Where the prefix indicator keeps the prefix while the bar floats away from it;
-    /// empty while the bar rests or the nav is hidden.
-    prefix_label: Rect,
     /// Each toast on screen and the rect it floats in, newest first. A click inside one
     /// takes it down.
     pub(crate) toasts: Vec<(u64, Rect)>,
     /// The prefix key list and where it opens, while a prefix is live and the room beside
     /// the indicator holds it.
     pub(crate) key_list: Option<(Rect, crate::ui::keylist::KeyList)>,
+    /// The scan progress box and where it floats, while host probes are in flight and no
+    /// popup surface outranks it.
+    pub(crate) scan_box: Option<(Rect, crate::ui::keylist::KeyList)>,
     /// The one line the nav body says when it lists no card at all, and where.
     pub(crate) nav_guidance: Option<(Rect, String)>,
     /// The cells a click on a collapsed nav expands it from: the whole collapsed column
@@ -201,8 +201,7 @@ pub struct RenderPlan {
     pub expand_area: Rect,
     overflow_marks: Vec<OverflowMark>,
     nav_rule: Option<NavRule>,
-    pub(super) seam_thumb: Rect,
-    pub(super) floating_hint_bar: bool,
+    pub(super) border_thumb: Rect,
     pub nav_hidden: bool,
     pub nav_collapsed: bool,
 }
@@ -213,7 +212,7 @@ impl Default for RenderPlan {
             screen_area: Rect::default(),
             nav_size: NavSize::visible(NAV_WIDTH),
             view_screen: None,
-            layout: ViewLayout::Column,
+            layout: ViewLayout::Vertical,
             nav_position: NavPosition::Left,
             regions: Regions::default(),
             nav_inner: Rect::default(),
@@ -225,16 +224,14 @@ impl Default for RenderPlan {
             nav_row_offset: 0,
             nav_col_offset: 0,
             popup_rect: Rect::default(),
-            hint_bar_rect: Rect::default(),
-            prefix_label: Rect::default(),
             toasts: Vec::new(),
             key_list: None,
+            scan_box: None,
             nav_guidance: None,
             expand_area: Rect::default(),
             overflow_marks: Vec::new(),
             nav_rule: None,
-            seam_thumb: Rect::default(),
-            floating_hint_bar: false,
+            border_thumb: Rect::default(),
             nav_hidden: true,
             nav_collapsed: false,
         }
@@ -271,55 +268,13 @@ impl Switcher {
         state: &crate::state::State,
         previous: &RenderPlan,
     ) -> RenderPlan {
-        let band = nav.position.layout() == ViewLayout::Band;
-        // The resting indicator is one row, so the layout is cut for one row whatever the
-        // bar says: a floating bar only paints further, it never takes a row from the nav.
-        let regions = compute_regions(area, nav, 1);
-        let floating = hint_bar_floats(state);
-        let seam_hint = band && !regions.hint_bar.is_empty() && floating && !state.chrome.armed;
+        let band = nav.position.layout() == ViewLayout::Horizontal;
+        let regions = compute_regions(area, nav);
         let prefix_w = prefix_chip_width(&state.chrome.ui_prefix);
-        // At rest the prefix indicator is a label on the column's bottom row, and the right
-        // end of the seam row in a band. While the bar floats, the indicator keeps the
-        // prefix alone.
-        let resting_bar = if band && !regions.hint_bar.is_empty() {
-            let chip = if nav.collapsed || floating {
-                prefix_w
-            } else {
-                state
-                    .chrome
-                    .hint_bar_chip_width(regions.hint_bar.width, state)
-            }
-            .min(regions.hint_bar.width);
-            Rect {
-                x: regions.hint_bar.right() - chip,
-                width: chip,
-                ..regions.hint_bar
-            }
-        } else {
-            regions.hint_bar
-        };
-        let prefix_label = if floating && band && !regions.hint_bar.is_empty() {
-            Rect {
-                width: prefix_w.min(resting_bar.width),
-                ..resting_bar
-            }
-        } else {
-            Rect::default()
-        };
-        let hint_bar_rect = if seam_hint && !resting_bar.is_empty() {
-            Rect {
-                x: area.x,
-                y: resting_bar.y,
-                width: resting_bar.x.saturating_sub(area.x),
-                height: 1,
-            }
-        } else {
-            hint_bar_rect(resting_bar, area, floating)
-        };
-        // A live prefix opens its key list from the indicator toward the terminal view,
+        // A live prefix opens its key list from the prefix hint toward the terminal view,
         // sized to the room there.
         let key_list = if key_list_open(state) {
-            let room = crate::ui::keylist::room(resting_bar, regions.terminal, area, nav.position);
+            let room = regions.terminal;
             let list = if state.chrome.resizing {
                 crate::ui::keylist::resize_list
             } else {
@@ -332,25 +287,21 @@ impl Switcher {
                 room.height,
             )
             .map(|list| {
-                let rect = crate::ui::keylist::place(
-                    room,
-                    nav.position,
-                    resting_bar.height == 0,
-                    list.size(),
-                );
+                let rect =
+                    crate::ui::keylist::place(room, nav.position, nav.width == 0, list.size());
                 (self.settle(rect, area, modal::PopupSurface::KeyList), list)
             })
         } else {
             None
         };
-        let seam = regions.view_border;
-        // A collapsed side nav's border lies inside its column, so the column alone is
+        let seam = regions.nav_border;
+        // A collapsed vertical nav's border lies inside its column, so the column alone is
         // the whole target.
         let expand_area = if nav.collapsed && nav.width > 0 {
             match nav.position {
                 NavPosition::Left | NavPosition::Right => Rect {
-                    x: regions.hint_bar.x,
-                    width: regions.hint_bar.width,
+                    x: regions.prefix_hint.x,
+                    width: regions.prefix_hint.width,
                     ..area
                 },
                 NavPosition::Top | NavPosition::Bottom => seam,
@@ -358,26 +309,56 @@ impl Switcher {
         } else {
             Rect::default()
         };
-        let popup_rect = self.modal_popup_rect(area, state, resting_bar, &regions);
+        let popup_rect = self.modal_popup_rect(area, state, &regions);
+        let view_screen = self.current_view_screen(state);
+        // The scan progress box: the advice that host probes are in flight, anchored
+        // beside the prefix hint in the nav column, growing over the still-settling
+        // Only a scan the user asked for (a rescan key) floats its advice box; the
+        // launch probe stays silent.
+        let scan_box = if self.explicit_rescan && state.scanning_any() {
+            let sp = crate::ui::spinner_glyph(state.chrome.spinner_frame);
+            let total = state.groups.len() + state.hostless_machines().len();
+            let done = total.saturating_sub(state.scanning.len() + state.machine_scanning.len());
+            let cell = crate::ui::keylist::Cell::Key {
+                key: sp.to_string(),
+                desc: format!("scanning hosts {done}/{total}…"),
+            };
+            let key_w = UnicodeWidthStr::width(sp.to_string().as_str()) as u16;
+            let list = crate::ui::keylist::KeyList {
+                columns: vec![vec![cell]],
+                key_width: key_w,
+                column_width: key_w.saturating_add(1)
+                    + UnicodeWidthStr::width(format!("scanning hosts {done}/{total}…").as_str())
+                        as u16,
+                rung: crate::ui::keylist::Rung::Long,
+            };
+            let rect = crate::ui::keylist::place(
+                regions.terminal,
+                nav.position,
+                nav.width == 0,
+                list.size(),
+            );
+            Some((self.settle(rect, area, modal::PopupSurface::KeyList), list))
+        } else {
+            None
+        };
         let mut plan = RenderPlan {
             screen_area: area,
             nav_size: nav,
-            view_screen: self.current_view_screen(state),
+            view_screen,
             layout: regions.layout,
             nav_position: nav.position,
             regions,
             nav_inner: if nav.width == 0 || nav.collapsed {
                 Rect::default()
             } else {
-                regions.tree
+                regions.nav
             },
             nav_row_offset: previous.nav_row_offset,
             nav_col_offset: previous.nav_col_offset,
             popup_rect,
-            hint_bar_rect,
-            prefix_label,
             // A toast never covers the prefix key list (the list is what a live prefix
-            // reads its next key from) or a floating hint bar.
+            // reads its next key from).
             toasts: crate::ui::toast::place_toasts(
                 &state.notify,
                 regions.terminal,
@@ -386,23 +367,24 @@ impl Switcher {
                 match &key_list {
                     Some((rect, _)) => *rect,
                     None if !popup_rect.is_empty() => popup_rect,
-                    None if floating => hint_bar_rect,
                     None => Rect::default(),
                 },
             ),
             key_list,
+            scan_box,
             expand_area,
-            floating_hint_bar: floating,
             nav_hidden: nav.width == 0,
             nav_collapsed: nav.collapsed,
             ..RenderPlan::default()
         };
         if !plan.nav_inner.is_empty() {
-            // The band's overflow counts share the seam row with the prefix, so they get
-            // what the prefix leaves. A selection hint occupies that track temporarily.
-            let track = if band && !seam_hint {
+            // A horizontal nav's overflow counts share the nav border row with the prefix
+            // hint, so they get what the prefix hint leaves.
+            let track = if band {
+                let chip_w = prefix_w.min(regions.prefix_hint.width);
                 Rect {
-                    width: resting_bar.x.saturating_sub(seam.x),
+                    x: regions.prefix_hint.x.saturating_add(chip_w),
+                    width: regions.prefix_hint.width.saturating_sub(chip_w),
                     ..seam
                 }
             } else {
@@ -586,9 +568,9 @@ impl Switcher {
         let count = |filter: &str| {
             let machines = hostless
                 .iter()
-                .filter(|m| crate::ui::tree::fuzzy_match(filter, &m.name))
+                .filter(|m| crate::ui::cards::fuzzy_match(filter, &m.name))
                 .count();
-            crate::ui::tree::filter_groups(&state.groups, filter, &|host| {
+            crate::ui::cards::filter_groups(&state.groups, filter, &|host| {
                 state.chrome.host_mux(host).to_string()
             })
             .iter()
@@ -623,18 +605,17 @@ impl Switcher {
         Rect::new(x, y, w, h)
     }
 
-    /// Where a list popup of `size` opens: where the key list opens, against the prefix
-    /// indicator toward the terminal view.
+    /// Where a list popup of `size` opens: where the key list opens, beside the prefix
+    /// hint toward the terminal view.
     fn key_list_anchor(
         &self,
         size: (u16, u16),
         area: Rect,
-        indicator: Rect,
         regions: &Regions,
         position: NavPosition,
+        nav_hidden: bool,
     ) -> Rect {
-        let room = crate::ui::keylist::room(indicator, regions.terminal, area, position);
-        let rect = crate::ui::keylist::place(room, position, indicator.height == 0, size);
+        let rect = crate::ui::keylist::place(regions.terminal, position, nav_hidden, size);
         self.settle(rect, area, modal::PopupSurface::Modal)
     }
 
@@ -732,8 +713,8 @@ impl Switcher {
         let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
         let num_w = self.number_width();
         match plan.layout {
-            ViewLayout::Column => self.layout_nav_list(plan),
-            ViewLayout::Band => self.layout_nav_columns(plan, num_w, spinner_glyph, track),
+            ViewLayout::Vertical => self.layout_nav_list(plan),
+            ViewLayout::Horizontal => self.layout_nav_columns(plan, num_w, spinner_glyph, track),
         }
     }
 
@@ -778,8 +759,8 @@ impl Switcher {
             })
         });
         if flow.scrolls {
-            let border = plan.regions.view_border;
-            plan.seam_thumb = seam_thumb(
+            let border = plan.regions.nav_border;
+            plan.border_thumb = border_thumb(
                 Rect {
                     x: border.x,
                     y: cards.y,
@@ -935,7 +916,7 @@ impl Switcher {
         let palette = self.palette;
         // Reset the buffer before painting. The widgets below do not all fill every cell
         // they own - the mux grid only paints its top-left clip (cells past the grid size
-        // are skipped), the view border rule sets fg only, and the nav list leaves blank
+        // are skipped), the nav border rule sets fg only, and the nav list leaves blank
         // rows - so when the tree width changes (drag / prefix Ctrl-←/→) cells that switched
         // panes would otherwise keep stale content (the residue seen while resizing).
         // Clearing first makes every unpainted cell default; ratatui still diffs against
@@ -953,8 +934,8 @@ impl Switcher {
             return;
         }
         // nav_width == 0 is the "nav hidden" sentinel (terminal view focused + auto-hide):
-        // the terminal view owns the whole area - no nav list, no view border, and no
-        // prefix indicator of its own. A selected view screen still owns that region.
+        // the terminal view owns the whole area - no nav list, no nav border, and no
+        // prefix hint of its own. A selected view screen still owns that region.
         if plan.nav_hidden {
             let view_caret = match plan.view_screen {
                 Some(kind) => self.render_view_screen(frame, area, state, kind, terminal_focused),
@@ -969,39 +950,28 @@ impl Switcher {
                 }
             }
             self.place_field_cursor(frame, state, plan, view_caret);
-            // The bar still floats for the states that must be seen even here: the hint
-            // after a selection move. Hiding the nav hides the prefix indicator,
-            // not xmux's ability to answer a keypress.
-            if plan.floating_hint_bar {
-                state.chrome.render_hint_bar(
-                    frame,
-                    plan.hint_bar_rect,
-                    state,
-                    crate::ui::chrome::BarFill::Row,
-                    &palette,
-                );
-            }
             self.render_key_list(frame, state, plan, &palette);
+            self.render_scan_box(frame, plan, &palette);
             self.render_toasts(frame, state, plan, &palette);
             // The modal stacks above the bar: a popup is a stronger claim on the screen.
             self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
             return;
         }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
-        // sizing and mouse hit-testing so they never diverge: the nav list / terminal split
-        // side by side (Column) or stacked (Band), parted by the view
-        // border, and the hint bar rests on a column's bottom row or a band's view border
-        // row. The hint bar is one row (see `hint_bar_floats` / `hint_bar_rect`).
+        // sizing and mouse hit-testing so they never diverge: the navigation view /
+        // terminal view split side by side (a vertical nav) or stacked (a horizontal nav),
+        // parted by the nav border, and the prefix hint rests at the navigation view's
+        // start (a vertical nav's first row, a horizontal nav's nav border row).
         self.render_nav(frame, plan, &palette);
-        // The view border is the one line the nav draws: its colour says which view holds
-        // the focus, and a side nav's overflow thickens the stretch beside the cards on
-        // screen.
+        // The nav border is the one line the nav draws: its colour says which view holds
+        // the focus, and a vertical nav's overflow thickens the stretch beside the cards
+        // on screen.
         state
             .chrome
-            .render_view_border(frame, plan.regions.view_border, terminal_focused);
+            .render_nav_border(frame, plan.regions.nav_border, terminal_focused);
         state
             .chrome
-            .render_seam_thumb(frame, plan.seam_thumb, terminal_focused);
+            .render_border_thumb(frame, plan.border_thumb, terminal_focused);
         let term_area = plan.regions.terminal;
         // A domain-selected view screen replaces the grid.
         let view_caret = if let Some(kind) = plan.view_screen {
@@ -1010,44 +980,26 @@ impl Switcher {
             self.render_terminal_view(frame, term_area, grid);
             None
         };
-        // The hint bar paints LAST of the two views, so a floating bar can cover the
-        // terminal view. At rest it is the prefix indicator, a label sized to what it says
-        // on the column's bottom row or at the right end of a band's seam. A floating
-        // bar spans the whole width in a side layout. In a band, a selection hint shares
-        // the seam with the prefix. The layout never reflows. A band's overflow counts share the seam with the indicator at rest.
+        // The prefix hint paints after the two views, so the chip reads over whatever it
+        // shares its row with. It is the prefix as a chip on its own background, aligned
+        // toward the nav border; a collapsed vertical nav's column paints it unpadded.
         for mark in &plan.overflow_marks {
             Self::render_overflow_mark(frame, *mark, state.chrome.colors.active);
         }
-        if plan.floating_hint_bar {
-            state.chrome.render_hint_bar(
-                frame,
-                plan.hint_bar_rect,
-                state,
-                crate::ui::chrome::BarFill::Row,
-                &palette,
+        let prefix_row = plan.regions.prefix_hint;
+        if !prefix_row.is_empty() {
+            let chip = prefix_hint_chip(
+                prefix_row,
+                plan.nav_position,
+                prefix_chip_width(&state.chrome.ui_prefix),
             );
+            let padded = prefix_row.width >= prefix_chip_width(&state.chrome.ui_prefix);
             state
                 .chrome
-                .render_collapsed_hint_bar(frame, plan.prefix_label, true, &palette);
-        } else if plan.nav_collapsed {
-            // A band's chip pads the prefix on its seam row; a side column is the prefix
-            // alone.
-            state.chrome.render_collapsed_hint_bar(
-                frame,
-                plan.hint_bar_rect,
-                plan.layout == ViewLayout::Band,
-                &palette,
-            );
-        } else {
-            state.chrome.render_hint_bar(
-                frame,
-                plan.hint_bar_rect,
-                state,
-                crate::ui::chrome::BarFill::Content,
-                &palette,
-            );
+                .paint_prefix_hint(frame, chip, padded, &palette);
         }
         self.render_key_list(frame, state, plan, &palette);
+        self.render_scan_box(frame, plan, &palette);
         self.render_toasts(frame, state, plan, &palette);
         // In the terminal view, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
@@ -1182,6 +1134,27 @@ impl Switcher {
         };
         for ((_, line), (_, rect)) in plan.nav_lines.iter().zip(&plan.nav_cells) {
             frame.render_widget(Paragraph::new(line.clone()), *rect);
+        }
+        // ratatui's incremental diff skips the trailing cell of a standard wide (CJK)
+        // glyph, so a layout shift (nav hidden/shown, border drag) leaves the old
+        // glyph's right half as background residue on the terminal, the same residue
+        // the mux grid already forces a repaint of. Marking the trailing cell
+        // AlwaysUpdate makes the diff repaint it on transition; while the glyph is
+        // stable the diff skips this cell via the leading cell's width, so it never
+        // redraws needlessly.
+        let buf = frame.buffer_mut();
+        for (_, rect) in &plan.nav_cells {
+            if std::env::var("XMUX_DEBUG").is_ok() {
+                println!("wcpass rect={rect:?}");
+            }
+            for y in rect.y..rect.bottom() {
+                for x in rect.x..rect.right().saturating_sub(1) {
+                    if UnicodeWidthStr::width(buf[(x, y)].symbol()) == 2 {
+                        buf[(x + 1, y)]
+                            .set_diff_option(ratatui::buffer::CellDiffOption::AlwaysUpdate);
+                    }
+                }
+            }
         }
         let selection = self.selection_row().and_then(|i| target_rect(i, self.part));
         let hover = self.hover.as_ref().and_then(|(reference, part)| {
@@ -1385,6 +1358,7 @@ impl Switcher {
                 middle_ellipsize(machine, room),
                 filter,
                 Style::default().fg(palette.secondary),
+                palette,
             ));
             line.push(Span::raw(" "));
             line.push(Span::styled(glyph, glyph_style));
@@ -1442,8 +1416,12 @@ impl Switcher {
                     )]
                 }
             } else {
-                let mut spans =
-                    highlighted(identity, filter, Style::default().fg(palette.secondary));
+                let mut spans = highlighted(
+                    identity,
+                    filter,
+                    Style::default().fg(palette.secondary),
+                    palette,
+                );
                 for span in &mut spans {
                     if span.content == "/" {
                         span.style = Style::default().fg(palette.decoration);
@@ -1499,6 +1477,7 @@ impl Switcher {
             middle_ellipsize(sess, available),
             filter,
             session_style,
+            palette,
         ));
         if let Some(stopped) = stopped {
             detail.push(Span::styled(
@@ -1526,7 +1505,7 @@ impl Switcher {
         area: Rect,
         grid: Option<&crate::display::grid::Grid>,
     ) {
-        // No border box: the live grid fills the area; render_view_border draws the
+        // No border box: the live grid fills the area; render_nav_border draws the
         // separating rule.
         match grid {
             Some(g) => {
@@ -1545,22 +1524,17 @@ impl Switcher {
     /// Where the open modal's popup goes. Every modal opens where the key list opens, in
     /// the key list's grammar, so a prefix key replaces the key list in the same place in
     /// every nav layout.
-    fn modal_popup_rect(
-        &self,
-        area: Rect,
-        state: &crate::state::State,
-        indicator: Rect,
-        regions: &Regions,
-    ) -> Rect {
+    fn modal_popup_rect(&self, area: Rect, state: &crate::state::State, regions: &Regions) -> Rect {
         let position = state.chrome.nav_position;
-        let room = crate::ui::keylist::room(indicator, regions.terminal, area, position);
+        let nav_hidden = regions.prefix_hint.is_empty();
+        let room = regions.terminal;
         let anchor = |size: (u16, u16)| {
             self.key_list_anchor(
                 (size.0.min(room.width), size.1.min(room.height)),
                 area,
-                indicator,
                 regions,
                 position,
+                nav_hidden,
             )
         };
         // Every list popup opens where the key list does. A popup narrowed to the room
@@ -1765,6 +1739,27 @@ impl Switcher {
     }
 
     /// Paints every toast the plan placed, oldest first, so the newest lands on top.
+    /// The scan progress box: the one popup-like surface that shows while host probes
+    /// are in flight, anchored beside the prefix hint. Not interactive: the box is
+    /// advice, and the scan's result is a toast.
+    fn render_scan_box(&self, frame: &mut Frame, plan: &RenderPlan, palette: &palette::Palette) {
+        if let Some((rect, list)) = &plan.scan_box {
+            crate::ui::keylist::render(
+                frame,
+                *rect,
+                list,
+                crate::ui::keylist::Border {
+                    title: "scanning",
+                    status: "",
+                    hints: &[],
+                    version: "",
+                    update: None,
+                },
+                palette,
+            );
+        }
+    }
+
     fn render_toasts(
         &self,
         frame: &mut Frame,

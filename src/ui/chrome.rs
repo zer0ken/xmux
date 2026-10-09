@@ -1,5 +1,5 @@
-//! Rendering and layout for the switcher's chrome: the tree|terminal view border,
-//! hint bar, and host screens that fill the terminal-view region in place of a mux.
+//! Rendering and layout for the switcher's chrome: the nav border, the prefix hint,
+//! and host screens that fill the terminal-view region in place of a mux.
 //! [`State`](crate::state::State) owns the [`Chrome`] data this module paints.
 
 use std::collections::{HashMap, HashSet};
@@ -11,12 +11,11 @@ use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::state::Chrome;
-pub use crate::state::{HostReach, ViewBorderColors};
+pub use crate::state::{HostReach, NavBorderColors};
 use crate::ui::modal::wrap_text;
-use crate::ui::switcher::fit;
 
 /// Parses a tmux-style colour token into a ratatui [`Color`], matching tmux/psmux's
-/// colour slots so the view border colours can be configured exactly like
+/// colour slots so the nav border colours can be configured exactly like
 /// `pane-border-style`: the 16 named ANSI colours, their `bright*` variants,
 /// `colourN`/`colorN` (a 0-255 palette index), `#RRGGBB`, and `default` (terminal
 /// default). A leading `fg=` is tolerated so a tmux style string drops in verbatim.
@@ -65,7 +64,7 @@ pub fn map_color(s: &str) -> Color {
     }
 }
 
-/// The tree|terminal view border's three colours: `active` marks nav focus,
+/// The tree|terminal nav border's three colours: `active` marks nav focus,
 /// `inactive` marks terminal focus, and `hover` is the drag-resize grab cue.
 ///
 /// The defaults are xmux's own and the same on every host: the palette's `primary`
@@ -76,15 +75,15 @@ pub fn map_color(s: &str) -> Color {
 ///
 /// [`Self::resolve`] layers one tier over that: a `[ui] view-*-border-style` value the
 /// user named. Their terminal, their choice.
-impl Default for ViewBorderColors {
+impl Default for NavBorderColors {
     fn default() -> Self {
         Self::from_palette(&crate::ui::palette::Palette::default())
     }
 }
 
-impl ViewBorderColors {
+impl NavBorderColors {
     fn from_palette(pal: &crate::ui::palette::Palette) -> Self {
-        ViewBorderColors {
+        NavBorderColors {
             active: pal.primary,
             inactive: pal.disabled,
             hover: pal.accent,
@@ -109,7 +108,7 @@ impl ViewBorderColors {
         cfg_hover: &str,
         palette: &crate::ui::palette::Palette,
     ) -> Self {
-        let d = ViewBorderColors::from_palette(palette);
+        let d = NavBorderColors::from_palette(palette);
         let pick = |cfg: &str, fb: Color| {
             if cfg.trim().is_empty() {
                 fb
@@ -117,46 +116,12 @@ impl ViewBorderColors {
                 map_color(cfg)
             }
         };
-        ViewBorderColors {
+        NavBorderColors {
             active: pick(cfg_active, d.active),
             inactive: pick(cfg_inactive, d.inactive),
             hover: pick(cfg_hover, d.hover),
         }
     }
-}
-
-/// The hint bar's built-in default style: the active palette's `bar_bg` background with
-/// `bar_fg` text - two ANSI slots, so the theme resolves both and the pair stays legible
-/// on any theme that keeps its own slots legible. It reads as chrome rather than
-/// shouting over the content.
-/// Key tokens get the accent on top of this (see [`Chrome::hint_bar_spans`] - only
-/// while this default is in effect, so a `[ui] hint-bar-style` override keeps its
-/// exact colours). Used when `[ui] hint-bar-style` is unset.
-pub(crate) fn hint_bar_default_style(palette: &crate::ui::palette::Palette) -> Style {
-    Style::default().bg(palette.bar_bg).fg(palette.bar_fg)
-}
-
-/// Parses a `[ui] hint-bar-style` spec into the hint bar [`Style`]. Empty ⇒ the
-/// built-in tmux default ([`hint_bar_default_style`]). Otherwise a tmux-style comma
-/// list: `bg=<colour>` sets the background, `fg=<colour>` (or a bare colour token) the
-/// foreground, using the same colour slots as the view border ([`map_color`], so
-/// named colours, `colourN`, `#RRGGBB`, `default`). Unrecognised tokens are ignored.
-pub(crate) fn parse_hint_bar_style(spec: &str, palette: &crate::ui::palette::Palette) -> Style {
-    if spec.trim().is_empty() {
-        return hint_bar_default_style(palette);
-    }
-    let mut style = Style::default();
-    for tok in spec.split(',') {
-        let tok = tok.trim();
-        if let Some(c) = tok.strip_prefix("bg=") {
-            style = style.bg(map_color(c));
-        } else if let Some(c) = tok.strip_prefix("fg=") {
-            style = style.fg(map_color(c));
-        } else if !tok.is_empty() {
-            style = style.fg(map_color(tok));
-        }
-    }
-    style
 }
 
 /// Parses a `[ui] selection-style` spec into the selection's background. Empty ⇒
@@ -205,20 +170,6 @@ pub(crate) fn palette_overrides(
     }
 }
 
-/// How much of its row the hint bar paints.
-///
-/// At rest the bar is the prefix indicator, a label sized to what it says, so a column's
-/// bottom row and a band's seam keep the rest of their cells. A floating bar takes the
-/// whole row, because it has to be readable over whatever it covers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BarFill {
-    /// The whole rect: a solid bar. What a floating bar always uses.
-    Row,
-    /// The text plus a cell of padding, on its own background: the resting label.
-    Content,
-}
-
-/// The login pane's keys, stated under its form.
 const LOGIN_HINTS: &[crate::ui::modal::Hint] = &[
     ("Tab", "next"),
     ("Enter", "next / log in"),
@@ -322,13 +273,13 @@ impl ViewScreen {
         match self {
             ViewScreen::Scanning => "scanning",
             ViewScreen::SelfSession => "running xmux",
-            ViewScreen::Login => crate::ui::tree::host_state_word(false, true, false, true),
-            ViewScreen::ListFailed => crate::ui::tree::host_state_word(false, false, true, true),
-            ViewScreen::Unreachable => crate::ui::tree::host_state_word(false, false, false, true),
-            ViewScreen::Empty => crate::ui::tree::host_state_word(false, false, false, false),
+            ViewScreen::Login => crate::ui::cards::host_state_word(false, true, false, true),
+            ViewScreen::ListFailed => crate::ui::cards::host_state_word(false, false, true, true),
+            ViewScreen::Unreachable => crate::ui::cards::host_state_word(false, false, false, true),
+            ViewScreen::Empty => crate::ui::cards::host_state_word(false, false, false, false),
             ViewScreen::Stopped => crate::session::STOPPED,
             ViewScreen::Host => "",
-            ViewScreen::Machine => crate::ui::tree::MACHINE_REACHABLE,
+            ViewScreen::Machine => crate::ui::cards::MACHINE_REACHABLE,
             ViewScreen::Landing => "",
         }
     }
@@ -423,10 +374,10 @@ fn siblings(
             let word = if state.scanning.contains(&g.host) {
                 "still scanning".to_string()
             } else if let Some(kind) = failure {
-                crate::ui::tree::failure_word(kind, g.logged_out()).to_string()
+                crate::ui::cards::failure_word(kind, g.logged_out()).to_string()
             } else {
                 match g.sessions.len() {
-                    0 => crate::ui::tree::host_state_word(false, false, false, false).to_string(),
+                    0 => crate::ui::cards::host_state_word(false, false, false, false).to_string(),
                     1 => "1 session".to_string(),
                     n => format!("{n} sessions"),
                 }
@@ -503,11 +454,8 @@ impl Default for Chrome {
     fn default() -> Self {
         let palette = crate::ui::palette::Palette::default();
         Chrome {
-            selection_hint: None,
-            first_key_seen: false,
-            first_key_notice: false,
             auto_hide: false,
-            view_border_hovered: false,
+            nav_border_hovered: false,
             spinner: HashSet::new(),
             spinner_frame: 0,
             animation_ms: 0,
@@ -521,8 +469,7 @@ impl Default for Chrome {
             armed: false,
             resizing: false,
             nav_position: crate::ui::switcher::NavPosition::Left,
-            colors: ViewBorderColors::from_palette(&palette),
-            hint_bar_style: hint_bar_default_style(&palette),
+            colors: NavBorderColors::from_palette(&palette),
             update_available: None,
         }
     }
@@ -530,49 +477,48 @@ impl Default for Chrome {
 
 impl Chrome {
     /// Derives the chrome's own styles from the applied palette and the `[ui]` overrides:
-    /// the view border colours, which mark the focused view and take no colour from any
-    /// machine or mux, and the hint bar style (`[ui] hint-bar-style`, else the tmux default).
+    /// the nav border colours, which mark the focused view and take no colour from any
+    /// machine or mux, and the prefix hint chip's `bar-bg`/`bar-fg`/`bar-accent`.
     pub(crate) fn apply_palette(
         &mut self,
         ui: &crate::provision::config::UiConfig,
         palette: &crate::ui::palette::Palette,
     ) {
         if crate::ui::palette::no_color() {
-            self.colors = ViewBorderColors::from_palette(palette);
-            self.hint_bar_style = hint_bar_default_style(palette);
+            self.colors = NavBorderColors::from_palette(palette);
         } else {
-            self.colors = ViewBorderColors::resolve_with_palette(
-                &ui.view_active_border_style,
-                &ui.view_border_style,
-                &ui.view_border_hover_style,
+            self.colors = NavBorderColors::resolve_with_palette(
+                &ui.nav_active_border_style,
+                &ui.nav_border_style,
+                &ui.nav_border_hover_style,
                 palette,
             );
-            self.hint_bar_style = parse_hint_bar_style(&ui.hint_bar_style, palette);
         }
     }
 
-    /// The rule between the nav and the terminal view. The whole rule uses the active
-    /// colour while the nav is focused and the inactive colour while the terminal is
-    /// focused. The glyph also encodes auto-hide-nav mode: a double line when on and a
-    /// single line when off, so a visible nav that will vanish on blur is distinguishable
-    /// from a pinned one. Hover keeps its heavy glyph and hover colour.
-    pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
+    /// The nav border: the rule between the navigation view and the terminal view. The
+    /// whole rule uses the active colour while the navigation view is focused and the
+    /// inactive colour while the terminal view is focused. The glyph also encodes
+    /// auto-hide-nav mode: a double line when on and a single line when off, so a visible
+    /// nav that will vanish on blur is distinguishable from a pinned one. Hover keeps its
+    /// heavy glyph and hover colour.
+    pub(crate) fn render_nav_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let color = if terminal_focused {
             self.colors.inactive
         } else {
             self.colors.active
         };
-        // Band layout: the view border runs horizontally between the two views. It uses
-        // one colour across its full length, like the vertical rule.
+        // A horizontal nav: the nav border runs horizontally between the two views. It
+        // uses one colour across its full length, like the vertical rule.
         if area.width > area.height {
-            let g = if self.view_border_hovered {
+            let g = if self.nav_border_hovered {
                 "━"
             } else if self.auto_hide {
                 "═"
             } else {
                 "─"
             };
-            let style = Style::default().fg(if self.view_border_hovered {
+            let style = Style::default().fg(if self.nav_border_hovered {
                 self.colors.hover
             } else {
                 color
@@ -589,7 +535,7 @@ impl Chrome {
         // Box-drawing rules have no bold form (the BOLD modifier does not thicken them),
         // so hover swaps the glyph itself to the HEAVY vertical for a thicker line in the
         // hover colour: the same rule, thicker and lit, as the grab cue.
-        let (glyph, style) = if self.view_border_hovered {
+        let (glyph, style) = if self.nav_border_hovered {
             ("┃", Style::default().fg(self.colors.hover))
         } else if self.auto_hide {
             ("║", Style::default().fg(color))
@@ -604,12 +550,17 @@ impl Chrome {
         frame.render_widget(Paragraph::new(bars), area);
     }
 
-    /// Thickens the stretch of a side nav's view border beside the cards on screen when
-    /// the list overflows: the border's own heavy glyph in the border's own colour, so the
-    /// overflow is read off the one line the nav draws. The hover cue already thickens the
-    /// whole border, so the stretch is not drawn over it.
-    pub(crate) fn render_seam_thumb(&self, frame: &mut Frame, rect: Rect, terminal_focused: bool) {
-        if rect.is_empty() || self.view_border_hovered {
+    /// Thickens the stretch of a vertical nav's nav border beside the cards on screen
+    /// when the list overflows: the border's own heavy glyph in the border's own colour,
+    /// so the overflow is read off the one line the nav draws. The hover cue already
+    /// thickens the whole border, so the stretch is not drawn over it.
+    pub(crate) fn render_border_thumb(
+        &self,
+        frame: &mut Frame,
+        rect: Rect,
+        terminal_focused: bool,
+    ) {
+        if rect.is_empty() || self.nav_border_hovered {
             return;
         }
         let color = if terminal_focused {
@@ -1380,7 +1331,7 @@ impl Chrome {
         let word = if landing {
             self.scan_progress(state)
         } else if logged_out {
-            crate::ui::tree::LOGGED_OUT.to_string()
+            crate::ui::cards::LOGGED_OUT.to_string()
         } else if kind == ViewScreen::Machine
             && crate::ui::switcher::is_machine_scanning(
                 state,
@@ -1394,7 +1345,7 @@ impl Chrome {
                 .iter()
                 .find(|g| g.host == address.host)
                 .map_or(0, |g| g.sessions.len());
-            crate::ui::tree::host_sessions_word(count)
+            crate::ui::cards::host_sessions_word(count)
         } else {
             kind.word().to_string()
         };
@@ -1932,114 +1883,6 @@ impl Chrome {
         }
     }
 
-    /// The hint bar's logical text, fit to `width`. At rest this text is only the prefix,
-    /// the nav's prefix indicator, and it stays the prefix while the prefix is armed (the
-    /// key list beside it names the keys). An open input keeps the prefix too: the input
-    /// says its keys where it is typed. The transient states outrank the rest, in order:
-    /// the input, the armed prefix, the hint after a selection move, then the scan
-    /// progress. What an action did or why it did nothing is a toast, never this text.
-    pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
-        // Use the active prefix so the hint_bar matches the user's configured binding.
-        let p = &self.ui_prefix;
-        if state.is_inputting() {
-            // An open input says its keys on its own box's border, so the indicator rests.
-            fit(&[format!(" {p}"), p.to_string()], width)
-        } else if self.armed {
-            // A live prefix names its keys in the key list beside the indicator, so the
-            // indicator keeps the prefix alone.
-            fit(&[format!(" {p}"), p.to_string()], width)
-        } else if let Some(hint) = &self.selection_hint {
-            selection_hint_text(hint, p, width)
-        } else if state.scanning_any() {
-            // A subtle global indicator while host probes are in flight; clears
-            // (falls through to the resting prefix) once every host has settled. It
-            // turns the SAME spinner the scanning cards do, on the same frame, so the
-            // bar and the cards read as one thing still loading. A machine with no host
-            // known counts as one entry of its own.
-            let total = state.groups.len() + state.hostless_machines().len();
-            let done = total.saturating_sub(state.scanning.len() + state.machine_scanning.len());
-            let sp = crate::ui::spinner_glyph(self.spinner_frame);
-            fit(
-                &[
-                    format!(" {sp} scanning hosts {done}/{total}…"),
-                    format!(" {sp} scanning {done}/{total}…"),
-                    format!(" {sp} {done}/{total}"),
-                    format!(" {sp}{done}/{total}"),
-                ],
-                width,
-            )
-        } else if !state.filter.is_empty() {
-            // The applied filter has no row of its own, so it shows here with how to
-            // change and clear it.
-            fit(
-                &[
-                    format!(" filter: {} · {p} / edit · Esc clear", state.filter),
-                    format!(" filter: {}", state.filter),
-                ],
-                width,
-            )
-        } else {
-            // At rest the text is the prefix alone.
-            fit(&[format!(" {p}"), p.to_string()], width)
-        }
-    }
-
-    /// One hint-bar line as styled spans: each ` · `-separated segment's leading key
-    /// token (the prefix `C-g` is its own segment, so every other segment is one key)
-    /// gets the accent, the separators go muted, and the rest inherits the bar's base
-    /// style. Purely presentational - the text is exactly the [`Self::hint_bar_text`]
-    /// line, so the fit / wrap behaviour is untouched.
-    fn hint_bar_line_spans(
-        &self,
-        line: String,
-        palette: &crate::ui::palette::Palette,
-        fact: Option<&str>,
-    ) -> Line<'static> {
-        // The bar's OWN accent, not the card accent: the keys sit on `bar_bg`, a
-        // surface the card accent may not read on (see `Palette::bar_accent`). The keys
-        // are also BOLD, so a key reads as a key wherever it is offered (the help modal's
-        // key column and the host-screen rows are bold the same way).
-        let accent = crate::ui::palette::interaction_key_style().fg(palette.bar_accent);
-        let sep_style = Style::default().fg(palette.decoration);
-        let mut spans: Vec<Span> = Vec::new();
-        let segments: Vec<&str> = line.split(" · ").collect();
-        let last = segments.len().saturating_sub(1);
-        for (i, seg) in segments.into_iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled(" · ", sep_style));
-            }
-            // A selection hint ends on its fact, which is words about the card and holds
-            // no key.
-            if i == last && i > 0 && fact.is_some_and(|f| !f.is_empty() && seg.starts_with(f)) {
-                spans.push(Span::raw(seg.to_string()));
-                continue;
-            }
-            // The key = the first token, or the first two when the segment starts with
-            // the prefix ("C-g n"). Leading spaces (the bar's left margin) stay raw.
-            let lead_len = seg.len() - seg.trim_start().len();
-            let (lead, body) = seg.split_at(lead_len);
-            if !lead.is_empty() {
-                spans.push(Span::raw(lead.to_string()));
-            }
-            let mut parts = body.splitn(2, ' ');
-            let first = parts.next().unwrap_or_default();
-            let rest = parts.next();
-            let (key, desc) = match rest {
-                Some(rest) if first == self.ui_prefix => {
-                    let mut sub = rest.splitn(2, ' ');
-                    let second = sub.next().unwrap_or_default();
-                    (format!("{first} {second}"), sub.next().map(str::to_string))
-                }
-                _ => (first.to_string(), rest.map(str::to_string)),
-            };
-            spans.push(Span::styled(key, accent));
-            if let Some(desc) = desc {
-                spans.push(Span::raw(format!(" {desc}")));
-            }
-        }
-        Line::from(spans)
-    }
-
     /// The version the prefix key list writes on its bottom border: `xmux v<version>`,
     /// built from the crate's own name and version so it always matches what
     /// `xmux --version` reports.
@@ -2055,120 +1898,33 @@ impl Chrome {
             .map(|latest| format!("v{latest} available: xmux update"))
     }
 
-    pub(crate) fn render_hint_bar(
+    /// The prefix hint: the prefix as a chip on its own background (`bar_bg`), so it
+    /// reads as chrome rather than content. `chip` is the rect the chip paints; the
+    /// caller aligns it inside its row, toward the nav border. `padded` pads the prefix
+    /// with a cell each side; a collapsed vertical nav's column is exactly as wide as
+    /// the prefix, so it paints unpadded across the row.
+    pub(crate) fn paint_prefix_hint(
         &self,
         frame: &mut Frame,
-        area: Rect,
-        state: &crate::state::State,
-        fill: BarFill,
-        palette: &crate::ui::palette::Palette,
-    ) {
-        let line = self.hint_bar_text(area.width, state);
-        // Key tokens get the accent only on the built-in default style: a
-        // `[ui] hint-bar-style` override keeps its exact colours (uniform, as configured).
-        let width = line.chars().count() as u16;
-        let styled = self.hint_bar_style == hint_bar_default_style(palette);
-        let fact = (!self.armed)
-            .then_some(self.selection_hint.as_ref())
-            .flatten()
-            .map(|h| h.fact.split(':').next().unwrap_or_default().to_string());
-        let text = if styled {
-            Text::from(self.hint_bar_line_spans(line, palette, fact.as_deref()))
-        } else {
-            Text::from(line)
-        };
-        // The hint bar is a solid status bar in the configured status style
-        // (`hint_bar_default_style` / the `[ui] hint-bar-style` override). The style fills
-        // the whole area, so the bar spans full width even where the text does not;
-        // unstyled spans inherit the bar's fg/bg.
-        //
-        // `Clear` first, because a style only recolours cells - it does not blank them.
-        // A floating bar covers the live grid, so without this the grid's own
-        // characters survive in the columns the bar's text does not reach and the bar
-        // reads as text spilled across the screen instead of a bar covering it.
-        let painted = match fill {
-            BarFill::Row => area,
-            BarFill::Content => Self::bar_content_rect(area, width),
-        };
-        frame.render_widget(Clear, painted);
-        frame.render_widget(Paragraph::new(text).style(self.hint_bar_style), painted);
-    }
-
-    /// Paints the resting prefix across a collapsed nav's indicator: after a one-cell
-    /// margin on a band's padded chip, from the first cell of a side column, which is
-    /// exactly as wide as the prefix. Transient bars are handled by the ordinary
-    /// floating-bar path instead.
-    pub(crate) fn render_collapsed_hint_bar(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
+        chip: Rect,
         padded: bool,
         palette: &crate::ui::palette::Palette,
     ) {
-        frame.render_widget(Clear, area);
-        let margin = if padded { " " } else { "" };
-        let line = self.hint_bar_line_spans(format!("{margin}{}", self.ui_prefix), palette, None);
-        frame.render_widget(Paragraph::new(line).style(self.hint_bar_style), area);
+        let prefix = if padded {
+            format!(" {}", self.ui_prefix)
+        } else {
+            self.ui_prefix.clone()
+        };
+        let line = Line::from(Span::styled(
+            prefix,
+            crate::ui::palette::interaction_key_style().fg(palette.bar_accent),
+        ));
+        frame.render_widget(Clear, chip);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(palette.bar_bg).fg(palette.bar_fg)),
+            chip,
+        );
     }
-
-    /// How many cells a [`BarFill::Content`] bar paints, so whatever else is on the row
-    /// (a band's overflow counts) can stop where the bar starts instead of being painted
-    /// over.
-    pub(crate) fn hint_bar_chip_width(&self, width: u16, state: &crate::state::State) -> u16 {
-        let content = self.hint_bar_text(width, state).chars().count() as u16;
-        Self::bar_content_rect(Rect::new(0, 0, width, 1), content).width
-    }
-
-    /// The bar's rect trimmed to what it has to say, plus one cell of padding, so a
-    /// resting bar reads as a label on its row instead of a slab of colour across a
-    /// window it has one word for. Never wider than the row it was given.
-    fn bar_content_rect(area: Rect, content_w: u16) -> Rect {
-        Rect {
-            width: content_w.saturating_add(1).min(area.width),
-            ..area
-        }
-    }
-}
-
-/// The hint after a selection move, fit to `width`: the card's keys and its fact. A
-/// narrow bar first shortens every key's description, then gives up the fact's tail, then
-/// the later keys; the first key always keeps its name.
-fn selection_hint_text(
-    hint: &crate::state::chrome::SelectionHint,
-    prefix: &str,
-    width: u16,
-) -> String {
-    let keys = |n: usize, long: bool| -> Vec<String> {
-        hint.keys
-            .iter()
-            .take(n)
-            .map(|(k, l, s)| format!("{} {}", k, if long { l } else { s }))
-            .collect()
-    };
-    let join = |parts: Vec<String>| format!(" {}", parts.join(" · "));
-    let with_fact = |mut parts: Vec<String>, fact: &str| {
-        if !fact.is_empty() {
-            parts.push(fact.to_string());
-        }
-        parts
-    };
-    // The fact is a state word, and after a colon the reason behind it: the reason is the
-    // part a narrow bar gives up first.
-    let word = hint.fact.split(':').next().unwrap_or_default().to_string();
-    let n = hint.keys.len();
-    let mut candidates = vec![
-        join(with_fact(keys(n, true), &hint.fact)),
-        join(with_fact(keys(n, false), &hint.fact)),
-        join(with_fact(keys(n, false), &word)),
-    ];
-    for k in (1..n).rev() {
-        candidates.push(join(with_fact(keys(k, false), &word)));
-    }
-    candidates.push(join(keys(1, false)));
-    if n == 0 {
-        candidates.push(format!(" {prefix}"));
-    }
-    crate::ui::switcher::fit(&candidates, width)
 }
 
 #[cfg(test)]
@@ -2201,26 +1957,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_hint_bar_style_default_and_override() {
-        let palette = crate::ui::palette::Palette::default();
-        // Empty (and whitespace-only) ⇒ the built-in tmux default (yellowgreen / gray5).
-        assert_eq!(
-            parse_hint_bar_style("", &palette),
-            hint_bar_default_style(&palette)
-        );
-        assert_eq!(
-            parse_hint_bar_style("   ", &palette),
-            hint_bar_default_style(&palette)
-        );
-        // bg=/fg= tokens set the two colours (tmux status-style syntax).
-        let s = parse_hint_bar_style("bg=blue,fg=white", &palette);
-        assert_eq!(s.bg, Some(Color::Blue));
-        assert_eq!(s.fg, Some(Color::White));
-        // A bare colour token is the foreground (tmux convention).
-        assert_eq!(parse_hint_bar_style("red", &palette).fg, Some(Color::Red));
-    }
-
-    #[test]
     fn version_label_names_the_crate_and_its_version() {
         let c = Chrome::default();
         let label = c.version_label();
@@ -2229,102 +1965,6 @@ mod tests {
             format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
         );
         assert!(label.starts_with("xmux v"), "label: {label:?}");
-    }
-
-    #[test]
-    fn hint_bar_rests_over_an_open_input() {
-        use crate::ui::modal::{Input, InputMode, Modal};
-        let c = Chrome::default();
-        let state = crate::state::State {
-            modal: Some(Modal::Input(Box::new(Input::new(
-                InputMode::Filter,
-                "xm".into(),
-                None,
-            )))),
-            ..Default::default()
-        };
-        let t = c.hint_bar_text(60, &state);
-        assert_eq!(
-            t.trim(),
-            "C-g",
-            "the input says its keys where it is typed, so the bar rests: {t:?}"
-        );
-    }
-
-    #[test]
-    fn hint_bar_keeps_the_prefix_alone_at_rest_and_while_armed() {
-        let mut c = Chrome::default();
-        let mut state = crate::state::State::default();
-        // At rest the logical text is the prefix alone.
-        assert_eq!(c.hint_bar_text(80, &state).trim(), "C-g");
-        // Armed, the key list beside the indicator names the keys, and the indicator
-        // keeps the prefix alone, over the scan progress it would otherwise show.
-        state.scanning.insert("local".into());
-        c.set_armed(true);
-        assert_eq!(c.hint_bar_text(400, &state).trim(), "C-g");
-    }
-
-    #[test]
-    fn the_selection_hint_names_its_keys_and_fact_and_shortens_to_fit() {
-        let mut c = Chrome::default();
-        let state = crate::state::State::default();
-        let now = std::time::Instant::now();
-        c.show_selection_hint(
-            vec![
-                (
-                    "Enter".into(),
-                    "focus terminal view".into(),
-                    "terminal".into(),
-                ),
-                (
-                    "C-g r".into(),
-                    "rescan this machine".into(),
-                    "rescan".into(),
-                ),
-            ],
-            "unreachable: Connection refused".into(),
-            now,
-        );
-        let wide = c.hint_bar_text(200, &state);
-        assert_eq!(
-            wide,
-            " Enter focus terminal view · C-g r rescan this machine · unreachable: Connection refused"
-        );
-        // Shorter descriptions first, then the reason behind the state word, then keys.
-        let short = c.hint_bar_text(70, &state);
-        assert_eq!(
-            short,
-            " Enter terminal · C-g r rescan · unreachable: Connection refused"
-        );
-        let word = c.hint_bar_text(45, &state);
-        assert_eq!(word, " Enter terminal · C-g r rescan · unreachable");
-        let one = c.hint_bar_text(30, &state);
-        assert_eq!(one, " Enter terminal · unreachable");
-        let bare = c.hint_bar_text(16, &state);
-        assert_eq!(bare, " Enter terminal", "a key keeps its name to the last");
-        // It lasts three seconds, then the resting prefix returns.
-        assert!(!c.expire_selection_hint(now + std::time::Duration::from_millis(2999)));
-        assert!(c.selection_hint.is_some());
-        assert!(c.expire_selection_hint(now + std::time::Duration::from_secs(3)));
-        assert_eq!(c.hint_bar_text(200, &state).trim(), "C-g");
-    }
-
-    #[test]
-    fn an_armed_prefix_outranks_the_selection_hint() {
-        let mut c = Chrome::default();
-        let state = crate::state::State::default();
-        c.show_selection_hint(
-            vec![(
-                "Enter".into(),
-                "focus the terminal".into(),
-                "terminal".into(),
-            )],
-            "2 windows".into(),
-            std::time::Instant::now(),
-        );
-        assert!(c.hint_bar_text(200, &state).contains("2 windows"));
-        c.set_armed(true);
-        assert_eq!(c.hint_bar_text(200, &state).trim(), "C-g");
     }
 
     #[test]
@@ -2354,20 +1994,20 @@ mod tests {
         // Unset → xmux's own pair, whatever host is displayed: the palette primary lit
         // against its disabled tone, the hover cue on the accent.
         let pal = crate::ui::palette::Palette::default();
-        let d = ViewBorderColors::resolve_with_palette("", "", "", &pal);
+        let d = NavBorderColors::resolve_with_palette("", "", "", &pal);
         assert_eq!(d.active, pal.primary);
         assert_eq!(d.inactive, pal.disabled);
         assert_eq!(d.hover, pal.accent);
-        assert_eq!(d, ViewBorderColors::default());
+        assert_eq!(d, NavBorderColors::default());
 
         // Each key overrides its own role and leaves the others at the default.
-        let c = ViewBorderColors::resolve_with_palette("red", "", "cyan", &pal);
+        let c = NavBorderColors::resolve_with_palette("red", "", "cyan", &pal);
         assert_eq!(c.active, Color::Red);
         assert_eq!(c.inactive, pal.disabled);
         assert_eq!(c.hover, Color::Cyan);
 
         // The tmux colour syntax applies to the overrides (`default` = Reset).
-        let c = ViewBorderColors::resolve_with_palette("fg=green", "default", "", &pal);
+        let c = NavBorderColors::resolve_with_palette("fg=green", "default", "", &pal);
         assert_eq!(c.active, Color::Green);
         assert_eq!(c.inactive, Color::Reset);
     }

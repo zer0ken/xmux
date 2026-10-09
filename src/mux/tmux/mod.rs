@@ -320,7 +320,7 @@ impl ControlProtocol for TmuxControl {
                 host: host.to_string(),
                 session: name.to_string(),
             }),
-            // `%window-pane-changed` (a pane became active) does not affect the nav tree:
+            // `%window-pane-changed` (a pane became active) does not affect the card list:
             // the per-session PTY attachments own the live pane.
             Notif::WindowPaneChanged { .. } => None,
             Notif::Exit { reason } => {

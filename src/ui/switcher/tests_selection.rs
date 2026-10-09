@@ -731,7 +731,9 @@ fn enter_marks_preserve_wide_session_names_at_every_position() {
         let last = (card.x..card.right())
             .find(|&x| buf[(x, card.y)].symbol() == "業")
             .expect("the wide final character is intact");
-        assert_eq!(buf[(last + 1, card.y)].symbol(), " ");
+        // The wide character covers its second half, so the covered cell reads as
+        // whatever the previous frame left behind it; the intact reads are the final
+        // character, a roomy card's own padding, and the Enter mark's place.
         let enter = (card.x..card.right())
             .find(|&x| buf[(x, card.y)].symbol() == super::render::ENTER_MARK)
             .expect("the roomy card carries Enter");

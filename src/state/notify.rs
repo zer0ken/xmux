@@ -2,7 +2,7 @@
 //! record of every such report and every background event.
 //!
 //! A toast reports the result of work the user started, a refusal included: what an
-//! action did or why it did nothing is never hint-bar text. A background event (a host that
+//! action did or why it did nothing is never prefix-hint text. A background event (a host that
 //! stopped answering while nobody asked it anything) is recorded without a toast, because
 //! an interruption the user did not cause would pull attention from the terminal they are
 //! working in. Both land in the history, which `prefix m` opens.
