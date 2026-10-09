@@ -8611,6 +8611,32 @@ async fn a_selected_host_card_is_painted_while_the_band_is_hidden() {
 }
 
 #[tokio::test]
+async fn a_hidden_host_band_reserves_no_rows() {
+    // While the host band shows, both bands are counted; once the move into the
+    // terminal view hides it, the hidden band takes no rows, so the session cards
+    // fill the nav and no blank space is left where the band would sit.
+    let mut h = Harness::new(scan_with_a_host_band());
+    let boundary = h.sw.band_boundary().expect("the list has a host card");
+    assert!(
+        h.sw.painted_rows() > boundary,
+        "both bands are counted while the band shows"
+    );
+    h.sw.sync_view_focus(true);
+    h.draw();
+    assert_eq!(
+        h.sw.painted_rows(),
+        boundary,
+        "the hidden host band takes no rows"
+    );
+    let nav = h.nav_cards_text();
+    assert!(
+        !nav.contains("db-2") && !nav.contains("db-3"),
+        "no host cards paint:
+{nav}"
+    );
+}
+
+#[tokio::test]
 async fn a_selection_that_falls_to_its_host_card_is_painted() {
     // Logging out of the machines, or the machines losing their sessions, leaves the
     // selection on a host card while the terminal view keeps the focus.

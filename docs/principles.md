@@ -57,6 +57,20 @@ The nav is read at a glance between tasks, so every cell it spends on a hint or 
 reason is a cell taken from the names the user is scanning for. Anything the user needs
 only while acting has a surface that appears while they act.
 
+## Space for What Shows
+
+xmux reserves a row or a cell only for an element it paints; an element hidden by state
+takes no space until it is shown. The host band, hidden when the move into the terminal
+view comes from a session card, leaves its rows to the session cards, and the parting
+row that would sit above it disappears with it.
+
+The nav is read between tasks, so a space held for something off screen reads as a gap
+in the list the user is scanning: it is not a card, it never scrolls like one, and it
+explains nothing. Keeping the hidden band's rows until the band shows means the cards on
+screen are exactly what is relevant, and a band that returns is a change the user sees
+rather than the filling of a gap that was always there. Space that would come and go
+with the state would shift the cards it surrounds for no reason the reader can act on.
+
 ## Helpful Interaction Surface
 
 A surface the user is interacting with spends its room on state words, counts, the next

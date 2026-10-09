@@ -469,6 +469,34 @@ fn pl7_a_one_row_band_runs_title_and_cards_on_one_line() {
 }
 
 #[test]
+fn selecting_a_session_card_keeps_its_section_title_on_screen() {
+    // A tall side list: moving the selection far down scrolls a middle section's
+    // title off the top, and moving back up to that section's card pulls the list
+    // back so the machine/host title shares the screen with the selected card.
+    let mut scan = Scan::default();
+    for i in 0..16 {
+        scan.groups.push(Group {
+            host: format!("host{i:02}"),
+            err: None,
+            sessions: vec![sess(&format!("host{i:02}"), "a")],
+        });
+    }
+    let mut shot = Shot::new(scan, nav_at(NavPosition::Left), false);
+    shot.sw.move_to(-1);
+    shot.draw(false);
+    assert!(
+        shot.find_in(shot.nav_area(), "host04").is_none(),
+        "the middle section's title is scrolled off before the selection returns"
+    );
+    shot.sw.move_to(4);
+    shot.draw(false);
+    assert!(
+        shot.find_in(shot.nav_area(), "host04").is_some(),
+        "selecting the session card reveals its machine/host section title"
+    );
+}
+
+#[test]
 fn pl7_a_one_row_band_scrolls_to_the_selection() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
         let mut shot = Shot::new(many_sessions(30, 6), nav_at(position).with_height(1), false);
