@@ -168,7 +168,7 @@ impl Switcher {
     }
 
     /// True while the key list or a modal popup is being dragged; the app routes every
-    /// mouse event here until release, like the view border drag / menu hold.
+    /// mouse event here until release, like the nav border drag / menu hold.
     pub fn popup_drag_active(&self) -> bool {
         self.popup_geo.drag_active()
     }
@@ -311,7 +311,7 @@ impl Switcher {
             KeyCode::PageDown => self.move_selection(10),
             KeyCode::Home => self.move_to(0),
             KeyCode::End => self.move_to(-1),
-            // An applied filter is cleared by Esc (the hint bar advertises it); with no
+            // An applied filter is cleared by Esc (the prefix hint advertises it); with no
             // filter there is nothing to clear and Esc does nothing.
             KeyCode::Esc if !state.filter.is_empty() => {
                 state.filter.clear();
@@ -360,6 +360,7 @@ impl Switcher {
             );
             return Vec::new();
         }
+        self.explicit_rescan = true;
         vec![Command::RescanMachine(machine)]
     }
 
@@ -537,7 +538,7 @@ impl Switcher {
                         .filter_map(|m| Some((m.name.as_str(), m.err.as_deref()?))),
                 )
                 .collect();
-            failed.sort_by(|a, b| crate::ui::tree::card_order(a.0, b.0));
+            failed.sort_by(|a, b| crate::ui::cards::card_order(a.0, b.0));
             for (host, err) in failed {
                 let reason = err
                     .lines()

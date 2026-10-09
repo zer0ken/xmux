@@ -117,7 +117,7 @@ impl Runtime {
 
 /// Applies ONE parsed SGR mouse event to the gesture state + nav/registry - the body
 /// of the inline `while i < bytes.len()` mouse branch, lifted verbatim. Runs the modal/
-/// gesture gates (view border drag, popup drag, modal swallow, view border grab, idle
+/// gesture gates (nav border drag, popup drag, modal swallow, nav border grab, idle
 /// hover) in the SAME order, then the focus×position routing. Mutates `st`
 /// (the gesture latches), `state.focus` (mid-loop focus toggles - routing re-reads focus
 /// per event, so deferring would change behavior), and the byte-loop accumulators
@@ -177,32 +177,37 @@ impl Runtime {
         let is_press = ev.pressed && (ev.cb & 0x60) == 0;
         // Wheel events carry the 0x40 bit (cb 64=up, 65=down; +16=Ctrl).
         let is_wheel = ev.pressed && (ev.cb & 0x40) != 0;
-        // View border drag: grab the view border rule (the column at the effective
+        // View border drag: grab the nav border rule (the column at the effective
         // nav width, only when the nav is shown) with the left button and
         // drag to resize. Once grabbed it owns every mouse event until the
         // button is released. Sets the NATURAL width; the loop-top reconcile
         // applies it and resizes the PTYs (same path as prefix Ctrl-←/→).
         let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
         let row0 = ev.row.saturating_sub(1);
-        // The view border rect from the one shared geometry, so the grab / hover works in
-        // any placement: a vertical rule in a column, a horizontal rule in a band. The
-        // drag then resizes the nav WIDTH (column, by column) or HEIGHT (band, by row).
+        // The nav border rect from the one shared geometry, so the grab / hover works in
+        // any placement: a vertical rule in a column, a horizontal rule in a horizontal nav. The
+        // drag then resizes the nav WIDTH (column, by column) or HEIGHT (horizontal nav, by row).
         let full = self.model.render_plan.screen_area;
         let regions = self.model.render_plan.regions;
-        let on_view_border = !self.model.render_plan.nav_hidden
+        let on_nav_border = !self.model.render_plan.nav_hidden
             && !self.model.render_plan.nav_collapsed
             && regions
-                .view_border
+                .nav_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
-        let top_layout = regions.layout == crate::ui::switcher::ViewLayout::Band;
-        if self.model.mouse_state.dragging_view_border {
+        let top_layout = regions.layout == crate::ui::switcher::ViewLayout::Horizontal;
+        if self.model.mouse_state.dragging_nav_border {
             if !ev.pressed {
                 // Button up ends the drag; persist the final size once (motion resizes live
-                // but does not write per cell). A band drags the height, a column the width.
-                let effects = update(&mut self.model, Msg::EndNavDrag { band: top_layout });
+                // but does not write per cell). A horizontal nav drags the height, a column the width.
+                let effects = update(
+                    &mut self.model,
+                    Msg::EndNavDrag {
+                        horizontal: top_layout,
+                    },
+                );
                 let _ = self.execute_effects(effects);
             } else if !is_wheel {
-                // The DRAG measures from the near edge: a band drags the height (from the
+                // The DRAG measures from the near edge: a horizontal nav drags the height (from the
                 // top edge, or the bottom edge when pinned there), a column the width (from
                 // the left edge, or the right one) - the same per-side math the resize keys
                 // follow (their direction is the border's movement). A drag past the
@@ -210,13 +215,13 @@ impl Runtime {
                 // expands it at the width or height the pointer reached.
                 let position = self.model.render_plan.nav_position;
                 let target = if top_layout {
-                    view_border_drag_height(
+                    nav_border_drag_height(
                         ev.row,
                         full.height,
                         position == crate::ui::switcher::NavPosition::Bottom,
                     )
                 } else {
-                    view_border_drag_width(
+                    nav_border_drag_width(
                         ev.col,
                         &self.env.ui_prefix,
                         full.width,
@@ -267,7 +272,7 @@ impl Runtime {
         }
         let is_left_press = is_press && (ev.cb & 0x03) == 0;
         // The key list and a modal popup move when dragged from anywhere on them. Once
-        // grabbed the drag owns every mouse event until release, like the view border
+        // grabbed the drag owns every mouse event until release, like the nav border
         // drag above. A release on the cell the press grabbed is a click, which executes
         // the popup item under it as Enter would.
         if self.model.switcher.popup_drag_active() {
@@ -305,8 +310,8 @@ impl Runtime {
         }
         // A modal popup is mouse-modal: while one is open, every mouse
         // event that is not its drag (handled above) is swallowed,
-        // so clicks, wheels, view border grabs, and hovers never reach the
-        // nav/terminal/view border behind it. Bare motion sets the popup's
+        // so clicks, wheels, nav border grabs, and hovers never reach the
+        // nav/terminal/nav border behind it. Bare motion sets the popup's
         // hover: the help tab or the list item under the pointer.
         if self.model.state.is_modal_popup_open() {
             if idle_motion {
@@ -323,7 +328,7 @@ impl Runtime {
             }
             return dirty;
         }
-        // A collapsed nav is one target: a click anywhere on it, its seam included,
+        // A collapsed nav is one target: a click anywhere on it, its nav border included,
         // expands it, and is neither a focus move nor a drag.
         let at = ratatui::layout::Position { x: col0, y: row0 };
         if is_left_press
@@ -343,8 +348,8 @@ impl Runtime {
                 return true;
             }
         }
-        // A band's overflow count stands on the seam for the hidden card nearest the
-        // visible ones: a click selects that card, so the band scrolls to it.
+        // A horizontal nav's overflow count stands on the nav border for the hidden card
+        // nearest the visible ones: a click selects that card, so the nav scrolls to it.
         if is_left_press && self.model.render_plan.overflow_target(col0, row0).is_some() {
             let effects = update(
                 &mut self.model,
@@ -365,21 +370,21 @@ impl Runtime {
             );
             return true;
         }
-        if is_left_press && on_view_border {
+        if is_left_press && on_nav_border {
             let effects = update(&mut self.model, Msg::SetMouseDragging(true));
-            debug_assert!(effects.is_empty()); // grabbed the view border
+            debug_assert!(effects.is_empty()); // grabbed the nav border
             return dirty;
         }
         // Idle motion (motion bit set, no button held) - reported only
-        // because any-motion tracking (1003h) is on. Over the view border it
+        // because any-motion tracking (1003h) is on. Over the nav border it
         // lights the hover cue and is consumed (nothing under it to forward).
         // Elsewhere it falls through to the routing below, so a hover over the
         // terminal view IS forwarded to the child (the inner app gets hover); over
         // the nav it is harmlessly dropped.
         if idle_motion {
-            let over_view_border = on_view_border;
-            if over_view_border != self.model.mouse_state.hovered_view_border {
-                let effects = update(&mut self.model, Msg::SetMouseHovered(over_view_border));
+            let over_nav_border = on_nav_border;
+            if over_nav_border != self.model.mouse_state.hovered_nav_border {
+                let effects = update(&mut self.model, Msg::SetMouseHovered(over_nav_border));
                 debug_assert!(effects.is_empty());
                 dirty = true;
             }
@@ -397,7 +402,7 @@ impl Runtime {
             if self.model.switcher.hover_targets() != before {
                 dirty = true;
             }
-            if over_view_border {
+            if over_nav_border {
                 return dirty;
             }
         }
@@ -527,7 +532,7 @@ impl Runtime {
 
     /// Applies a nav-resize delta on ONE axis, gated to the layout that actually shows that
     /// axis so a key never resizes a dimension the user cannot see: `horizontal` (Ctrl-←/→)
-    /// resizes the WIDTH only in a column, `!horizontal` (↑/↓) the HEIGHT only in a band; the
+    /// resizes the WIDTH only in a column, `!horizontal` (↑/↓) the HEIGHT only in a horizontal nav; the
     /// perpendicular axis is a no-op. The delta is the key's SCREEN direction (+1 = right /
     /// down), and the nav-size effect follows the placement: on the left or above that
     /// direction grows the nav, on the right or below it shrinks it, because the border's
@@ -632,23 +637,13 @@ impl Runtime {
                 }
             }
         }
-        // Any key ends the hint after a selection move, in either focus; a key below that
-        // moves the selection again raises the next one.
-        if !non_mouse.is_empty()
-            && (!self.model.state.chrome.first_key_seen
-                || self.model.state.chrome.selection_hint.is_some())
-        {
-            let effects = update(&mut self.model, Msg::KeysRead);
-            let _ = self.execute_effects(effects);
-            *dirty = true;
-        }
-        // Watchdog: a view border drag is normally ended by the button-up event, but a
+        // Watchdog: a nav border drag is normally ended by the button-up event, but a
         // release can be lost (split across reads, released off-window, or a terminal
-        // that omits it) - which would strand `dragging_view_border` and eat all later
+        // that omits it) - which would strand `dragging_nav_border` and eat all later
         // mouse input. Any non-mouse byte (a keystroke, or the split release's own
         // leftover bytes) ends the drag and persists the final width, so the user is
         // never trapped past the next input.
-        if self.model.mouse_state.dragging_view_border && !non_mouse.is_empty() {
+        if self.model.mouse_state.dragging_nav_border && !non_mouse.is_empty() {
             let effects = update(&mut self.model, Msg::SetMouseDragging(false));
             debug_assert!(effects.is_empty());
             // The recovery doesn't track which axis was dragging; persist both (a no-op file
@@ -865,7 +860,7 @@ impl Runtime {
                     }
                     // Same resize + repeat-window as the nav path, so a resize started from
                     // the terminal view chains with bare Ctrl-arrows too. Width = ←/→ (column),
-                    // height = ↑/↓ (band).
+                    // height = ↑/↓ (horizontal nav).
                     Action::Width(d) => {
                         if self.resize_and_repeat(true, d) {
                             *width_changed = true;
@@ -925,7 +920,7 @@ impl Runtime {
             );
             let _ = self.execute_effects(effects);
             // No term.clear(): both states draw the SAME split layout (only the
-            // view border colour changes), so clearing would blank the screen and
+            // nav border colour changes), so clearing would blank the screen and
             // force a full repaint for nothing.
         }
         if *focus_nav {
@@ -999,12 +994,6 @@ impl Runtime {
         if self.model.mouse_state.resizing {
             let effects = update(&mut self.model, Msg::SetResizing(false));
             debug_assert!(effects.is_empty());
-        }
-        if !self.model.state.chrome.first_key_seen
-            || self.model.state.chrome.selection_hint.is_some()
-        {
-            let effects = update(&mut self.model, Msg::KeysRead);
-            let _ = self.execute_effects(effects);
         }
         let field = crate::display::paste::field_text(&text);
         if crate::state::is_reader(&self.model.state.modal) {

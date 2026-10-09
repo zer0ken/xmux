@@ -19,8 +19,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Action, Command, Node, ViewScreen};
 use crate::session::{Address, Session};
+use crate::ui::cards::{self, Group, Row, RowRef};
 use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
-use crate::ui::tree::{self, Group, Row, RowRef};
 
 use crate::state::OpFollow;
 pub use crate::ui::ops::{run_login_follow_ups, run_op, OpResult, Ops};
@@ -46,31 +46,22 @@ pub(super) const BAND_RULE: &str = "\u{2500}";
 /// indents nothing.
 pub(super) const CARD_INDENT: u16 = 1;
 
-pub use crate::ui::chrome::ViewBorderColors;
+pub use crate::ui::chrome::NavBorderColors;
 
 pub use crate::model::{NavSize, ViewLayout};
 
 /// The collapsed width of a side nav: exactly the resting prefix, which the collapsed
 /// column keeps on its bottom line with no padding. The column exists only to keep the
 /// prefix in view and to be clicked open, so every further cell would be taken from the
-/// terminal view. Its view border shares the column's terminal-side edge.
+/// terminal view. Its nav border shares the column's terminal-side edge.
 pub(crate) fn collapsed_nav_width(ui_prefix: &str) -> u16 {
     UnicodeWidthStr::width(ui_prefix).min(u16::MAX as usize) as u16
 }
 
-/// The resting prefix with one cell either side: the chip a band's seam row carries while
-/// the band is collapsed or its bar floats, and the label an expanded nav's indicator
-/// needs room for.
+/// The prefix hint with one cell either side: the chip a nav border row carries and
+/// the chip a vertical nav's prefix hint row paints.
 pub(crate) fn prefix_chip_width(ui_prefix: &str) -> u16 {
     collapsed_nav_width(ui_prefix).saturating_add(2)
-}
-
-/// Whether the hint bar floats over the whole window instead of resting at the nav's
-/// prefix indicator: for the first-key notice. A live prefix does not float
-/// the bar: its keys open in the key list instead. An open input does not either: it says
-/// its keys on its popup's border.
-pub(crate) fn hint_bar_floats(state: &crate::state::State) -> bool {
-    state.chrome.selection_hint.is_some() && !state.chrome.armed && !state.is_inputting()
 }
 
 /// Whether the prefix key list is open: a live prefix that no input popup outranks.
@@ -78,16 +69,16 @@ pub(crate) fn key_list_open(state: &crate::state::State) -> bool {
     state.chrome.armed && !state.is_inputting()
 }
 
-/// The auto band-layout tree height for a body of `body_rows` rows (before the hint bar row
-/// is removed the caller passes `full_height - 1`). This is the seed a RELATIVE height resize
-/// (prefix Ctrl-↑/↓ in a band) starts from while `nav_height` is still 0 (auto), so the first key
-/// adjusts the height the user actually sees.
+/// The auto horizontal nav's card height for a body of `body_rows` rows (the caller
+/// passes `full_height - 1`). This is the seed a RELATIVE height resize
+/// (prefix Ctrl-↑/↓ in a horizontal nav) starts from while `nav_height` is still 0 (auto),
+/// so the first key adjusts the height the user actually sees.
 pub fn default_nav_height(body_rows: u16) -> u16 {
     top_nav_height(body_rows)
 }
 
-/// The tree region's height in the band layout: ~40% of the body, at least a few rows, but
-/// never so tall the terminal loses its last rows. Composed with min/max (not `clamp`) so a
+/// The navigation view's height in a horizontal nav: ~40% of the body, at least a few
+/// rows, but never so tall the terminal view loses its last rows. Composed with min/max (not `clamp`) so a
 /// tiny body - where the floor would exceed the ceiling and `clamp` would panic - just yields
 /// the small floor instead.
 fn top_nav_height(body_h: u16) -> u16 {
@@ -98,42 +89,45 @@ fn top_nav_height(body_h: u16) -> u16 {
 
 /// The screen regions the switcher draws into, derived ONCE per frame so the renderer,
 /// the PTY sizing, and mouse hit-testing all agree (one geometry, no divergence). The
-/// tree and terminal split the whole area side by side (`Column`, sized by `nav_width`)
-/// or stacked (`Band`, sized by `nav_height`), parted by the one-cell view border, the
-/// seam: a rule a drag resizes the nav from. The hint bar is where the prefix indicator rests: the BOTTOM row of a column's
-/// nav region, and the seam row itself in a band, so every row a band takes holds cards
+/// navigation view and terminal view split the whole area side by side (a vertical nav,
+/// sized by `nav_width`) or stacked (a horizontal nav, sized by `nav_height`), parted by
+/// the one-cell nav border: a rule a drag resizes the nav from. The prefix hint rests at
+/// the navigation view's start: the FIRST row of a vertical nav's column, and the nav
+/// border row itself in a horizontal nav, so every row a horizontal nav takes holds cards
 /// and the terminal view keeps every row it owns.
-/// A collapsed nav gives the cards no region: a side nav keeps a column as wide as its
-/// collapsed width with the prefix on its bottom row, a top or bottom nav keeps the seam
-/// row alone. A collapsed side nav's view border takes no column of its own: it runs down
-/// the column's terminal-side edge on every row above the prefix, so the prefix keeps
-/// every one of its characters and the terminal view gains the column. `nav_width == 0` is the tree-hidden sentinel: the terminal owns the whole
-/// area (and there is no nav to carry a hint bar). `nav_height == 0` means the band height
-/// is auto (~40% of the area).
+/// A collapsed nav gives the cards no region: a vertical nav keeps a column as wide as
+/// its collapsed width with the prefix hint on its first row, a horizontal nav keeps the
+/// nav border row alone. A collapsed vertical nav's nav border takes no column of its
+/// own: it runs down the column's terminal-side edge on every row below the prefix hint,
+/// so the prefix keeps every one of its characters and the terminal view gains the
+/// column. `nav_width == 0` is the nav-hidden sentinel: the terminal owns the whole area.
+/// `nav_height == 0` means the horizontal nav's height is auto (~40% of the area).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Regions {
     pub layout: ViewLayout,
-    pub tree: Rect,
-    pub view_border: Rect,
+    pub nav: Rect,
+    pub nav_border: Rect,
     pub terminal: Rect,
-    pub hint_bar: Rect,
+    /// The row the prefix hint chip paints: the navigation view's first row in a
+    /// vertical nav, the nav border row in a horizontal nav. Empty when the nav is hidden.
+    pub prefix_hint: Rect,
 }
 
 impl Default for Regions {
     fn default() -> Self {
         Self {
-            layout: ViewLayout::Column,
-            tree: Rect::default(),
-            view_border: Rect::default(),
+            layout: ViewLayout::Vertical,
+            nav: Rect::default(),
+            nav_border: Rect::default(),
             terminal: Rect::default(),
-            hint_bar: Rect::default(),
+            prefix_hint: Rect::default(),
         }
     }
 }
 
-/// The band-layout tree height: a user-set `nav_height` (dragged border) clamped so both
-/// views keep room, or the auto ~40% when `nav_height == 0`. min/max (not `clamp`) so a
-/// tiny body cannot panic on inverted bounds.
+/// A horizontal nav's card height: a user-set `nav_height` (dragged border) clamped so
+/// both views keep room, or the auto ~40% when `nav_height == 0`. min/max (not `clamp`)
+/// so a tiny body cannot panic on inverted bounds.
 fn top_nav_height_for(body_h: u16, nav_height: u16) -> u16 {
     if nav_height == 0 {
         top_nav_height(body_h)
@@ -142,29 +136,31 @@ fn top_nav_height_for(body_h: u16, nav_height: u16) -> u16 {
     }
 }
 
-/// Splits a nav region into `(card list, hint bar)`: the hint bar takes the bottom
-/// `hint_bar_h` rows, and the cards keep the rest. A nav too short to hold both gives
-/// the whole region to the cards and no hint bar, so a tiny terminal still navigates.
-fn split_nav(nav: Rect, hint_bar_h: u16) -> (Rect, Rect) {
-    if nav.height <= hint_bar_h {
+/// Splits a vertical nav's column into `(prefix hint row, card list)`: the prefix hint
+/// takes the FIRST row, and the cards keep the rest. A column too short to hold both
+/// gives the whole column to the cards and no prefix hint, so a tiny terminal still
+/// navigates.
+fn split_prefix_row(nav: Rect) -> (Rect, Rect) {
+    if nav.height <= 1 {
         return (nav, Rect::default());
     }
-    let r = Layout::vertical([Constraint::Min(0), Constraint::Length(hint_bar_h)]).split(nav);
+    let r = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(nav);
     (r[0], r[1])
 }
 
-fn collapsed_hint_bar(nav: Rect) -> Rect {
+fn collapsed_prefix_row(nav: Rect) -> Rect {
     if nav.height == 0 {
         Rect::default()
     } else {
-        Rect::new(nav.x, nav.y + nav.height - 1, nav.width, 1)
+        Rect::new(nav.x, nav.y, nav.width, 1)
     }
 }
 
-/// The regions of a collapsed side nav: a column exactly `nav_width` wide at the nav's
-/// side, its prefix on the bottom row, and the view border on the column's terminal-side
-/// edge above that row. The prefix character on that edge stays readable because the
-/// border stops short of it; the terminal view keeps everything beside the column.
+/// The regions of a collapsed vertical nav: a column exactly `nav_width` wide at the
+/// nav's side, its prefix hint on the first row, and the nav border on the column's
+/// terminal-side edge below that row. The prefix character on that edge stays readable
+/// because the border stops short of it; the terminal view keeps everything beside the
+/// column.
 fn collapsed_column(
     area: Rect,
     layout: ViewLayout,
@@ -181,31 +177,36 @@ fn collapsed_column(
     let nav = Rect::new(nav_x, area.y, w, area.height);
     Regions {
         layout,
-        tree: Rect::default(),
-        view_border: if w == 0 {
+        nav: Rect::default(),
+        nav_border: if w == 0 {
             Rect::default()
         } else {
-            Rect::new(edge_x, area.y, 1, area.height.saturating_sub(1))
+            Rect::new(
+                edge_x,
+                area.y.saturating_add(1),
+                1,
+                area.height.saturating_sub(1),
+            )
         },
         terminal: Rect::new(terminal_x, area.y, area.width - w, area.height),
-        hint_bar: collapsed_hint_bar(nav),
+        prefix_hint: collapsed_prefix_row(nav),
     }
 }
 
-pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
-    // The layout follows the attachment position: a left or right placement is a column,
-    // a top or bottom one a band. The position travels with the hidden nav unchanged, so
-    // hiding it cannot flip the layout; the hidden sentinel below still gives the whole
-    // area to the terminal.
+pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
+    // The layout follows the attachment position: a left or right placement is a vertical
+    // nav, a top or bottom one a horizontal nav. The position travels with the hidden nav
+    // unchanged, so hiding it cannot flip the layout; the hidden sentinel below still
+    // gives the whole area to the terminal.
     let layout = nav.position.layout();
     let (nav_width, nav_height) = (nav.width, nav.height);
     if nav_width == 0 {
         return Regions {
             layout,
-            tree: Rect::default(),
-            view_border: Rect::default(),
+            nav: Rect::default(),
+            nav_border: Rect::default(),
             terminal: area,
-            hint_bar: Rect::default(),
+            prefix_hint: Rect::default(),
         };
     }
     match nav.position {
@@ -219,32 +220,32 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 Constraint::Min(0),
             ])
             .split(area);
-            let (tree, hint_bar) = split_nav(c[0], hint_bar_h);
+            let (prefix_hint, nav) = split_prefix_row(c[0]);
             Regions {
                 layout,
-                tree,
-                view_border: c[1],
+                nav,
+                nav_border: c[1],
                 terminal: c[2],
-                hint_bar,
+                prefix_hint,
             }
         }
         NavPosition::Right => {
-            // The left column mirrored: the terminal keeps the remainder, the border and
-            // the tree follow on the right. The tree region is the left column's, so the
-            // in-region layout (card flow, hint bar) is identical at both placements.
+            // The left column mirrored: the terminal view keeps the remainder, the border
+            // and the navigation view follow on the right. The navigation view's in-region
+            // layout (card flow, prefix hint) is identical at both placements.
             let c = Layout::horizontal([
                 Constraint::Min(0),
                 Constraint::Length(1),
                 Constraint::Length(nav_width),
             ])
             .split(area);
-            let (tree, hint_bar) = split_nav(c[2], hint_bar_h);
+            let (prefix_hint, nav) = split_prefix_row(c[2]);
             Regions {
                 layout,
-                tree,
-                view_border: c[1],
+                nav,
+                nav_border: c[1],
                 terminal: c[0],
-                hint_bar,
+                prefix_hint,
             }
         }
         NavPosition::Top => {
@@ -261,15 +262,15 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
             .split(area);
             Regions {
                 layout,
-                tree: r[0],
-                view_border: r[1],
+                nav: r[0],
+                nav_border: r[1],
                 terminal: r[2],
-                hint_bar: r[1],
+                prefix_hint: r[1],
             }
         }
         NavPosition::Bottom => {
-            // The top band mirrored: the seam is the row ABOVE the band, and the prefix
-            // rests on it as it does above the top band's cards.
+            // The top placement mirrored: the nav border is the row ABOVE the cards, and
+            // the prefix hint rests on it at the row's left.
             let th = if nav.collapsed {
                 0
             } else {
@@ -283,10 +284,10 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
             .split(area);
             Regions {
                 layout,
-                tree: r[2],
-                view_border: r[1],
+                nav: r[2],
+                nav_border: r[1],
                 terminal: r[0],
-                hint_bar: r[1],
+                prefix_hint: r[1],
             }
         }
     }
@@ -302,7 +303,7 @@ pub(super) const MIN_SCREEN_HEIGHT: u16 = 4;
 /// auto-hide hides it, so a small window gives the view the user is working in all of
 /// its room instead of a strip too narrow for a screen's rows.
 pub(crate) fn nav_crowds_terminal(area: Rect, nav: NavSize) -> bool {
-    let t = compute_regions(area, nav, 1).terminal;
+    let t = compute_regions(area, nav).terminal;
     t.width < MIN_SCREEN_WIDTH || t.height < MIN_SCREEN_HEIGHT
 }
 
@@ -463,6 +464,9 @@ pub struct Switcher {
     /// The filter the last rebuild applied, so a rebuild can tell a filter the user
     /// changed from an answer that arrived.
     last_filter: String,
+    /// Whether the running scan came from a rescan key: only a scan the user asked
+    /// for floats its advice box, so the launch probe stays silent.
+    explicit_rescan: bool,
 }
 
 mod columns;
@@ -516,6 +520,7 @@ impl Switcher {
             lost: None,
             vacant_place: None,
             last_filter: String::new(),
+            explicit_rescan: false,
         }
     }
 
@@ -757,18 +762,18 @@ impl Switcher {
         // The deterministic display order (groups local→WSL→remote then by host name,
         // sessions by name) is applied here, once, so every mutation path lands on it and
         // a routine poll reproduces the same order exactly - there is nothing to freeze.
-        // Pure row generation lives in `tree::flatten`; rebuild orchestrates order →
+        // Pure row generation lives in `cards::flatten`; rebuild orchestrates order →
         // flatten → the selection resolved from the interest around it.
         for g in state.groups.iter_mut() {
-            tree::sort_by_name(&mut g.sessions);
+            cards::sort_by_name(&mut g.sessions);
         }
-        state.groups = tree::order_groups(&state.groups);
+        state.groups = cards::order_groups(&state.groups);
         // The mux each card NAMES comes from one resolver, so a session card, its host's
         // card and the screen behind either cannot spell one mux three ways.
         let named_mux = |host: &str| state.chrome.host_mux(host).to_string();
         let hostless = state.hostless_machines();
         let flat = |filter: &str| {
-            tree::flatten(
+            cards::flatten(
                 &state.groups,
                 &state.scanning,
                 &hostless,
@@ -1729,10 +1734,10 @@ impl Switcher {
                             crate::ui::spinner_glyph(state.chrome.spinner_frame)
                         )
                     } else if let Some(kind) = g.failure() {
-                        tree::failure_word(kind, g.logged_out()).to_string()
+                        cards::failure_word(kind, g.logged_out()).to_string()
                     } else {
                         match g.sessions.len() {
-                            0 => tree::host_state_word(false, false, false, false).to_string(),
+                            0 => cards::host_state_word(false, false, false, false).to_string(),
                             1 => "1 session".to_string(),
                             n => format!("{n} sessions"),
                         }
@@ -1786,7 +1791,7 @@ impl Switcher {
                 let label = card_path(row);
                 let value = match &row.reference {
                     RowRef::Session { sess } => session_facts(sess, state),
-                    reference => tree::card_state_word(reference)
+                    reference => cards::card_state_word(reference)
                         .unwrap_or_default()
                         .to_string(),
                 };
@@ -2073,6 +2078,7 @@ impl Switcher {
     /// session's host card through the skeleton phase (the lineage of a vanished
     /// session) and returns to the session the instant its host re-streams it.
     pub fn request_rescan(&mut self, state: &mut crate::state::State) {
+        self.explicit_rescan = true;
         let selected = match self.selected_node() {
             Some(Node::Session(address)) => Some(address),
             _ => None,
@@ -2110,7 +2116,7 @@ impl Switcher {
     /// not this function's concern: `rebuild` applies the deterministic display
     /// order, which a scan result and a routine poll reproduce exactly.
     ///
-    /// A result that RENAMED sessions ([`tree::renamed_sessions`]) carries the selection
+    /// A result that RENAMED sessions ([`cards::renamed_sessions`]) carries the selection
     /// and the displayed record across to each new name, so the card the user is on stays
     /// the card they are on and nothing reads the rename as a move to another session.
     /// The renames are returned so the loop can carry its own display record across too.
@@ -2126,7 +2132,7 @@ impl Switcher {
             .iter()
             .find(|g| g.host == host)
             .filter(|_| err.is_none())
-            .map(|g| tree::renamed_sessions(&g.sessions, &sessions))
+            .map(|g| cards::renamed_sessions(&g.sessions, &sessions))
             .unwrap_or_default();
         for (from, to) in &renamed {
             // The card is the same card under its new name, so it keeps its number.
@@ -2150,6 +2156,9 @@ impl Switcher {
         }
         state.scanning.remove(&host);
         state.scan_deadlines.remove(&host);
+        if !state.scanning_any() {
+            self.explicit_rescan = false;
+        }
         // The failure run, counted where every result lands so no path can skip it: a
         // result that failed lengthens it, one that answered clears it, and a logout, which
         // is no failure, ends it. It is shown, not acted on - see `State::failure_runs`.
@@ -2306,6 +2315,9 @@ impl Switcher {
         m.err = err.clone();
         state.machine_scanning.remove(machine);
         state.machine_scan_deadlines.remove(machine);
+        if !state.scanning_any() {
+            self.explicit_rescan = false;
+        }
         // The failure run, counted under the machine's name the way a host counts its
         // own and ended by a logout.
         match &err {
@@ -2400,17 +2412,6 @@ fn card_id(reference: &RowRef) -> Option<CardId> {
         RowRef::Machine { machine, .. } => Some(CardId::Machine(machine.clone())),
         RowRef::Section { .. } => None,
     }
-}
-
-/// Picks the first (longest) candidate whose width fits `width`, falling back
-/// to the last (shortest) when even that does not fit.
-pub(crate) fn fit(candidates: &[String], width: u16) -> String {
-    let w = width as usize;
-    candidates
-        .iter()
-        .find(|c| UnicodeWidthStr::width(c.as_str()) <= w)
-        .cloned()
-        .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
 }
 
 /// The context parts of a row: `(machine, mux, session)`. A host-state card and a

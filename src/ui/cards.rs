@@ -1,4 +1,4 @@
-//! The pure tree-model logic for the session switcher: a slice of [`Group`]s (one
+//! The pure card-model logic for the session switcher: a slice of [`Group`]s (one
 //! per host) each carrying its sessions in name order. The functions here are
 //! side-effect-free transforms over that model; the interactive ratatui
 //! rendering is layered on top separately.

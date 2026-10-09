@@ -211,31 +211,36 @@ pub struct UiConfig {
     /// applies while no pin is set.
     #[serde(rename = "nav-position", default = "default_nav_position")]
     pub nav_position: String,
-    /// The tree|terminal view border colour OVERRIDES, named after tmux's pane-border
-    /// options: the focused side is `view-active-border-style`, the unfocused side
-    /// `view-border-style`, the drag-hover cue `view-border-hover-style`. Values use
-    /// tmux's colour syntax. Each defaults to empty (unset), leaving that side at
-    /// xmux's own colour.
-    #[serde(rename = "view-active-border-style", default)]
-    pub view_active_border_style: String,
-    #[serde(rename = "view-border-style", default)]
-    pub view_border_style: String,
-    #[serde(rename = "view-border-hover-style", default)]
-    pub view_border_hover_style: String,
-    /// The hint bar's colour as a tmux `status-style` string (`bg=…,fg=…`, tmux colour
-    /// colour syntax). Empty means the built-in default.
-    #[serde(rename = "hint-bar-style", default)]
-    pub hint_bar_style: String,
-    /// The background of every selection, in the same colour slots as the view
+    /// The nav border colour OVERRIDES, named after tmux's pane-border options: the
+    /// focused side is `nav-active-border-style`, the unfocused side `nav-border-style`,
+    /// the drag-hover cue `nav-border-hover-style`. Values use tmux's colour syntax. Each
+    /// defaults to empty (unset), leaving that side at xmux's own colour. The old
+    /// `view-*-border-style` names still load.
+    #[serde(
+        rename = "nav-active-border-style",
+        alias = "view-active-border-style",
+        default
+    )]
+    pub nav_active_border_style: String,
+    #[serde(rename = "nav-border-style", alias = "nav-border-style", default)]
+    pub nav_border_style: String,
+    #[serde(
+        rename = "nav-border-hover-style",
+        alias = "nav-border-hover-style",
+        default
+    )]
+    pub nav_border_hover_style: String,
+    /// The background of every selection, in the same colour slots as the nav
     /// border (`bg=<colour>`, or a bare colour token). Empty (default) paints a selection
     /// in the theme's `on_accent` text on its `accent`; a named colour replaces the accent
     /// background and leaves the selected item's own text colours on it.
     #[serde(rename = "selection-style", default)]
     pub selection_style: String,
     /// Per-role colour overrides for the chosen theme: `primary`, `secondary`,
-    /// `accent`, `decoration`, `warning`, `error`, `disabled`, and the hint bar's
-    /// `bar-bg`, `bar-fg`, `bar-accent`. Values use the same colour vocabulary as the
-    /// view border: a named ANSI colour, `bright*`, `colourN`, `#RRGGBB`, or `default`.
+    /// `accent`, `decoration`, `warning`, `error`, `disabled`, and the prefix hint
+    /// chip's `bar-bg`, `bar-fg`, `bar-accent`. Values use the same colour vocabulary
+    /// as the nav border: a named ANSI colour, `bright*`, `colourN`, `#RRGGBB`, or
+    /// `default`.
     /// Each defaults to empty, leaving that role at the theme's own slot.
     #[serde(rename = "primary", default)]
     pub primary: String,
@@ -322,12 +327,10 @@ impl Default for UiConfig {
             notifications: default_notifications(),
             braille_animation: default_braille_animation(),
             nav_position: default_nav_position(),
-            // Empty leaves the view border at its theme role.
-            view_active_border_style: String::new(),
-            view_border_style: String::new(),
-            view_border_hover_style: String::new(),
-            // Empty leaves the hint bar at its built-in style.
-            hint_bar_style: String::new(),
+            // Empty leaves the nav border at its theme role.
+            nav_active_border_style: String::new(),
+            nav_border_style: String::new(),
+            nav_border_hover_style: String::new(),
             // Empty selects the theme's accent instead of a named surface colour.
             selection_style: String::new(),
             // Empty leaves each role at the theme's own slot.
@@ -2336,19 +2339,6 @@ neighbors = false
     }
 
     #[test]
-    fn ui_hint_bar_style_defaults_empty_and_parses() {
-        // Missing key ⇒ empty (the app then uses the built-in tmux default).
-        let missing = std::env::temp_dir().join("xmux-hintbar-absent-xyz.toml");
-        assert_eq!(load(&missing).unwrap().ui.hint_bar_style, "");
-        // An explicit value round-trips as the raw tmux-style string.
-        let path = write_temp(
-            "[ui]\nhint-bar-style = \"bg=blue,fg=white\"\n",
-            "ui-hintbar.toml",
-        );
-        assert_eq!(load(&path).unwrap().ui.hint_bar_style, "bg=blue,fg=white");
-    }
-
-    #[test]
     fn ui_table_defaults_and_overrides() {
         // Missing [ui] → default prefix "C-g".
         let missing = std::env::temp_dir().join("xmux-ui-absent-xyz.toml");
@@ -2417,31 +2407,31 @@ bogus = "nope"
     #[test]
     fn ui_border_styles_default_to_unset() {
         // The keys are OVERRIDE-only, so unset → empty. The effective visual default
-        // comes from ViewBorderColors::default() via ViewBorderColors::resolve, not
+        // comes from NavBorderColors::default() via NavBorderColors::resolve, not
         // from these raw config values.
         let missing = std::env::temp_dir().join("xmux-border-absent-xyz.toml");
         let cfg = load(&missing).unwrap();
-        assert_eq!(cfg.ui.view_active_border_style, "");
-        assert_eq!(cfg.ui.view_border_style, "");
-        assert_eq!(cfg.ui.view_border_hover_style, "");
+        assert_eq!(cfg.ui.nav_active_border_style, "");
+        assert_eq!(cfg.ui.nav_border_style, "");
+        assert_eq!(cfg.ui.nav_border_hover_style, "");
 
         // [ui] present but border keys missing → still unset (empty).
         let path = write_temp("[ui]\nprefix = \"C-g\"\n", "border-missing.toml");
         let cfg = load(&path).unwrap();
-        assert_eq!(cfg.ui.view_active_border_style, "");
-        assert_eq!(cfg.ui.view_border_style, "");
+        assert_eq!(cfg.ui.nav_active_border_style, "");
+        assert_eq!(cfg.ui.nav_border_style, "");
     }
 
     #[test]
     fn ui_border_styles_override_via_tmux_option_names() {
         let path = write_temp(
-            "[ui]\nview-active-border-style = \"blue\"\nview-border-style = \"white\"\nview-border-hover-style = \"fg=red\"\n",
+            "[ui]\nview-active-border-style = \"blue\"\nnav-border-style = \"white\"\nnav-border-hover-style = \"fg=red\"\n",
             "border-override.toml",
         );
         let cfg = load(&path).unwrap();
-        assert_eq!(cfg.ui.view_active_border_style, "blue");
-        assert_eq!(cfg.ui.view_border_style, "white");
-        assert_eq!(cfg.ui.view_border_hover_style, "fg=red");
+        assert_eq!(cfg.ui.nav_active_border_style, "blue");
+        assert_eq!(cfg.ui.nav_border_style, "white");
+        assert_eq!(cfg.ui.nav_border_hover_style, "fg=red");
     }
 
     #[test]

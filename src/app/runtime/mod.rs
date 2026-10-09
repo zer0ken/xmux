@@ -12,7 +12,7 @@
 //! and selection. One `select!` loop interleaves stdin, host events, PTY events, the
 //! control socket, terminal resize, and an animation tick. ratatui owns stdout and
 //! draws the SAME split (nav + selected PTY grid) in both focus states - Focus::Nav
-//! (nav focused) and Focus::Terminal (terminal focused) differ only in the view border
+//! (nav focused) and Focus::Terminal (terminal focused) differ only in the nav border
 //! colour and where keys go, so toggling focus needs no screen clear. The app launches
 //! straight into this split; there is no separate picker mode.
 
@@ -21,8 +21,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::app::input::{
-    clamp_to_grid, leading_ctrl_arrow, resolve_mouse_chain, resolve_nav_key, to_grid_local,
-    view_border_drag_height, view_border_drag_width, ChainAction, MouseState, StdinOutcome,
+    clamp_to_grid, leading_ctrl_arrow, nav_border_drag_height, nav_border_drag_width,
+    resolve_mouse_chain, resolve_nav_key, to_grid_local, ChainAction, MouseState, StdinOutcome,
 };
 use crate::app::model::{adjust_nav_width, update, AppModel, Effect, Msg};
 #[cfg(test)]
@@ -234,9 +234,6 @@ impl Runtime {
                 }
                 Effect::PersistNavPosition(position) => {
                     crate::app::prefs::save_nav_position(&self.env.xmux_dir, position);
-                }
-                Effect::PersistFirstKeyHelpSeen => {
-                    crate::app::prefs::mark_first_key_help_seen(&self.env.xmux_dir);
                 }
                 Effect::PersistSshLogins(logins) => {
                     crate::app::prefs::save_ssh_logins(&self.env.xmux_dir, &logins);
@@ -707,14 +704,14 @@ fn display_astray(state: &crate::state::State, hosts: &crate::model::Hosts) -> b
 }
 
 /// The size to give a PTY attachment: the terminal view (right of the nav +
-/// view border), NOT the whole terminal. Sizing a session to the full terminal makes
+/// nav border), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible view, so a line overflows the
 /// right edge (and a double-width char straddles the clip boundary). The view width
-/// is `cols - nav_width - 1` (nav + the single view border rule), except `nav_width == 0`
-/// (the nav-hidden sentinel) gives the full `cols` with no view border. The hint bar
+/// is `cols - nav_width - 1` (nav + the single nav border rule), except `nav_width == 0`
+/// (the nav-hidden sentinel) gives the full `cols` with no nav border. The prefix hint
 /// lives INSIDE the nav region, so it costs the terminal view no height in a column: the
-/// view gets the full `body_rows + 1`. In a band layout the terminal view is what is
-/// left below the nav band. Both clamp to at least 1.
+/// view gets the full `body_rows + 1`. In a horizontal nav layout the terminal view is what is
+/// left below the nav horizontal nav. Both clamp to at least 1.
 pub(crate) fn terminal_view_size(
     cols: u16,
     body_rows: u16,
@@ -722,11 +719,10 @@ pub(crate) fn terminal_view_size(
 ) -> (u16, u16) {
     // Derive from the one shared geometry (`compute_regions`) so the PTY size always
     // matches what the renderer draws, in either layout. `body_rows` is full_height - 1,
-    // so the full area is `body_rows + 1` tall; sizing assumes a one-row hint bar inside
-    // the nav. A portrait area stacks the nav on top and shrinks the terminal view
+    // so the full area is `body_rows + 1` tall. A portrait area stacks the nav on top and shrinks the terminal view
     // height accordingly; a hidden nav gives the full area.
     let area = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
-    let t = crate::ui::switcher::compute_regions(area, nav, 1).terminal;
+    let t = crate::ui::switcher::compute_regions(area, nav).terminal;
     (t.width.max(1), t.height.max(1))
 }
 

@@ -1,4 +1,4 @@
-//! The prefix key list: the box a live prefix opens from the prefix indicator toward the
+//! The prefix key list: the box a live prefix opens from the prefix hint toward the
 //! terminal view, naming every key the prefix unlocks, grouped by section and read from
 //! the one key table. It lays its keys out in as many columns as the room beside the
 //! indicator holds. When they do not fit it first shortens every description, then gives
@@ -315,52 +315,11 @@ fn flow(blocks: &[Vec<Cell>], h: usize) -> Vec<Vec<Cell>> {
     columns
 }
 
-/// The room the list may take: from the prefix indicator toward the terminal view. Beside
-/// a side column it is the terminal view's columns down to the indicator's row (the whole
-/// window's width when the terminal view is too narrow for a box), under a top band's
-/// seam the rows below it, over a bottom band's seam the rows above it, and the whole
-/// window when the nav is hidden and there is no indicator.
-pub(crate) fn room(indicator: Rect, terminal: Rect, area: Rect, position: NavPosition) -> Rect {
-    if indicator.height == 0 {
-        return area;
-    }
-    match position {
-        NavPosition::Left | NavPosition::Right => {
-            let h = indicator.bottom().saturating_sub(area.y);
-            if terminal.width >= MIN_SIDE_ROOM {
-                Rect {
-                    x: terminal.x,
-                    y: area.y,
-                    width: terminal.width,
-                    height: h,
-                }
-            } else {
-                Rect { height: h, ..area }
-            }
-        }
-        NavPosition::Top => Rect {
-            x: area.x,
-            y: indicator.bottom(),
-            width: area.width,
-            height: area.bottom().saturating_sub(indicator.bottom()),
-        },
-        NavPosition::Bottom => Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: indicator.y.saturating_sub(area.y),
-        },
-    }
-}
-
-/// The narrowest terminal view a side column's key list opens into before it takes the
-/// whole window's width instead.
-const MIN_SIDE_ROOM: u16 = 24;
-
-/// Where a box of `size` sits in `room`: against the indicator. Beside a left column it
-/// keeps to the room's bottom left, beside a right column its bottom right, under a top
-/// band its top right, over a bottom band its bottom right, and with the nav hidden the
-/// window's bottom left.
+/// Where a box of `size` sits in the terminal view's `room`: at the card flow's start,
+/// against the nav border. Beside a left column or under a top nav it keeps to the
+/// room's top left, beside a right column its top right, over a bottom nav its bottom
+/// left, and with the nav hidden the room's bottom right, the corner farthest from
+/// where the nav would sit.
 pub(crate) fn place(room: Rect, position: NavPosition, nav_hidden: bool, size: (u16, u16)) -> Rect {
     let w = size.0.min(room.width);
     let h = size.1.min(room.height);
@@ -369,12 +328,12 @@ pub(crate) fn place(room: Rect, position: NavPosition, nav_hidden: bool, size: (
     let top = room.y;
     let bottom = room.bottom().saturating_sub(h);
     let (x, y) = if nav_hidden {
-        (left, bottom)
+        (right, bottom)
     } else {
         match position {
-            NavPosition::Left => (left, bottom),
-            NavPosition::Right | NavPosition::Bottom => (right, bottom),
-            NavPosition::Top => (right, top),
+            NavPosition::Left | NavPosition::Top => (left, top),
+            NavPosition::Right => (right, top),
+            NavPosition::Bottom => (left, bottom),
         }
     };
     Rect {

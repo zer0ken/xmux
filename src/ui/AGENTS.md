@@ -14,7 +14,7 @@ layer reads and paints them and owns only transient popup geometry.
   result application, and render state.
 - Card layout geometry is pure: it takes card sizes and returns rects, so the paint and
   the mouse hit-test read one answer and rendering never computes a second one.
-- The chrome renders the view border, the hint bar, and the view screens, and reads
+- The chrome renders the nav border, the prefix hint, and the view screens, and reads
   inventory from the runtime state, not from the switcher. It also holds the override
   layer of user-named colours over the semantic palette.
 - The key list and the help read every key and its words from the model's key table; a

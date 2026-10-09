@@ -23,14 +23,14 @@
 //! a dark or a light terminal background. `[ui] theme` names one; an unknown name falls
 //! back to `auto-dark`, and `xmux doctor` reports the resolution. Selecting a theme picks
 //! no colours: the theme IS the slot mapping, and both ends (the `accent` on the cards,
-//! the `bar_accent` on the hint bar) stay within the slots. Adding a theme is adding one
+//! the `bar_accent` on the prefix hint) stay within the slots. Adding a theme is adding one
 //! registry entry plus its tests, which is how the set grows without loosening the
 //! invariant.
 //!
 //! The exceptions are colours the USER names: the per-role keys (`[ui] primary`,
-//! `secondary`, `accent`, `decoration`, `warning`, `error`, `disabled`, and the hint
-//! bar's `bar-bg`/`bar-fg`/`bar-accent`), plus `[ui] selection-style`,
-//! `[ui] hint-bar-style`, and the view-border colours. Their terminal, their choice;
+//! `secondary`, `accent`, `decoration`, `warning`, `error`, `disabled`, and the prefix
+//! hint chip's `bar-bg`/`bar-fg`/`bar-accent`), plus `[ui] selection-style`,
+//! and the nav-border colours. Their terminal, their choice;
 //! those user-named colours are the only ones that may leave the sixteen slots (see
 //! [`Overrides`]). The chrome parses them, never this module, and the chrome's colour
 //! mapping is the only place a `#rrggbb` may enter. A nonempty `NO_COLOR` resets this
@@ -57,7 +57,7 @@ pub(crate) fn interaction_key_style() -> Style {
 /// override any role (see [`Overrides`]).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Palette {
-    /// The whole view border while the nav holds focus, popup borders and separators,
+    /// The whole nav border while the nav holds focus, popup borders and separators,
     /// and the list-failed glyph `✗` on a host-state card. Independent of the card
     /// accent, so these rules can be tuned apart from screen links and session names.
     pub primary: Color,
@@ -66,7 +66,7 @@ pub(crate) struct Palette {
     /// group label stays below the sessions it names.
     pub secondary: Color,
     /// The single accent: the session name, the screen links, the popup titles, and
-    /// the view border's drag-hover cue all share it, so "interactive / current" is
+    /// the nav border's drag-hover cue all share it, so "interactive / current" is
     /// one colour everywhere. Painted on the CARD / TERMINAL background, so it
     /// follows the theme. It is also the background of every selection.
     pub accent: Color,
@@ -85,18 +85,18 @@ pub(crate) struct Palette {
     /// Failure state: error text, the unreachable glyph `▲`, and the refusal bar's
     /// background.
     pub error: Color,
-    /// The whole view border while the terminal holds focus.
+    /// The whole nav border while the terminal holds focus.
     pub disabled: Color,
-    /// The hint bar's background: a single ANSI slot, so the bar reads as chrome
-    /// rather than content. `[ui] hint-bar-style` overrides it.
+    /// The prefix hint chip's background: a single ANSI slot, so the chip reads as
+    /// chrome rather than content. `[ui] bar-bg` overrides it.
     pub bar_bg: Color,
-    /// The hint bar's text, and the text of the refusal bar. Paired with `bar_bg`, so
+    /// The prefix hint chip's text. Paired with `bar_bg`, so
     /// the two are legible together in any theme that keeps its own slots legible.
     pub bar_fg: Color,
-    /// The hint bar's KEY accent - the prefix and each key token the bar names.
-    /// Split from [`accent`](Self::accent) because the bar sits on `bar_bg` (a
+    /// The prefix hint chip's KEY accent - the prefix it names.
+    /// Split from [`accent`](Self::accent) because the chip sits on `bar_bg` (a
     /// different surface than the cards), so the slot that reads on one may not read
-    /// on the other: a light theme's dark `accent` is invisible on a dark bar.
+    /// on the other: a light theme's dark `accent` is invisible on a dark chip.
     pub bar_accent: Color,
     /// The background `[ui] selection-style` names, or `None` for the default: the
     /// accent. Not a colour role - a user's override of one - so it is the only field
@@ -133,7 +133,7 @@ const fn auto_dark() -> Palette {
 
 /// `auto-light`: for a light terminal background. Painted with the dark-slot ends of
 /// the ANSI set (a light background washes the bright slots out), so the level colours
-/// and the accent read against white; the hint bar keeps the dark slots that read on a
+/// and the accent read against white; the prefix hint keeps the dark slots that read on a
 /// bar of its own. A selection is Black on the Green accent: a light theme's Green is a
 /// mid green, and Black, the theme's own text colour, reads on it where White, close to
 /// the theme's background, washes out.
@@ -266,7 +266,7 @@ impl Default for Palette {
 
 /// The hover style shared by nav items, screen links, popup lists, and help tabs.
 ///
-/// The hint bar's pair, `bar_fg` text on `bar_bg`, over the whole item, with dim and
+/// The prefix hint's pair, `bar_fg` text on `bar_bg`, over the whole item, with dim and
 /// reverse video cleared as the selection clears them: a background reads at a
 /// glance where an underline is a thin mark, and the bar's pair is the one the theme
 /// already keeps legible on a surface of its own, apart from the accent. With no colour

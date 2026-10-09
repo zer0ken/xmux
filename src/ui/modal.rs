@@ -214,15 +214,15 @@ fn glyph_legend() -> Vec<(String, String)> {
         ),
         (
             "‹ 5 · 7 ›".into(),
-            "cards off screen to each side of a band, on its view border".into(),
+            "cards off screen to each side of a band, on its nav border".into(),
         ),
         (
             "┃".into(),
-            "cards off screen in a column: the view border is thick beside the cards shown".into(),
+            "cards off screen in a column: the nav border is thick beside the cards shown".into(),
         ),
         (
             "║".into(),
-            "the view border while auto-hide-nav is on".into(),
+            "the nav border while auto-hide-nav is on".into(),
         ),
         (
             Level::Success.glyph().into(),

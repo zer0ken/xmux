@@ -1,8 +1,9 @@
-//! The session switcher UI: the pure tree model (`tree`) and the interactive
+//! The session switcher UI: the pure card model (`cards`) and the interactive
 //! ratatui application (`switcher`). The model layer is side-effect-free; the
 //! rendering is layered on top separately.
 
 pub(crate) mod braille_x;
+pub mod cards;
 pub(crate) mod check;
 pub mod chrome;
 pub(crate) mod keylist;
@@ -12,9 +13,8 @@ pub(crate) mod palette;
 pub mod run;
 pub mod switcher;
 pub(crate) mod toast;
-pub mod tree;
 
-pub use tree::{
+pub use cards::{
     add_session, filter_groups, fuzzy_match, remove_session, rename_session, sort_by_name, Group,
 };
 
@@ -25,8 +25,8 @@ const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧
 /// wall-clock so every marker turns at the same rate.
 ///
 /// One helper for every in-flight marker in the UI: a card's unresolved level and the
-/// hint bar's scan progress turn the SAME glyph on the SAME frame, so one glance reads
-/// as one thing loading, not two unrelated animations.
+/// scan progress box turn the SAME glyph on the SAME frame, so one glance reads as one
+/// thing loading, not two unrelated animations.
 pub(crate) fn spinner_glyph(frame: usize) -> char {
     SPINNER[frame % SPINNER.len()]
 }

@@ -63,26 +63,27 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **the app** - the runtime that owns the terminal: its loop, its focus, and its input
   routing.
 - **split view** - the whole two-region layout.
-- **nav view** - the region holding the cards, attached as a left or right column or a
-  top or bottom band. Never the "sidebar" or the "tree".
+- **navigation view (nav)** - the region holding the cards, attached as a vertical nav
+  (a left or right column) or a horizontal nav (a top or bottom row). Never the
+  "sidebar" or the "tree".
 - **terminal view** - the other region: the selected session's grid or a view screen.
 - **`ViewFocus`** - which region holds focus, the nav or the terminal view.
-- **view border** - the line between the nav and the terminal view. Its colour states
+- **nav border** - the line between the nav and the terminal view. Its colour states
   which view holds focus, and dragging it resizes the nav.
-- **view border lines** - `│` or `─` by default, `║` or `═` with auto-hide, and `┃` or
+- **nav border lines** - `│` or `─` by default, `║` or `═` with auto-hide, and `┃` or
   `━` while hovered.
-- **seam thumb** - the heavy stretch of a side column's view border beside the cards on
-  screen when the list overflows.
-- **offscreen counts** - the `‹ 5` and `7 ›` a band writes on its view border row,
-  counting the cards scrolled off each side in the active view border colour.
-- **chrome** - the furniture around the two views: the view border, the hint bar, and
+- **nav border thumb** - the heavy stretch of a vertical nav's border beside the cards
+  on screen when the list overflows.
+- **offscreen counts** - the `‹ 5` and `7 ›` a horizontal nav writes on its nav border
+  row, counting the cards scrolled off each side in the active nav border colour.
+- **chrome** - the furniture around the two views: the nav border, the prefix hint, and
   the view screens. Never a "status surface".
 - **nav size** - the nav's live geometry as one value: the set width, the on-screen
-  width, the band height, the attached side, and the collapsed state.
-- **collapsed nav** - the nav reduced to its prefix indicator, keeping its natural size
+  width, the horizontal nav height, the attached side, and the collapsed state.
+- **collapsed nav** - the nav reduced to its prefix hint, keeping its natural size
   for when it expands.
-- **column flow** - how a band lays out its rows: down a column, then right, a whole
-  section per column.
+- **column flow** - how a horizontal nav lays out its rows: down a column, then right,
+  a whole section per column.
 - **grid** - xmux's in-memory cell mirror of the attached session's screen, drawn in the
   terminal view.
 - **cursor** - the terminal's text cursor, on the grid or on a focused field's caret.
@@ -93,7 +94,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **card** - one numbered nav entry: a session, a host's host-state card, or one card
   for a machine that has no host yet or none of whose hosts connected. A card states
   what something is, never why.
-- **section** - one host's session cards under its section title, or the band of
+- **section** - one host's session cards under its section title, or the run of
   host-state and machine cards.
 - **section title** - the `{machine}/{mux}` header over a host's session cards. It is
   not a card; its `{machine}` part stands for the machine and its `{mux}` part for the
@@ -132,7 +133,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **selection** - the node (machine, host, or session) the arrows
   and execution move and the terminal view shows.
 - **hover** - the target under the pointer. It previews without moving the
-  selection and paints on the hint bar's background, or underlines cells already
+  selection and paints on the prefix hint's background, or underlines cells already
   painted by the selection.
 - **interest** - what the user is on or asked for, the one value the selection is
   resolved from on every rebuild.
@@ -153,16 +154,18 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   the function it started ends or is cancelled.
 - **key table** - the one table of every key xmux binds and the words naming it; every
   surface that names a key reads it.
-- **hint bar** - the prefix indicator and what takes its place: the first-key notice, the
-  scan indicator, the active filter. Advice for the current state, never a result.
-- **status row fill** - how much of its row the hint bar paints: the resting indicator
-  its text, a floating bar the whole row.
+- **prefix hint** - the `C-g` (or configured prefix) chip that rests on the nav's
+  start: on a vertical nav its own first row against the nav border, on a horizontal
+  nav the leftmost cell of the nav border row. Advice for the current state, never a
+  result.
 - **key list** - the box a live prefix opens, naming every key it unlocks.
 - **Enter mark** - an optional `⏎` after a selected standalone card's text while the
   nav holds the focus, where Enter opens the card's target. It fits inside the card's
   padding and never covers text. A part of a shared item has no mark.
-- **scan indicator** - the `scanning hosts n/m…` progress in the hint bar, counting
-  hosts and the machines that have no host yet.
+- **active filter** - the filter query shown behind a matching card's cells in the
+  warning background colour, cell by cell.
+- **rescan box** - the box a `prefix r` or `prefix R` opens while its rescan runs,
+  stating the `scanning hosts n/m…` progress. Launch's own scan opens no box.
 - **toast** - the result of an action the user took, whether it was done, refused, or
   failed, in a box in the terminal view's corner. Never a "notice", and never feedback on
   a value typed into a popup, which that popup states beside its field.

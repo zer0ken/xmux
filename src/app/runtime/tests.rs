@@ -388,7 +388,7 @@ async fn a_dropped_channel_is_reopened_by_a_user_action_and_by_nothing_else() {
 
 #[test]
 fn terminal_view_size_zero_tree_is_full_width() {
-    // Hidden tree (sentinel 0): full cols, no view border subtracted.
+    // Hidden tree (sentinel 0): full cols, no nav border subtracted.
     assert_eq!(
         terminal_view_size(
             80,
@@ -397,8 +397,8 @@ fn terminal_view_size_zero_tree_is_full_width() {
         ),
         (80, 24)
     );
-    // Shown tree: cols - nav_width - 1 (view border). The hint bar lives inside the nav
-    // column, so the terminal view keeps every row. Wide enough to STAY a column: a row is
+    // Shown tree: cols - nav_width - 1 (nav border). The prefix hint lives inside the
+    // nav column, so the terminal view keeps every row. Wide enough to STAY a column: a row is
     // two columns tall, so the column survives only while `w - nav - 1` beats twice the
     // rows (200 - 49 = 151 against 48).
     assert_eq!(
@@ -426,14 +426,14 @@ fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
         crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH),
     );
     assert_eq!(full, 40);
-    // Tree shown in a column: the hint bar is the NAV column's bottom row, not a full-width
+    // Tree shown in a column: the prefix hint is the NAV column's first row, not a full-width
     // strip, so the terminal view costs nothing in height.
     // 220 wide keeps the side column at 40 rows (171 against 80); at 120 the column would
-    // leave a terminal squarer than it looks, and the band would take over.
+    // leave a terminal squarer than it looks, and the horizontal nav would take over.
     let (_, shown) = terminal_view_size(220, 39, crate::ui::switcher::NavSize::visible(NAV_WIDTH));
     assert_eq!(
         shown, 40,
-        "the nav-local hint bar costs the terminal view no rows"
+        "the nav-local prefix hint costs the terminal view no rows"
     );
 }
 
@@ -760,23 +760,23 @@ fn nav_width_adjust_clamps() {
 }
 
 #[test]
-fn terminal_view_size_subtracts_tree_and_view_border() {
+fn terminal_view_size_subtracts_tree_and_nav_border() {
     use crate::ui::switcher::NAV_WIDTH;
     let (vc, vr) = terminal_view_size(143, 39, crate::ui::switcher::NavSize::visible(NAV_WIDTH));
     assert_eq!(
         vc,
         143 - (NAV_WIDTH + 1),
-        "cols minus tree minus view border"
+        "cols minus tree minus nav border"
     );
-    // The hint bar sits inside the nav column, so the terminal view keeps the full
+    // The prefix hint sits inside the nav column, so the terminal view keeps the full
     // terminal height (body_rows + 1).
-    assert_eq!(vr, 40, "the nav-local hint bar costs no terminal rows");
+    assert_eq!(vr, 40, "the nav-local prefix hint costs no terminal rows");
 }
 
 #[test]
 fn terminal_view_size_clamps_to_at_least_one() {
     use crate::ui::switcher::NAV_WIDTH;
-    // A 10-col terminal can't fit the 48-col tree beside it, so the layout goes to the band
+    // A 10-col terminal can't fit the 48-col tree beside it, so the layout goes to the horizontal nav
     // and the terminal keeps full width; a zero-row body still clamps the height up to 1. The
     // invariant this guards is that neither dimension is ever 0 (degenerate PTY size).
     let (vc, vr) = terminal_view_size(10, 0, crate::ui::switcher::NavSize::visible(NAV_WIDTH));
@@ -1022,8 +1022,8 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
     // C1: the control reader carries its parsed sessions on the HostEvent; the
     // loop folds them into the single owner (`model::Host.inventory`) and applies
     // them to the nav. There is no shared `Arc<Mutex<HostInventory>>` to read.
+    use crate::ui::cards::Group;
     use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
 
     let scan = Scan {
         groups: vec![Group {
@@ -1133,8 +1133,8 @@ async fn prefix_r_probes_the_selected_machine_without_a_discovery_pass() {
     // The one-machine re-scan asks that machine alone: one reachability probe, no roster
     // resolution and no probe of any other machine.
     use crate::session::Session;
+    use crate::ui::cards::Group;
     use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
 
     let group = |host: &str| Group {
         host: host.into(),
@@ -1179,8 +1179,8 @@ async fn capital_r_rescan_rebuilds_nav_and_kicks_discovery() {
     // The client-initiated `R` re-scan resets the nav to its scanning skeleton and
     // re-lists each host. Repeated `R` keys in one stdin read still form one pass.
     use crate::session::Session;
+    use crate::ui::cards::Group;
     use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
 
     let scan = Scan {
         groups: vec![Group {
@@ -1887,7 +1887,7 @@ fn cards(rt: &Runtime) -> Vec<String> {
                 .map(|m| m.name.clone()),
         )
         .collect();
-    ids.sort_by(|a, b| crate::ui::tree::card_order(a, b));
+    ids.sort_by(|a, b| crate::ui::cards::card_order(a, b));
     ids
 }
 
@@ -3015,8 +3015,8 @@ async fn a_client_session_change_before_the_tty_is_known_lands_once_it_is_captur
 /// Lets a follow test assert the selection lands on the mux-moved session's card.
 fn two_session_scan() -> crate::ui::switcher::Scan {
     use crate::session::Session;
+    use crate::ui::cards::Group;
     use crate::ui::switcher::Scan;
-    use crate::ui::tree::Group;
     let sess = |name: &str, windows: i64| Session {
         mux: String::new(),
         id: String::new(),
@@ -3237,7 +3237,7 @@ const OWN_CLIENT: u64 = 42;
 /// A local psmux host holding sessions `a` and `b`.
 fn psmux_scan() -> crate::ui::switcher::Scan {
     use crate::session::Session;
-    use crate::ui::tree::Group;
+    use crate::ui::cards::Group;
     let sess = |name: &str| Session {
         mux: String::new(),
         id: String::new(),
@@ -3356,7 +3356,7 @@ fn zellij_scan() -> crate::ui::switcher::Scan {
         stopped: false,
     };
     crate::ui::switcher::Scan {
-        groups: vec![crate::ui::tree::Group {
+        groups: vec![crate::ui::cards::Group {
             host: "local".into(),
             err: None,
             sessions: vec![sess("a"), sess("b")],
@@ -3484,7 +3484,7 @@ fn a_settled_herdr_runtime() -> Runtime {
         stopped: false,
     };
     let scan = crate::ui::switcher::Scan {
-        groups: vec![crate::ui::tree::Group {
+        groups: vec![crate::ui::cards::Group {
             host: "local".into(),
             err: None,
             sessions: vec![sess("a"), sess("b")],
@@ -4257,7 +4257,7 @@ async fn a_pick_on_the_selected_card_leaves_the_nav_and_the_display_naming_one_s
 //    real attached terminal instantly (it is pre-attached + kept alive), with a
 //    spinner while a session's attach is still establishing.
 // 3. Press Enter (or C-g → / C-g Tab) - focus the terminal (Focus::Terminal); the split
-//    is unchanged (view border turns green) and keystrokes reach the real attached pane.
+//    is unchanged (nav border turns green) and keystrokes reach the real attached pane.
 //    C-g ← / C-g Esc / C-g Tab return focus to the nav. Confirm no blank/flash.
 // 4. Create / kill a window or session inside a pane - confirm the nav view
 //    syncs (remote via control events, local within the poll interval) and the
@@ -4280,8 +4280,8 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
     use crate::app::focus::Focus;
     use crate::model::{Action, FocusTarget};
     use crate::session::Session;
+    use crate::ui::cards::Group;
     use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
     let scan = Scan {
         groups: vec![Group {
             host: "jup".into(),
@@ -4343,8 +4343,8 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
 #[test]
 fn status_line_names_the_listed_mux_before_the_reach_resolves() {
     use crate::session::Session;
+    use crate::ui::cards::Group;
     use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
     // No reach yet, so the host names no mux, but the listing does: the displayed path
     // names the mux the session's card names.
     let mut state = crate::state::State::from_scan(Scan {
@@ -4370,8 +4370,8 @@ fn status_line_names_the_listed_mux_before_the_reach_resolves() {
 #[test]
 fn status_line_reports_focus_and_address() {
     use crate::session::Session;
+    use crate::ui::cards::Group;
     use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
     let scan = Scan {
         groups: vec![Group {
             host: "jup".into(),
@@ -4419,8 +4419,8 @@ fn status_line_reports_focus_and_address() {
 fn ctl_switch_syncs_canonical_selection_immediately() {
     use crate::model::Action;
     use crate::session::Session;
+    use crate::ui::cards::Group;
     use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
 
     let scan = Scan {
         groups: vec![Group {
@@ -4563,7 +4563,7 @@ fn prefix_m_and_prefix_question_close_what_they_opened_in_either_focus() {
 }
 
 #[test]
-fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
+fn arming_the_prefix_marks_the_frame_dirty_so_the_prefix_hint_swaps() {
     use crate::ui::switcher::{Scan, Switcher};
     // A live prefix opens the key list, so the bare prefix read is a VISIBLE change even
     // though it moves no selection and runs no action. If it did not mark the frame dirty
@@ -4595,8 +4595,8 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
 /// TERMINAL view - the setup the focus-independent tree-action tests share.
 fn rt_terminal_focus_with_session() -> Runtime {
     use crate::session::Session;
+    use crate::ui::cards::Group;
     use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
     let scan = Scan {
         groups: vec![Group {
             host: "jup".into(),
@@ -4658,7 +4658,7 @@ async fn prefix_capital_r_in_terminal_focus_kicks_rescan() {
 fn repeated_prefix_bytes_keep_the_nav_steady_in_nav_focus() {
     use crate::ui::switcher::{Scan, Switcher};
     // In nav focus there is no pane to send a literal to, so arming is idempotent: a
-    // held prefix's autorepeat neither toggles nor consumes ready, and the hint bar
+    // held prefix's autorepeat neither toggles nor consumes ready, and the prefix hint
     // and the auto-hide nav show stay put until a command key consumes it.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
@@ -4752,7 +4752,7 @@ fn one_escape_read_closes_the_prefix_key_list_in_either_focus() {
 #[test]
 fn an_open_input_row_keeps_the_prefix_live_until_it_closes() {
     // A command that opens an input row owns the prefix until the row closes: the
-    // hint bar hosts the input, so it must stay expanded while the user types.
+    // prefix popup hosts the input, so it must stay expanded while the user types.
     let mut rt = rt_terminal_focus_with_session();
     rt.handle_stdin_bytes(b"\x07", &Selection::default());
     rt.handle_stdin_bytes(b"n", &Selection::default()); // new session: opens the input row
@@ -4866,21 +4866,21 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
 }
 
 #[test]
-fn handle_mouse_event_view_border_grab_sets_dragging() {
+fn handle_mouse_event_nav_border_grab_sets_dragging() {
     use crate::ui::switcher::{Scan, Switcher};
-    // A left-press exactly on the view border column sets dragging_view_border, as the
+    // A left-press exactly on the nav border column sets dragging_nav_border, as the
     // inline gate did (is_left_press && nav_width > 0 && col0 == nav_width).
     let scan = Scan { groups: vec![] };
     let mut state = crate::state::State::from_scan(scan);
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
     let nav_width = crate::ui::switcher::NAV_WIDTH;
-    // 0-based col0 = ev.col - 1 must equal nav_width to grab the view border rule.
-    let view_border_col = nav_width + 1; // 1-based SGR column of the view border
-                                         // cb=0 → left button, press, no wheel/motion → is_left_press is true.
+    // 0-based col0 = ev.col - 1 must equal nav_width to grab the nav border rule.
+    let nav_border_col = nav_width + 1; // 1-based SGR column of the nav border
+                                        // cb=0 → left button, press, no wheel/motion → is_left_press is true.
     let ev = crate::display::mouse::MouseEvent {
         cb: 0,
-        col: view_border_col,
+        col: nav_border_col,
         row: 3,
         pressed: true,
     };
@@ -4891,7 +4891,7 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
     rt.model.state = state;
     rt.model.switcher = switcher;
     // The handler cuts its own regions from the runtime's size, so the runtime has to be
-    // landscape too or the border it looks for is a horizontal rule under the band.
+    // landscape too or the border it looks for is a horizontal rule under the horizontal nav.
     rt.cols = 200;
     rt.body_rows = 23;
     sync_test_render_plan(&mut rt);
@@ -4904,8 +4904,8 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
         &mut false,
     );
     assert!(
-        rt.model.mouse_state.dragging_view_border,
-        "left-press on the view border column grabs it"
+        rt.model.mouse_state.dragging_nav_border,
+        "left-press on the nav border column grabs it"
     );
 }
 
@@ -4937,7 +4937,7 @@ fn focusing_the_nav_expands_a_collapsed_nav() {
 }
 
 #[test]
-fn a_collapsed_view_border_cannot_start_a_resize_drag() {
+fn a_collapsed_nav_border_cannot_start_a_resize_drag() {
     use crate::ui::switcher::{compute_regions, Scan, Switcher};
 
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
@@ -4950,15 +4950,12 @@ fn a_collapsed_view_border_cannot_start_a_resize_drag() {
     rt.model.nav_collapsed = true;
     rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
     sync_test_render_plan(&mut rt);
-    let regions = compute_regions(ratatui::layout::Rect::new(0, 0, 140, 30), rt.nav_size(), 1);
-    assert_eq!(
-        rt.model.render_plan.regions.view_border,
-        regions.view_border
-    );
+    let regions = compute_regions(ratatui::layout::Rect::new(0, 0, 140, 30), rt.nav_size());
+    assert_eq!(rt.model.render_plan.regions.nav_border, regions.nav_border);
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
-        col: regions.view_border.x + 1,
-        row: regions.view_border.y + 1,
+        col: regions.nav_border.x + 1,
+        row: regions.nav_border.y + 1,
         pressed: true,
     };
     rt.handle_mouse_event(
@@ -4969,15 +4966,15 @@ fn a_collapsed_view_border_cannot_start_a_resize_drag() {
         &mut false,
         &mut false,
     );
-    assert!(!rt.model.mouse_state.dragging_view_border);
+    assert!(!rt.model.mouse_state.dragging_nav_border);
 }
 
 #[test]
 fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     use crate::ui::switcher::{Scan, Switcher};
-    // In a band layout the view border is a HORIZONTAL rule; a left-press on that
-    // row grabs it and a drag sets the nav HEIGHT (not width). 40x60 carries the band:
-    // the nav band carries its own hint bar, so its auto height is ~40% of the whole
+    // In a horizontal nav layout the nav border is a HORIZONTAL rule; a left-press on that
+    // row grabs it and a drag sets the nav HEIGHT (not width). 40x60 carries the horizontal nav:
+    // a horizontal nav carries its own prefix hint, so its auto height is ~40% of the whole
     // 60-row area = 24, putting the border at row 24 (0-based) = SGR row 25.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
@@ -5000,7 +4997,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     let (mut ft, mut wheel) = (false, false);
     rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, &mut false, &mut false);
     assert!(
-        rt.model.mouse_state.dragging_view_border,
+        rt.model.mouse_state.dragging_nav_border,
         "left-press on the horizontal Top border grabs it"
     );
 
@@ -5021,7 +5018,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
 #[test]
 fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
-    // The bottom placement mirrors the top: the border is the row ABOVE the band, and a
+    // The bottom placement mirrors the top: the border is the row ABOVE the horizontal nav, and a
     // drag measures the height from the window's FAR edge. 40x60 pinned Bottom; the auto
     // height is 24, so the border is 0-based row 35 = SGR row 36.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
@@ -5045,11 +5042,11 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
     let (mut ft, mut wheel) = (false, false);
     rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, &mut false, &mut false);
     assert!(
-        rt.model.mouse_state.dragging_view_border,
+        rt.model.mouse_state.dragging_nav_border,
         "left-press on the horizontal bottom border grabs it"
     );
 
-    // Drag DOWN to SGR row 40 → the band keeps 60 - 40 = 20 rows.
+    // Drag DOWN to SGR row 40 → the horizontal nav keeps 60 - 40 = 20 rows.
     let drag = crate::display::mouse::MouseEvent {
         cb: 0x20,
         col: 5,
@@ -5089,7 +5086,7 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
     let (mut ft, mut wheel) = (false, false);
     rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, &mut false, &mut false);
     assert!(
-        rt.model.mouse_state.dragging_view_border,
+        rt.model.mouse_state.dragging_nav_border,
         "left-press on the vertical right border grabs it"
     );
 
@@ -5110,7 +5107,7 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
 #[test]
 fn resize_keys_adjust_height_in_top_layout() {
     use crate::ui::switcher::{Scan, Switcher, ViewLayout, NAV_WIDTH};
-    // In a band layout the nav-resize keys (prefix h/l · Ctrl+←/→) adjust the
+    // In a horizontal nav layout the nav-resize keys (prefix h/l · Ctrl+←/→) adjust the
     // HEIGHT, not the width - seeded from the auto height the first time.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
@@ -5131,12 +5128,12 @@ fn resize_keys_adjust_height_in_top_layout() {
     );
     assert_eq!(
         rt.model.render_plan.layout,
-        ViewLayout::Band,
+        ViewLayout::Horizontal,
         "portrait → Band"
     );
 
     let auto = crate::ui::switcher::default_nav_height(59);
-    // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in a band; horizontal (Ctrl+→) is a no-op here.
+    // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in a horizontal nav; horizontal (Ctrl+→) is a no-op here.
     assert!(
         !rt.resize_axis(true, 1),
         "horizontal resize is a no-op in a band"
@@ -5156,7 +5153,7 @@ fn resize_keys_flip_direction_on_the_right_and_bottom() {
     use crate::ui::switcher::{NavPosition, Scan, Switcher, ViewLayout, NAV_WIDTH};
     // The resize key's direction is the border's movement, so with the nav on the
     // right or below the SAME key grows the nav the other way: in a right column the
-    // →/l key (delta +1) shrinks the nav, and in a bottom band the ↓ key (delta +1)
+    // →/l key (delta +1) shrinks the nav, and in a bottom horizontal nav the ↓ key (delta +1)
     // shrinks the height - the same flip as the focus-arrow pair.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
@@ -5175,7 +5172,7 @@ fn resize_keys_flip_direction_on_the_right_and_bottom() {
     );
     assert_eq!(
         rt.model.render_plan.layout,
-        ViewLayout::Column,
+        ViewLayout::Vertical,
         "landscape → Column"
     );
     let w0 = rt.model.nav_width_natural;
@@ -5198,7 +5195,7 @@ fn resize_keys_flip_direction_on_the_right_and_bottom() {
     );
     assert!(!rt.resize_axis(false, 1), "height is a no-op in a column");
 
-    // The same flip on the band: a bottom nav's ↓ key shrinks the height.
+    // The same flip on the horizontal nav: a bottom nav's ↓ key shrinks the height.
     rt.model.nav_position = NavPosition::Bottom;
     rt.cols = 40;
     rt.body_rows = 59;
@@ -5212,7 +5209,7 @@ fn resize_keys_flip_direction_on_the_right_and_bottom() {
     );
     assert_eq!(
         rt.model.render_plan.layout,
-        ViewLayout::Band,
+        ViewLayout::Horizontal,
         "portrait → Band"
     );
     let auto = crate::ui::switcher::default_nav_height(59);
@@ -5258,7 +5255,7 @@ fn loop_top_resolves_the_pinned_nav_position() {
     );
     assert_eq!(
         rt.model.render_plan.layout,
-        ViewLayout::Column,
+        ViewLayout::Vertical,
         "right is a column"
     );
 }
@@ -5286,7 +5283,7 @@ fn loop_top_resolves_the_default_position_when_unpinned() {
     );
     assert_eq!(
         rt.model.render_plan.layout,
-        ViewLayout::Column,
+        ViewLayout::Vertical,
         "left is a column"
     );
 }
@@ -6982,14 +6979,14 @@ fn a_popup_drag_drops_the_hover_it_started_on() {
 }
 
 #[test]
-fn dragging_the_seam_past_the_minimum_collapses_the_nav_at_every_position() {
+fn dragging_the_nav_border_past_the_minimum_collapses_the_nav_at_every_position() {
     use crate::ui::switcher::NavPosition;
     let sel = Selection::default();
     for position in EVERY_POSITION {
         let mut rt = collapse_rt(position);
-        let seam = rt.model.render_plan.regions.view_border;
+        let nav_border = rt.model.render_plan.regions.nav_border;
         rt.handle_mouse_event(
-            &mouse(0, seam.x + 1, seam.y + 1, true),
+            &mouse(0, nav_border.x + 1, nav_border.y + 1, true),
             &sel,
             &mut false,
             &mut false,
@@ -6997,14 +6994,14 @@ fn dragging_the_seam_past_the_minimum_collapses_the_nav_at_every_position() {
             &mut false,
         );
         assert!(
-            rt.model.mouse_state.dragging_view_border,
-            "{position:?}: the press grabs the seam"
+            rt.model.mouse_state.dragging_nav_border,
+            "{position:?}: the press grabs the nav border"
         );
         let (col, row) = match position {
-            NavPosition::Left => (1, seam.y + 1),
-            NavPosition::Right => (140, seam.y + 1),
-            NavPosition::Top => (seam.x + 1, 1),
-            NavPosition::Bottom => (seam.x + 1, 30),
+            NavPosition::Left => (1, nav_border.y + 1),
+            NavPosition::Right => (140, nav_border.y + 1),
+            NavPosition::Top => (nav_border.x + 1, 1),
+            NavPosition::Bottom => (nav_border.x + 1, 30),
         };
         rt.handle_mouse_event(
             &mouse(0x20, col, row, true),
@@ -7019,10 +7016,10 @@ fn dragging_the_seam_past_the_minimum_collapses_the_nav_at_every_position() {
             "{position:?}: dragging past the minimum collapses the nav"
         );
         let (col, row) = match position {
-            NavPosition::Left => (61, seam.y + 1),
-            NavPosition::Right => (80, seam.y + 1),
-            NavPosition::Top => (seam.x + 1, 11),
-            NavPosition::Bottom => (seam.x + 1, 20),
+            NavPosition::Left => (61, nav_border.y + 1),
+            NavPosition::Right => (80, nav_border.y + 1),
+            NavPosition::Top => (nav_border.x + 1, 11),
+            NavPosition::Bottom => (nav_border.x + 1, 20),
         };
         rt.handle_mouse_event(
             &mouse(0x20, col, row, true),
@@ -7044,7 +7041,7 @@ fn dragging_the_seam_past_the_minimum_collapses_the_nav_at_every_position() {
             &mut false,
             &mut false,
         );
-        assert!(!rt.model.mouse_state.dragging_view_border);
+        assert!(!rt.model.mouse_state.dragging_nav_border);
     }
 }
 
@@ -7076,7 +7073,7 @@ fn a_click_anywhere_on_a_collapsed_nav_expands_it_at_every_position() {
         assert_eq!(rt.model.state.focus, focus_before, "{position:?}");
         assert!(!focus_toggle, "{position:?}: the click is not a focus move");
         assert!(
-            !rt.model.mouse_state.dragging_view_border,
+            !rt.model.mouse_state.dragging_nav_border,
             "{position:?}: the click is not a drag"
         );
     }
@@ -7104,7 +7101,7 @@ fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
             NavPosition::Left => ([1, 2, 3], 4),
             _ => ([138, 139, 140], 137),
         };
-        let border = collapsed_rt(position).model.render_plan.regions.view_border;
+        let border = collapsed_rt(position).model.render_plan.regions.nav_border;
         assert_eq!(
             border.x + 1,
             inside[if position == NavPosition::Left { 2 } else { 0 }]
@@ -7124,7 +7121,7 @@ fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
                     !rt.model.nav_collapsed,
                     "{position:?}: a click at ({col}, {row}) expands"
                 );
-                assert!(!rt.model.mouse_state.dragging_view_border);
+                assert!(!rt.model.mouse_state.dragging_nav_border);
             }
         }
         let mut rt = collapsed_rt(position);
@@ -7160,7 +7157,7 @@ fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
         );
         rt.model.nav_width = rt.model.nav_width_natural;
         sync_test_render_plan(&mut rt);
-        let border = rt.model.render_plan.regions.view_border;
+        let border = rt.model.render_plan.regions.nav_border;
         let beside = if position == NavPosition::Left {
             border.x
         } else {
@@ -7175,7 +7172,7 @@ fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
             &mut false,
         );
         assert!(
-            !rt.model.mouse_state.dragging_view_border,
+            !rt.model.mouse_state.dragging_nav_border,
             "{position:?}: the cell beside the expanded border does not grab it"
         );
         rt.handle_mouse_event(
@@ -7187,37 +7184,10 @@ fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
             &mut false,
         );
         assert!(
-            rt.model.mouse_state.dragging_view_border,
+            rt.model.mouse_state.dragging_nav_border,
             "{position:?}: the expanded border grabs a resize drag"
         );
     }
-}
-
-#[test]
-fn any_key_ends_the_selection_hint_in_either_focus() {
-    let raise = |rt: &mut Runtime| {
-        rt.model.state.chrome.first_key_seen = true;
-        rt.model.state.chrome.show_selection_hint(
-            vec![(
-                "Enter".into(),
-                "focus the terminal".into(),
-                "terminal".into(),
-            )],
-            "1 window".into(),
-            std::time::Instant::now(),
-        );
-    };
-    // Terminal focus: the key goes to the pane, and the hint still comes down.
-    let mut rt = rt_terminal_focus_with_session();
-    raise(&mut rt);
-    let out = rt.handle_stdin_bytes(b"x", &Selection::default());
-    assert!(rt.model.state.chrome.selection_hint.is_none());
-    assert!(out.dirty, "the bar changed, so the frame repaints");
-    // Nav focus: a key that moves nothing ends it and raises nothing new.
-    let mut rt = test_rt(fake_env_with_machines(&["local"]));
-    raise(&mut rt);
-    rt.handle_stdin_bytes(b"x", &Selection::default());
-    assert!(rt.model.state.chrome.selection_hint.is_none());
 }
 
 #[test]
@@ -7424,7 +7394,7 @@ fn ctrl_arrows_in_nav_focus_walk_the_hierarchy_and_the_prefix_layer_keeps_its_ow
     assert_eq!(selected(&rt), Some(Node::Host("gpu".into())));
     rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default());
     assert_eq!(selected(&rt), Some(Node::Machine("gpu".into())));
-    // Behind the prefix, Ctrl+↑ is the band border, never a level step.
+    // Behind the prefix, Ctrl+↑ is the horizontal nav border, never a level step.
     rt.handle_stdin_bytes(b"\x07\x1b[1;5B", &Selection::default());
     assert_eq!(selected(&rt), Some(Node::Machine("gpu".into())));
     // A bare Ctrl+arrow right after it repeats the resize; once another key ends the
@@ -7508,7 +7478,7 @@ fn hovering_a_nav_card_previews_it_and_a_click_executes_it() {
 }
 
 #[test]
-fn moving_to_the_view_border_ends_nav_and_link_hover() {
+fn moving_to_the_nav_border_ends_nav_and_link_hover() {
     for terminal in [false, true] {
         let mut rt = if terminal {
             host_screen_with_new_session_link().0
@@ -7527,7 +7497,7 @@ fn moving_to_the_view_border_ends_nav_and_link_hover() {
                 .unwrap()
                 .1
         };
-        for rect in [rect, rt.model.render_plan.regions.view_border] {
+        for rect in [rect, rt.model.render_plan.regions.nav_border] {
             let event = crate::display::mouse::MouseEvent {
                 cb: 35,
                 col: rect.x + 1,
@@ -7544,7 +7514,7 @@ fn moving_to_the_view_border_ends_nav_and_link_hover() {
             );
         }
         assert_eq!(rt.model.switcher.hover_targets(), (None, None));
-        assert!(rt.model.mouse_state.hovered_view_border);
+        assert!(rt.model.mouse_state.hovered_nav_border);
     }
 }
 
@@ -8510,7 +8480,7 @@ async fn alerts_reach_the_terminal_and_mark_a_session_not_on_screen() {
         Msg::SyncFrame {
             spinner_frame: 0,
             animation_ms: 0,
-            view_border_hovered: false,
+            nav_border_hovered: false,
             prefix_active: false,
         },
     );

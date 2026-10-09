@@ -3,8 +3,8 @@
 /// Which way the two views stack.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewLayout {
-    Column,
-    Band,
+    Vertical,
+    Horizontal,
 }
 
 /// Which side of the terminal view the nav is attached to.
@@ -25,12 +25,12 @@ pub struct NavSize {
     pub natural: u16,
     /// The width on screen this frame.
     pub width: u16,
-    /// The band's height the user set; 0 means auto.
+    /// The horizontal nav's height the user set; 0 means auto.
     pub height: u16,
     /// Which side of the terminal view the nav is attached to this frame. Auto-hide
     /// keeps it, so a hidden nav returns on the side it left.
     pub position: NavPosition,
-    /// Whether the nav shows only its prefix indicator.
+    /// Whether the nav shows only its prefix hint.
     pub collapsed: bool,
 }
 
@@ -84,8 +84,8 @@ impl NavPosition {
     /// The view stacking this placement produces.
     pub fn layout(self) -> ViewLayout {
         match self {
-            Self::Left | Self::Right => ViewLayout::Column,
-            Self::Top | Self::Bottom => ViewLayout::Band,
+            Self::Left | Self::Right => ViewLayout::Vertical,
+            Self::Top | Self::Bottom => ViewLayout::Horizontal,
         }
     }
 
@@ -132,11 +132,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn layout_maps_columns_and_bands() {
-        assert_eq!(NavPosition::Left.layout(), ViewLayout::Column);
-        assert_eq!(NavPosition::Right.layout(), ViewLayout::Column);
-        assert_eq!(NavPosition::Top.layout(), ViewLayout::Band);
-        assert_eq!(NavPosition::Bottom.layout(), ViewLayout::Band);
+    fn layout_maps_vertical_and_horizontal_navs() {
+        assert_eq!(NavPosition::Left.layout(), ViewLayout::Vertical);
+        assert_eq!(NavPosition::Right.layout(), ViewLayout::Vertical);
+        assert_eq!(NavPosition::Top.layout(), ViewLayout::Horizontal);
+        assert_eq!(NavPosition::Bottom.layout(), ViewLayout::Horizontal);
     }
 
     #[test]

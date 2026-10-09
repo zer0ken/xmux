@@ -7,7 +7,7 @@ mod modal;
 pub(crate) mod notify;
 mod view;
 
-pub use chrome::{Chrome, HostReach, ViewBorderColors};
+pub use chrome::{Chrome, HostReach, NavBorderColors};
 pub use focus::{Focus, ModalKind, ViewFocus};
 pub(crate) use modal::{
     feed_reader, is_inputting, is_popup_open, is_reader, modal_kind, HelpMap, Input, InputMode,
@@ -26,7 +26,7 @@ use std::time::Instant;
 #[derive(Default)]
 pub struct State {
     /// Inventory - hosts → sessions (all reachable). The single
-    /// source of truth every component reads, instead of reaching into the tree.
+    /// source of truth every component reads, instead of reaching into the card model.
     // ponytail: flat fields, not an Inventory sub-struct - bundle them if a reader
     // ever needs the whole group at once.
     pub groups: Vec<Group>,
@@ -93,9 +93,9 @@ pub struct State {
     pub display_clients: HashMap<crate::session::Address, u32>,
     /// Hosts whose host-screen diagnostic rows are expanded.
     pub(crate) host_details: HashSet<String>,
-    /// Active fuzzy-filter text (drives the visible tree + the hint_bar).
+    /// Active fuzzy-filter text (drives the navigation view's cards).
     pub filter: String,
-    /// What the tree selection points at - the session to show.
+    /// What the selection points at - the session to show.
     pub selection: Selection,
     /// The address whose content is confirmed live in the on-screen terminal view -
     /// the single display truth, and the target of both rendering and input. The
@@ -135,12 +135,10 @@ pub struct State {
     /// never coexist. The switcher owns the modal behavior and the transient popup
     /// geometry (drag offset / drawn rect); this owns which modal is open + its content.
     pub(crate) modal: Option<Modal>,
-    /// The switcher's chrome view-state: the tree|terminal view border, the tree-column
-    /// hint bar (prefix / selection hint / status), and the host screens,
-    /// plus their inputs (spinner set + frame, auto-hide/hover cues, view border
+    /// The switcher's chrome view-state: the nav border, the prefix hint, and the host
+    /// screens, plus their inputs (spinner set + frame, auto-hide/hover cues, nav border
     /// colours, ssh-config text, prefix). Owned here beside the modal data and fed by
-    /// the app each frame; the switcher's `render` reads it off
-    /// `&state`.
+    /// the app each frame; the switcher's `render` reads it off `&state`.
     pub(crate) chrome: Chrome,
     /// The toasts on screen and the history behind them, read by the switcher's render
     /// and by the `prefix m` history.
@@ -1129,7 +1127,7 @@ impl State {
     }
 
     /// Reports an action xmux refused, titled by what it was about, as a notification.
-    /// The hint bar keeps its contextual text: a refusal is a result of the action.
+    /// The prefix hint keeps its contextual text: a refusal is a result of the action.
     pub(crate) fn refuse(&mut self, title: impl Into<String>, reason: impl Into<String>) {
         self.notify.refusal(title, reason);
     }
@@ -1140,7 +1138,7 @@ impl State {
 /// mux send a full-screen repaint, and a storm of repaints floods
 /// the draw - the single-threaded loop then spends all its time redrawing, which IS
 /// the freeze. Deferring the attach until the selection settles keeps per-step redraws
-/// to a cheap tree-only diff. The single source of this value: `apply`'s `Tick` re-arm and
+/// to a cheap card-list-only diff. The single source of this value: `apply`'s `Tick` re-arm and
 /// its [`Action::RearmAttachNow`](crate::model::Action::RearmAttachNow) both read it, so
 /// the two arming paths can never drift.
 pub(crate) const ATTACH_DEBOUNCE_MS: u64 = 90;

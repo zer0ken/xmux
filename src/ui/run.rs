@@ -78,7 +78,7 @@ mod tests {
     use super::*;
     use crate::session::Session;
     use crate::state::Scan;
-    use crate::ui::tree::Group;
+    use crate::ui::cards::Group;
 
     #[test]
     fn scanning_dump_uses_the_same_braille_frame_as_live_render() {
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn an_empty_screen_keeps_its_content_and_animation_with_the_nav_hidden() {
         let mut state = crate::state::State::from_scan(Scan {
-            groups: vec![crate::ui::tree::Group {
+            groups: vec![crate::ui::cards::Group {
                 host: "fresh".into(),
                 err: None,
                 sessions: vec![],
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn full_rescan_keeps_the_confirmed_grid_visible() {
+    fn on_demand_rescan_keeps_the_viewed_grid() {
         let mut state = crate::state::State::from_scan(sample());
         let mut switcher = Switcher::new(&mut state);
         state.displayed = crate::model::Selection {
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(state.displayed.session, "editor");
 
         let mut grid = crate::display::grid::Grid::new(50, 30);
-        grid.feed(b"PRESERVED-GRID");
+        grid.feed(b"\n\n\nPRESERVED-GRID");
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         let previous = crate::ui::switcher::RenderPlan::default();
         terminal
@@ -304,10 +304,10 @@ mod tests {
         let mut state = crate::state::State::from_scan(sample());
         let sw = Switcher::new(&mut state);
         let out = dump_switcher(&sw, &state, 100, 30);
-        // The dump renders the full screen (tree and hint bar); at rest the bar shows the
+        // The dump renders the full screen (tree and prefix hint); at rest the bar shows the
         // prefix alone.
         assert!(out.contains("editor"));
-        assert!(out.contains("C-g"), "hint bar prefix present:\n{out}");
+        assert!(out.contains("C-g"), "prefix hint prefix present:\n{out}");
     }
 
     #[tokio::test]

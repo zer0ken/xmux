@@ -149,9 +149,9 @@ pub enum KeyCommand {
     AutoHide,
     /// Place the nav one side clockwise.
     Position,
-    /// Move the side view border by this many columns (positive is right).
+    /// Move the side nav border by this many columns (positive is right).
     Width(i32),
-    /// Move the band view border by this many rows (positive is down).
+    /// Move the band nav border by this many rows (positive is down).
     Height(i32),
     /// Toggle the history.
     History,
@@ -544,7 +544,7 @@ pub static TABLE: &[KeyEntry] = &[
         section: Section::View,
         keys: Keys::Prefix(&[(Chord::Char('t'), KeyCommand::AutoHide)]),
         label: "t",
-        help: "toggle auto-hide-nav (║ view border = on)",
+        help: "toggle auto-hide-nav (║ nav border = on)",
         long: "toggle nav auto-hide",
         short: "auto-hide",
         rank: 4,
@@ -666,7 +666,7 @@ pub static TABLE: &[KeyEntry] = &[
     KeyEntry {
         section: Section::Mouse,
         keys: Keys::Mouse,
-        label: "drag the view border",
+        label: "drag the nav border",
         help: "resize the nav; past its minimum, collapse it",
         long: "resize the nav",
         short: "resize",

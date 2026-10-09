@@ -153,7 +153,7 @@ impl HostManager {
     }
 
     /// `%exit`/EOF (control) or explicit drop (poll): tear down the channel. The app
-    /// keeps the last-known tree in its switcher state, so the inventory is not refetched.
+    /// keeps the last-known card list in its switcher state, so the inventory is not refetched.
     pub fn reap(&mut self, host: &str) {
         if let Some(c) = self.clients.remove(host) {
             c.teardown();

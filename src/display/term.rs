@@ -48,7 +48,7 @@ impl<W: std::io::Write> std::io::Write for FrameWriter<W> {
 
 // SGR mouse tracking: button press/release (1000h) + drag (1002h) + any-motion
 // (1003h) + SGR encoding (1006h). 1003h is on so the app sees idle moves for the
-// view border hover cue; it CONSUMES idle motion (never forwards it to the mux), so the
+// nav border hover cue; it CONSUMES idle motion (never forwards it to the mux), so the
 // flood 1003h would otherwise push onto the child / a remote link does not happen.
 #[cfg(windows)]
 const SGR_MOUSE_ON: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
@@ -90,7 +90,7 @@ impl TermGuard {
         windows_mouse::enable()?;
         // crossterm's EnableMouseCapture (non-Windows) enables button-event motion
         // (1002h) but not any-motion (1003h); add it so idle moves arrive for the
-        // view border hover cue. The Windows path already includes 1003h in SGR_MOUSE_ON.
+        // nav border hover cue. The Windows path already includes 1003h in SGR_MOUSE_ON.
         #[cfg(not(windows))]
         {
             use std::io::Write;

@@ -186,12 +186,11 @@ notifications = true                  # show results as toasts (the prefix m his
 braille-animation = true             # show the central Braille X on scanning, machine, and host screens
 nav-position = "left"                 # the nav's default side (left|top|right|bottom)
 max-fps = 30                          # maximum xmux draws per second (10 to 120)
-view-active-border-style = "green"    # focused view-border colour
-hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style)
+nav-active-border-style = "green"   # focused nav-border colour
 selection-style = ""                  # selection background; empty: the theme's accent
 primary = "brightwhite"               # per-role colour overrides: primary, secondary,
 accent = "brightgreen"                # accent, decoration, warning, error, disabled,
-bar-bg = "colour235"                  # and the hint bar's bar-bg / bar-fg / bar-accent
+bar-bg = "colour235"                  # and the prefix hint chip's bar-bg / bar-fg / bar-accent
 
 [update]
 check = true                          # allow startup checks and automatic updates
@@ -221,14 +220,14 @@ The supported settings and their application times are:
 | `[ui]` | `nav-position` | `"left"`; applied live unless a saved position is pinned. |
 | `[ui]` | `theme`, `max-fps` | `"auto-dark"` and `30`; applied live. Themes are `"auto-dark"` or `"auto-light"`; frame rate is 10 through 120. |
 | `[ui]` | `renumbering`, `notifications`, `braille-animation` | All `true`; applied live. |
-| `[ui]` | `view-active-border-style`, `view-border-style`, `view-border-hover-style`, `hint-bar-style`, `selection-style` | Empty strings use theme defaults; applied live. |
+| `[ui]` | `nav-active-border-style`, `nav-border-style`, `nav-border-hover-style`, `selection-style` | Empty strings use theme defaults; applied live. |
 | `[ui]` | `primary`, `secondary`, `accent`, `decoration`, `warning`, `error`, `disabled`, `bar-bg`, `bar-fg`, `bar-accent` | Empty strings use theme defaults; applied live. |
 
 Run `xmux doctor` to report unknown keys and unsupported mux names. A mixed mux
 list such as `["auto", "tmux"]` is an explicit list: `auto` is not a mux name.
 Colour values accept ANSI colour names, `bright*` names, `colour0` through
 `colour255`, `#RRGGBB`, and `default`. Border styles accept a bare colour or
-`fg=<colour>`, the hint bar accepts `bg=<colour>,fg=<colour>`, and selection
+`fg=<colour>`, the prefix hint chip accepts `bg=<colour>,fg=<colour>`, and selection
 style accepts a bare background colour or `bg=<colour>`. Invalid colours use
 the terminal default; an unknown theme uses `auto-dark`, and an unknown nav
 position uses `left`.
@@ -241,7 +240,7 @@ login. Turning off neighbour discovery removes machines offered only by that
 provider; explicit entries and other enabled providers still apply.
 
 - **Nav position.** The nav rides on one of the four sides of the terminal view
-  (a left or right column, a top or bottom band). `[ui] nav-position` picks the
+  (a left or right column, a top or bottom horizontal nav). `[ui] nav-position` picks the
   default, and the nav never moves on its own. `prefix p` places it one side
   clockwise (left → top → right → bottom → default) and remembers the choice in
   `~/.xmux/nav_position`, which wins over the setting until the key cycles back

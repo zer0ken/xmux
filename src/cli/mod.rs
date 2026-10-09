@@ -256,12 +256,12 @@ async fn run_ls(env: &Env) -> i32 {
     // A machine that could not be asked which muxes it serves is reported like a host that
     // could not be listed; one that answered with none has nothing to list.
     let mut hosts = env.hosts();
-    let unreached: Vec<crate::ui::tree::Group> = env
+    let unreached: Vec<crate::ui::cards::Group> = env
         .discover_hosts(&mut hosts, None)
         .await
         .into_iter()
         .filter_map(|u| {
-            Some(crate::ui::tree::Group {
+            Some(crate::ui::cards::Group {
                 host: u.machine,
                 err: Some(u.reason?),
                 sessions: Vec::new(),

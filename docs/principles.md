@@ -134,7 +134,8 @@ the hierarchy of machines, hosts, and sessions, which is reached only through
 host screens.
 
 Cards and sections are what the user sees and counts, so stepping through them must
-mean the same thing in a column and in a band, whatever hosts the list holds. Folding
+mean the same thing in a column and in a horizontal nav, whatever hosts the list holds.
+Folding
 the hierarchy into the ordinary step would turn the list into a tree whose stops change
 with the inventory. Keeping the hierarchy behind its own inputs leaves the card step
 predictable and still lets every machine and host be opened.
@@ -243,18 +244,18 @@ take the selection from it.
 
 ## Results as Notifications
 
-The hint bar carries only short advice that fits the current state: the prefix, the
-selected card's next keys, the scan progress, and the active filter. Every result of an
-action the user took, whether the action was done, refused, failed, or had nothing to
-do, is a toast titled by the action, and the history keeps it.
+Every result of an action the user took, whether the action was done, refused, failed,
+or had nothing to do, is a toast titled by the action, and the history keeps it.
 
 Advice and a result answer different questions. Advice says what the user can do next
-and changes with the state it describes, so the hint bar keeps it current. A result says
-what the last action did and stays true after the state moves on, so it belongs to the
-action and to a record the user can open again. A result written into the hint bar
-would push the advice off the bar while it lasted, could leave on the next key before
-it was read, and would be missing from the history. One surface for every result also
-lets a refusal and a failure read alike, so the user looks for an answer in one place.
+and changes with the state it describes: the prefix hint names the armed prefix, the
+key list names the keys it unlocks, and the active filter paints its match cell by
+cell. A result says what the last action did and stays true after the state moves on,
+so it belongs to the action and to a record the user can open again. A result written
+into an advice surface would crowd out the advice while it lasted, could leave on the
+next key before it was read, and would be missing from the history. One surface for
+every result also lets a refusal and a failure read alike, so the user looks for an
+answer in one place.
 
 Feedback on a value typed into a popup is not a result. When a popup cannot accept what
 was typed, such as a number no card carries or a confirming word that is not the one
@@ -282,7 +283,7 @@ input caret has its own cell and does not add padding to the value.
 Painting and pointer interaction use the same target area, including a standalone
 item's padding and any Enter mark. A clipped part never takes over the containing
 item's area, and no highlight covers another item's text. Hover paints
-the item on the hint bar's pair of colours. Where selection and hover overlap, the
+its target's own cells. Where selection and hover overlap, the
 selection background remains and hover adds an underline, including when one target
 is a part of the other. A colour the user names in `[ui] selection-style` replaces the
 accent background on every one of these surfaces alike, and the item keeps its own text

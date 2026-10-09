@@ -141,9 +141,9 @@ async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
 mod tests {
     use super::*;
     use crate::session::Session;
+    use crate::ui::cards::Group;
     use crate::ui::run::dump_switcher;
     use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
 
     fn sample() -> Scan {
         Scan {
@@ -301,7 +301,7 @@ mod tests {
         let dump = client.do_cmd("dump").await.unwrap();
         assert!(
             dump.contains("editor"),
-            "dump should render the tree:\n{dump}"
+            "dump should render the navigation view:\n{dump}"
         );
         assert_eq!(
             client.do_cmd("raw:key fnord").await.unwrap(),

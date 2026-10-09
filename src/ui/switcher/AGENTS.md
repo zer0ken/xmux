@@ -11,9 +11,9 @@ to the live terminal or to the headless backend behind the ctl `dump`.
 
 - The switcher state holds the cards, the selection and hover, the interest, and
   the hierarchy trail; key handling, mouse handling, and rendering each extend it.
-- Card geometry is pure and backend-free: the side list places cards by their heights,
-  and the band places them in column flow. Each returns rects that the paint, the mouse
-  hit-test, and the tests read.
+- Card geometry is pure and backend-free: a vertical nav places cards by their
+  heights, and a horizontal nav places them in column flow. Each returns rects that the
+  paint, the mouse hit-test, and the tests read.
 - The test suites drive the switcher through keys, mouse, and a test backend, split by
   concern: position independence, the hierarchy, and the selection lineage.
 
