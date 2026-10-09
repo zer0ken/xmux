@@ -7138,11 +7138,13 @@ fn every_popup_opens_at_its_anchor_whatever_was_dragged() {
         .clone()
         .expect("a live prefix opens the key list");
     assert!(sw.begin_popup_drag_in_plan(&plan, list.x + 3, list.y + 1, &state));
-    sw.drag_popup(list.x - 7, list.y - 4);
+    // The list is shaped tall, so it fills the room's height and can only be dragged
+    // sideways: drag it right, keeping the row.
+    sw.drag_popup(list.x + 3 + 7, list.y + 1);
     sw.end_popup_drag();
     let moved = sw.layout(area, nav, &state, &plan);
     let (dragged, _) = moved.key_list.clone().unwrap();
-    assert_eq!((dragged.x + 10, dragged.y + 5), (list.x, list.y));
+    assert_eq!((dragged.x - 7, dragged.y), (list.x, list.y));
     // The popup a prefix key opens is at its anchor, not where the key list was dragged.
     sw.show_help(&mut state);
     let undragged = {

@@ -1131,7 +1131,7 @@ fn the_landing_names_a_newer_release_and_the_command_that_installs_it() {
 }
 
 #[test]
-fn the_prefix_key_list_names_a_newer_release_beside_the_version() {
+fn the_prefix_key_list_keeps_the_update_notice_when_narrow() {
     let screen = |h: &H| {
         let buf = h.term.backend().buffer();
         (0..buf.area.height)
@@ -1153,14 +1153,12 @@ fn the_prefix_key_list_names_a_newer_release_beside_the_version() {
     assert!(!row.contains("available"), "{row}");
     h.state.chrome.update_available = Some("99.0.0".into());
     h.draw();
+    // The box is too narrow for the whole notice, so it is shortened to "update!".
     let row = screen(&h)
         .into_iter()
-        .find(|l| l.contains(&version))
-        .expect("the key list writes the version");
-    assert!(
-        row.contains(&format!("{version} · v99.0.0 available: xmux update")),
-        "{row}"
-    );
+        .find(|l| l.contains("update!"))
+        .expect("the key list writes the update notice");
+    assert!(row.contains("update!"), "{row}");
 }
 
 #[test]
