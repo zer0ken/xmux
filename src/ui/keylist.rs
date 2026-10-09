@@ -24,6 +24,11 @@ use crate::ui::palette;
 const GAP: u16 = 2;
 /// Blank cells between the border and the keys on each side.
 const PAD: u16 = 1;
+/// The width-to-height ratio the key list is shaped toward, `3:4`. The list spreads
+/// across just enough columns to bring its box nearest this ratio instead of the
+/// shortest box the room allows, so it is neither a long flat strip nor a tall narrow
+/// column.
+const TARGET_ASPECT: f64 = 3.0 / 4.0;
 
 /// One cell of a key column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -254,17 +259,35 @@ fn pack(items: &[&Item], rung: Rung, more: usize, max_w: u16, max_h: u16) -> Opt
         return None;
     }
     let max_cols = ((inner_w + GAP) / (column_width + GAP)) as usize;
-    // The shortest box that fits the room's width: the keys spread across every column
-    // the room holds before the box grows a row.
-    (2..=inner_h).find_map(|h| {
+    // The box whose width-to-height ratio is nearest [`TARGET_ASPECT`] among those that
+    // fit the room. The keys spread across just enough columns to balance the width
+    // against the height. A near tie goes to the taller box, since the target is
+    // portrait.
+    let mut best: Option<(f64, u16, KeyList)> = None;
+    for h in 2..=inner_h {
         let columns = flow(&blocks, h as usize);
-        (columns.len() <= max_cols).then_some(KeyList {
+        if columns.len() > max_cols {
+            continue;
+        }
+        let list = KeyList {
             columns,
             key_width,
             column_width,
             rung,
-        })
-    })
+        };
+        let (w, box_h) = list.size();
+        let dist = ((w as f64 / box_h as f64) - TARGET_ASPECT).abs();
+        let better = match &best {
+            Some((best_dist, best_h, _)) => {
+                dist < *best_dist || (dist == *best_dist && box_h > *best_h)
+            }
+            None => true,
+        };
+        if better {
+            best = Some((dist, box_h, list));
+        }
+    }
+    best.map(|(_, _, list)| list)
 }
 
 /// Runs the blocks down columns `h` cells tall. A section starts a new column when it
@@ -435,24 +458,12 @@ pub(crate) fn render(
         spans.push(Span::raw(" "));
         block = block.title_bottom(Line::from(spans).right_aligned());
     } else if !version.is_empty() {
-        // The version is a build pointer, so it takes the bottom border only where it
-        // leaves a corner's worth of rule on each side. A newer release follows it in the
-        // accent, since it is the one thing on the border the user can act on.
-        let mut version_line = vec![Span::styled(
-            format!(" {version} "),
-            Style::default().fg(palette.disabled),
-        )];
-        if let Some(update) = update {
-            version_line.push(Span::styled("· ", Style::default().fg(palette.disabled)));
-            version_line.push(Span::styled(
-                format!("{update} "),
-                Style::default().fg(palette.accent),
-            ));
-        }
-        let version_line = Line::from(version_line);
-        if status_w + (version_line.width() as u16) + 6 <= rect.width {
-            block = block.title_bottom(version_line.right_aligned());
-        }
+        // The version is a build pointer; a newer release follows it in the accent, since
+        // it is the one thing on the border the user can act on. The notice always
+        // renders: where the box is too narrow for the whole line it is shortened to
+        // "update!" rather than dropped.
+        let avail = rect.width.saturating_sub(status_w).saturating_sub(6) as usize;
+        block = block.title_bottom(version_line(version, update, avail, palette).right_aligned());
     }
     frame.render_widget(block, rect);
     let key_style = key_cell_style(palette);
@@ -487,6 +498,42 @@ pub(crate) fn render(
     }
 }
 
+/// The line a key list's bottom border writes for `version` and `update` within `avail`
+/// cells: the full notice where it fits, "update!" when there is a newer release but no
+/// room for the whole line, and the bare version otherwise.
+fn version_line(
+    version: &str,
+    update: Option<&str>,
+    avail: usize,
+    palette: &palette::Palette,
+) -> Line<'static> {
+    let mut full = vec![Span::styled(
+        format!(" {version} "),
+        Style::default().fg(palette.disabled),
+    )];
+    if let Some(update) = update {
+        full.push(Span::styled("· ", Style::default().fg(palette.disabled)));
+        full.push(Span::styled(
+            format!("{update} "),
+            Style::default().fg(palette.accent),
+        ));
+    }
+    let width = full
+        .iter()
+        .map(|s| s.content.as_ref().width())
+        .sum::<usize>();
+    if width <= avail {
+        return Line::from(full);
+    }
+    if update.is_some() {
+        return Line::from(vec![Span::styled(
+            " update! ",
+            Style::default().fg(palette.accent),
+        )]);
+    }
+    Line::from(full)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,14 +554,18 @@ mod tests {
     }
 
     #[test]
-    fn a_wide_room_lists_every_key_grouped_in_columns_with_full_names() {
+    fn a_wide_room_lists_every_key_with_full_names_grouped_by_section() {
         let list = key_list("C-g", NavPosition::Left, 160, 30).unwrap();
         assert_eq!(list.rung, Rung::Long);
         assert_eq!(list.keys().len(), prefixed_count(), "every prefix key");
-        assert!(list.columns.len() > 1, "more than one column: {list:?}");
         assert_eq!(titles(&list), ["navigate", "sessions", "view", "app"]);
         let (w, h) = list.size();
         assert!(w <= 160 && h <= 30);
+        // Shaped toward 3:4, not spread into a flat strip across the room's width.
+        assert!(
+            w as f64 / (h as f64) < 2.0,
+            "a wide room still shapes the box toward 3:4: {w}x{h}"
+        );
         assert!(
             list.columns.iter().flatten().any(
                 |c| matches!(c, Cell::Key { key, desc } if key == "/" && desc == "filter cards")
@@ -530,15 +581,33 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_room_shapes_the_box_toward_three_four_not_a_flat_strip() {
+        // A room wide enough to hold the old flat strip now yields a box nearest the 3:4
+        // target among what fits: far taller and narrower than the strip, but it never
+        // grows a row unless a taller box would put the aspect further from 3:4.
+        let list = key_list("C-g", NavPosition::Left, 160, 30).unwrap();
+        let (w, h) = list.size();
+        assert!(w < 60, "a wide room does not spread across it: {w}x{h}");
+        assert!(
+            h > 20,
+            "the box is tall enough to balance its width: {w}x{h}"
+        );
+    }
+
+    #[test]
     fn a_narrower_room_shortens_every_description_before_it_gives_up_a_key() {
         let long = key_list("C-g", NavPosition::Left, 160, 30).unwrap();
-        let (long_w, _) = long.size();
-        // Narrower than the long rung needs at the height the room leaves.
         let list = (40..=80)
             .filter_map(|width| key_list("C-g", NavPosition::Left, width, 14))
             .find(|list| list.rung == Rung::Short && list.more() == 0)
             .expect("a narrower room fits shortened keys without dropping them");
-        assert!(long_w > list.size().0);
+        // Shortening the descriptions narrows every column, whatever the shape.
+        assert!(
+            list.column_width < long.column_width,
+            "{} vs {}",
+            list.column_width,
+            long.column_width
+        );
         assert_eq!(list.rung, Rung::Short, "{list:?}");
         assert_eq!(list.keys().len(), prefixed_count(), "no key given up");
         assert_eq!(list.more(), 0);
@@ -607,6 +676,26 @@ mod tests {
     fn a_room_too_small_for_the_kept_keys_shows_no_list() {
         assert!(key_list("C-g", NavPosition::Left, 10, 20).is_none());
         assert!(key_list("C-g", NavPosition::Left, 80, 3).is_none());
+    }
+
+    #[test]
+    fn a_narrow_box_shortens_the_update_notice_to_update() {
+        let p = palette::Palette::default();
+        let text = |l: Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        // A wide box keeps the whole notice.
+        let full = version_line("v0.18.1", Some("v99.0.0 available: xmux update"), 100, &p);
+        assert_eq!(text(full), " v0.18.1 · v99.0.0 available: xmux update ");
+        // No room for the whole line: shortened to "update!".
+        let short = version_line("v0.18.1", Some("v99.0.0 available: xmux update"), 28, &p);
+        assert_eq!(text(short), " update! ");
+        // No update: the bare version.
+        let bare = version_line("v0.18.1", None, 28, &p);
+        assert_eq!(text(bare), " v0.18.1 ");
     }
 
     #[test]
