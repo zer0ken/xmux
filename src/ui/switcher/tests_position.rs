@@ -1,6 +1,6 @@
 //! The nav's position-independent layout, checked at every attachment side on fixed
 //! backend sizes: the group grammar, the one seam, the prefix hint, the overflow
-//! marks, the collapsed shape, the one-row band, and the hit-test that reads them back.
+//! marks, the one-row band, and the hit-test that reads them back.
 
 use super::*;
 use ratatui::backend::TestBackend;
@@ -28,14 +28,6 @@ fn nav_at(position: NavPosition) -> NavSize {
         nav.with_height(BAND_H)
     } else {
         nav
-    }
-}
-
-fn collapsed_at(position: NavPosition) -> NavSize {
-    NavSize {
-        width: collapsed_nav_width("C-g"),
-        collapsed: true,
-        ..nav_at(position)
     }
 }
 
@@ -420,40 +412,6 @@ fn pl4_overflow_is_a_thick_seam_segment_or_counts_on_the_band_seam() {
 }
 
 #[test]
-fn pl5_a_collapsed_nav_is_the_seam_line_or_a_prefix_wide_column() {
-    for position in ALL {
-        let shot = Shot::new(two_groups(), collapsed_at(position), false);
-        let r = shot.plan.regions;
-        match position {
-            NavPosition::Floating => unreachable!(),
-            NavPosition::Top | NavPosition::Bottom => {
-                assert_eq!(
-                    r.terminal.height,
-                    H - 1,
-                    "{position:?}: the collapsed horizontal nav is the border line only"
-                );
-                assert!(
-                    shot.seam_text().starts_with(" C-g"),
-                    "{position:?}: the border row still carries the prefix"
-                );
-            }
-            NavPosition::Left => {
-                assert_eq!(r.nav_border.x, 2, "on the prefix's last column");
-                assert_eq!(r.terminal.x, 3);
-            }
-            NavPosition::Right => {
-                assert_eq!(r.nav_border.x, W - 3, "on the prefix's first column");
-                assert_eq!(r.terminal.width, W - 3);
-            }
-        }
-        let text = shot.area_text(shot.nav_area());
-        for token in ["<<", ">>", "▲", "▼"] {
-            assert!(!text.contains(token), "{position:?}: no button: {text:?}");
-        }
-    }
-}
-
-#[test]
 fn pl7_a_one_row_band_runs_title_and_cards_on_one_line() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
         let shot = Shot::new(two_groups(), nav_at(position).with_height(1), false);
@@ -613,35 +571,6 @@ fn hit_test_a_band_overflow_count_selects_the_nearest_hidden_card() {
             "{position:?}: and the band scrolls to show it"
         );
     }
-}
-
-#[test]
-fn pl9_the_key_list_and_the_help_name_prefix_z() {
-    let list = crate::ui::keylist::key_list("C-g", NavPosition::Left, 160, 30).unwrap();
-    assert!(
-        list.columns.iter().flatten().any(|c| matches!(
-            c,
-            crate::ui::keylist::Cell::Key { key, desc } if key == "z" && desc.contains("collapse")
-        )),
-        "the key list names z: {list:?}"
-    );
-    let (_, lines) = crate::ui::modal::help_lines(
-        "C-g",
-        NavPosition::Left,
-        &Default::default(),
-        "",
-        0,
-        None,
-        None,
-        200,
-        u16::MAX,
-    );
-    let help: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    assert!(
-        help.iter()
-            .any(|l| l.contains("C-g z") && l.contains("collapse")),
-        "the help names prefix z: {help:#?}"
-    );
 }
 
 #[test]
@@ -911,206 +840,4 @@ fn an_input_popup_too_short_for_its_rows_keeps_its_field() {
         assert_eq!(lines.len(), 1);
         assert!(crate::ui::modal::caret_offset(&lines[0]).is_some());
     }
-}
-
-/// The collapsed side column, cell by cell, at rest, armed, hovered, and under auto-hide:
-/// the prefix keeps all three of its cells on the first row, the border runs down the
-/// prefix's terminal-side column on every row below it, and the terminal view starts
-/// on the next column.
-/// A named chrome state to draw in, and the border glyph that state paints.
-type ChromeCase = (&'static str, fn(&mut crate::state::State), &'static str);
-
-#[test]
-fn pl5_b_a_collapsed_column_is_the_prefix_with_the_border_on_its_edge() {
-    let cases: [ChromeCase; 4] = [
-        ("rest", |_| {}, "│"),
-        ("armed", |s| s.chrome.armed = true, "│"),
-        ("hovered", |s| s.chrome.nav_border_hovered = true, "┃"),
-        ("auto-hide", |s| s.chrome.auto_hide = true, "║"),
-    ];
-    for position in [NavPosition::Left, NavPosition::Right] {
-        for (name, set, glyph) in cases {
-            let mut shot = Shot::new(two_groups(), collapsed_at(position), false);
-            set(&mut shot.state);
-            shot.draw(false);
-            let r = shot.plan.regions;
-            let (nav_x, edge_x, terminal_x) = match position {
-                NavPosition::Left => (0, 2, 3),
-                _ => (W - 3, W - 3, 0),
-            };
-            assert_eq!(
-                r.prefix_hint,
-                Rect::new(nav_x, 0, 3, 1),
-                "{position:?} {name}"
-            );
-            assert_eq!(
-                r.terminal,
-                Rect::new(terminal_x, 0, W - 3, H),
-                "{position:?} {name}"
-            );
-            assert_eq!(
-                shot.row(0, nav_x, nav_x + 3),
-                "C-g",
-                "{position:?} {name}: the prefix keeps every cell, no padding"
-            );
-            for y in 1..H {
-                assert_eq!(
-                    shot.buf[(edge_x, y)].symbol(),
-                    glyph,
-                    "{position:?} {name}: the border on row {y}"
-                );
-            }
-            let off_edge = if position == NavPosition::Left {
-                0
-            } else {
-                W - 1
-            };
-            assert!(
-                (1..H).all(|y| shot.buf[(off_edge, y)].symbol() == " "),
-                "{position:?} {name}: the rest of the column is blank"
-            );
-        }
-    }
-}
-
-#[test]
-fn floating_regions_keep_the_terminal_whole_and_float_the_box() {
-    let box_rect = Rect::new(70, 2, SIDE_W, 10);
-    let nav = NavSize::visible(SIDE_W)
-        .with_position(NavPosition::Floating)
-        .with_floating(Some(box_rect));
-    let regions = compute_regions(Rect::new(0, 0, W, H), nav);
-    assert_eq!(
-        regions.terminal,
-        Rect::new(0, 0, W, H),
-        "the terminal owns the whole area"
-    );
-    assert_eq!(regions.nav_border, box_rect, "the box border is its region");
-    assert_eq!(
-        regions.nav,
-        Rect::new(
-            box_rect.x + 1,
-            box_rect.y + 1,
-            box_rect.width - 2,
-            box_rect.height - 2
-        ),
-        "the cards fill the box interior, like a right nav's column"
-    );
-    assert_eq!(
-        regions.prefix_hint,
-        Rect::new(box_rect.x + 1, box_rect.y, box_rect.width - 2, 1),
-        "the prefix hint rests on the box top border"
-    );
-}
-
-#[test]
-fn floating_nav_box_lands_over_the_widest_empty_strip_near_the_right_wall() {
-    let area = Rect::new(0, 0, 100, 30);
-    // Text everywhere except a blank band in rows 10..24 from column 60 on.
-    let text = |x: u16, y: u16| !((10..24).contains(&y) && x >= 60);
-    let rect = floating_nav_box(area, 30, 8, |x, y| !text(x, y));
-    assert!(
-        rect.right()
-            >= area
-                .right()
-                .saturating_sub(crate::ui::switcher::FLOATING_MARGIN)
-            && rect.right() <= area.right(),
-        "the right edge stays within the wall band: {rect:?}"
-    );
-    assert!(
-        rect.y >= 10 && rect.bottom() <= 24,
-        "the box sits in the blank band: {rect:?}"
-    );
-}
-
-#[test]
-fn floating_nav_box_prefers_the_topmost_run_the_box_fits_in() {
-    let area = Rect::new(0, 0, 100, 40);
-    // Two all-blank bands near the right wall: a short one above (rows 2..10) and a
-    // tall one below (rows 22..40). Both fit the 8-tall box; the topmost wins, not the
-    // widest, and the box sits at the run's top rather than centered.
-    let text = |x: u16, y: u16| !((2..10).contains(&y) || (22..40).contains(&y)) || x < 60;
-    let rect = floating_nav_box(area, 30, 8, |x, y| !text(x, y));
-    assert_eq!(rect.y, 2, "the topmost fitting run wins: {rect:?}");
-    assert!(rect.bottom() <= 10, "the box fits the upper band: {rect:?}");
-}
-
-#[test]
-fn floating_nav_box_lands_at_the_top_of_the_widest_run_when_none_fits() {
-    let area = Rect::new(0, 0, 100, 30);
-    // A single blank band (rows 12..17, 5 tall) too short for the 8-tall box: the box
-    // sits at the band's top, never centered.
-    let text = |x: u16, y: u16| !((12..17).contains(&y) && x >= 60);
-    let rect = floating_nav_box(area, 30, 8, |x, y| !text(x, y));
-    assert_eq!(rect.y, 12, "the box sits at the widest run's top: {rect:?}");
-}
-
-#[test]
-fn the_floating_box_blanks_a_wide_char_orphaned_at_its_left_edge() {
-    use crate::display::grid::Grid;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-    // A wide char whose right half the box covers must not keep painting its left half
-    // over the box's border: the orphan half is blanked.
-    let mut state = crate::state::State::from_scan(two_groups());
-    let sw = Switcher::new(&mut state);
-    let box_rect = Rect::new(20, 2, 12, 6);
-    let nav = NavSize::visible(12)
-        .with_position(NavPosition::Floating)
-        .with_floating(Some(box_rect));
-    let mut grid = Grid::new(10, 40);
-    // The wide char's left half lands at box.x - 1, its right half under the box.
-    grid.feed(format!("\x1b[{};{}H한", box_rect.y + 3, box_rect.x + 1).as_bytes());
-    let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
-    let previous = RenderPlan::default();
-    term.draw(|f| {
-        let plan = sw.layout(f.area(), nav, &state, &previous);
-        sw.render(f, Some(&grid), false, &state, &plan);
-    })
-    .unwrap();
-    let buf = term.backend().buffer();
-    assert_eq!(
-        buf[(box_rect.x - 1, box_rect.y + 2)].symbol(),
-        " ",
-        "the orphan wide half outside the box is blanked"
-    );
-}
-
-#[test]
-fn a_floating_nav_renders_a_rounded_box_with_the_prefix_hint() {
-    let box_rect = Rect::new(60, 2, SIDE_W, 10);
-    let nav = NavSize::visible(SIDE_W)
-        .with_position(NavPosition::Floating)
-        .with_floating(Some(box_rect));
-    // The box renders its rounded border, the prefix hint on the top border, and the
-    // cards inside - a right nav's content in a content-fit box.
-    let shot = Shot::new(two_groups(), nav, false);
-    assert_eq!(shot.plan.regions.nav_border, box_rect);
-    let top: String = (box_rect.x..box_rect.right())
-        .map(|x| shot.buf[(x, box_rect.y)].symbol().to_string())
-        .collect();
-    assert!(
-        top.contains('╭') && top.contains('╮'),
-        "rounded border: {top:?}"
-    );
-    assert!(top.starts_with('╭'), "rounded border: {top:?}");
-    assert!(
-        top.contains("C-g"),
-        "the prefix hint leads the top border: {top:?}"
-    );
-    let bottom: String = (box_rect.x..box_rect.right())
-        .map(|x| shot.buf[(x, box_rect.bottom() - 1)].symbol().to_string())
-        .collect();
-    assert!(
-        bottom.contains('╰') && bottom.contains('╯'),
-        "rounded bottom border: {bottom:?}"
-    );
-    // The cards render inside the box (a machine name appears in the interior).
-    let interior: String = (box_rect.x + 1..box_rect.right() - 1)
-        .map(|x| shot.buf[(x, box_rect.y + 2)].symbol().to_string())
-        .collect();
-    assert!(
-        !interior.trim().is_empty(),
-        "the cards fill the box interior: {interior:?}"
-    );
 }

@@ -46,9 +46,6 @@ pub enum Action {
     Height(i32),
     /// `prefix t` — toggle auto-hide-nav mode.
     ToggleAutoHide,
-    /// `prefix z`: collapse or expand the nav. Key-driven only, no ctl verb: applied on
-    /// the input path, like CycleNavPosition.
-    ToggleCollapse,
     /// `prefix p`: place the nav one side clockwise (left → top → right → bottom →
     /// default). Key-driven only, no ctl verb: applied on the input path, like Height.
     CycleNavPosition,
@@ -72,7 +69,6 @@ impl Action {
             // the nav-input path, not through a domain action. CycleNavPosition likewise.
             Action::Height(_)
             | Action::CycleNavPosition
-            | Action::ToggleCollapse
             | Action::Forward(_)
             | Action::ShowHelp
             | Action::ShowHistory

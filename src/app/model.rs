@@ -11,15 +11,14 @@ pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
 /// The narrowest expanded side nav: a card's indent, a two-digit number with the cells
 /// around it, and eight cells of name. Always wider than the padded prefix hint, so
-/// a wide configured prefix raises it. A nav border dragged narrower than this collapses the nav.
+/// a wide configured prefix raises it. A nav border drag clamps at this floor.
 pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
     const CARD_FLOOR: u16 = 14;
     CARD_FLOOR.max(crate::ui::switcher::prefix_chip_width(ui_prefix) + 1)
 }
 
 /// The horizontal-nav layout nav height drag range. A horizontal nav one row tall still lists its cards
-/// along that row, so the min is one row, and a nav border dragged past it collapses the
-/// horizontal nav;
+/// along that row, so the min is one row, and a nav border drag clamps at it;
 /// compute_regions clamps the max down to the body so the terminal always keeps room.
 pub(crate) const NAV_HEIGHT_MIN: u16 = 1;
 pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
@@ -34,14 +33,12 @@ pub(crate) struct AppModel {
     pub(crate) render_plan: RenderPlan,
     pub(crate) nav_width: u16,
     pub(crate) nav_width_natural: u16,
-    pub(crate) nav_collapsed: bool,
     pub(crate) nav_height: u16,
     pub(crate) nav_position: NavPosition,
     pub(crate) nav_position_pinned: Option<NavPosition>,
     pub(crate) nav_default: NavPosition,
     pub(crate) max_fps: u16,
     pub(crate) applied_nav_height: u16,
-    pub(crate) applied_nav_collapsed: bool,
     pub(crate) auto_hide_nav: bool,
     pub(crate) nav_was_focused: bool,
     /// The floating nav's current box (auto-placed or dragged), recomputed by the runtime
@@ -144,14 +141,12 @@ impl AppModel {
             render_plan: RenderPlan::default(),
             nav_width: crate::ui::switcher::NAV_WIDTH,
             nav_width_natural: crate::ui::switcher::NAV_WIDTH,
-            nav_collapsed: false,
             nav_height: 0,
             nav_position: NavPosition::Left,
             nav_position_pinned: None,
             nav_default: NavPosition::Left,
             max_fps: crate::provision::config::DEFAULT_MAX_FPS,
             applied_nav_height: u16::MAX,
-            applied_nav_collapsed: true,
             auto_hide_nav: false,
             nav_was_focused: true,
             floating_rect: None,
@@ -174,7 +169,6 @@ impl AppModel {
             width: self.nav_width,
             height: self.nav_height,
             position: self.nav_position,
-            collapsed: self.nav_collapsed,
             floating: self.floating_rect,
         }
     }
@@ -348,8 +342,6 @@ pub(crate) enum Msg {
         col: u16,
         row: u16,
     },
-    ToggleNavCollapsed,
-    SetNavCollapsed(bool),
     SetNavNaturalWidth(u16),
     SetNavHeight(u16),
     ResizeNav {
@@ -432,7 +424,6 @@ pub(crate) enum Effect {
     },
     PersistNavWidth(u16),
     PersistNavHeight(u16),
-    PersistNavCollapsed(bool),
     PersistNavPosition(Option<NavPosition>),
     PersistSshLogins(HashMap<String, crate::model::RecordedLogin>),
     ReattachDisplay(Selection),
@@ -492,10 +483,6 @@ impl std::fmt::Debug for Effect {
             Self::PersistNavHeight(height) => {
                 f.debug_tuple("PersistNavHeight").field(height).finish()
             }
-            Self::PersistNavCollapsed(collapsed) => f
-                .debug_tuple("PersistNavCollapsed")
-                .field(collapsed)
-                .finish(),
             Self::PersistNavPosition(position) => {
                 f.debug_tuple("PersistNavPosition").field(position).finish()
             }
@@ -1608,7 +1595,6 @@ fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice)
             }
             KeyCommand::FocusNav => update(model, Msg::Focus(crate::model::FocusTarget::Nav)),
             KeyCommand::Check => update(model, Msg::ToggleCheck),
-            KeyCommand::Collapse => update(model, Msg::ToggleNavCollapsed),
             KeyCommand::AutoHide => update(model, Msg::Action(Action::ToggleAutoHide)),
             KeyCommand::Position => update(model, Msg::CycleNavPosition),
             KeyCommand::History => update(model, Msg::ToggleHistory),
@@ -2191,18 +2177,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .begin_popup_drag_in_plan(&model.render_plan, col, row, &model.state);
             Vec::new()
         }
-        Msg::ToggleNavCollapsed => {
-            model.nav_collapsed = !model.nav_collapsed;
-            model.mouse_state.hovered_nav_border = false;
-            vec![Effect::PersistNavCollapsed(model.nav_collapsed)]
-        }
-        Msg::SetNavCollapsed(collapsed) => {
-            if model.nav_collapsed == collapsed {
-                Vec::new()
-            } else {
-                update(model, Msg::ToggleNavCollapsed)
-            }
-        }
         Msg::SetNavNaturalWidth(width) => {
             model.nav_width_natural = width;
             Vec::new()
@@ -2297,10 +2271,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             let nav_focused = model.state.focus.view_is_nav();
             model.switcher.sync_view_focus(!nav_focused);
             let mut effects = Vec::new();
-            if nav_focused && !model.nav_was_focused && model.nav_collapsed {
-                model.nav_collapsed = false;
-                effects.push(Effect::PersistNavCollapsed(false));
-            }
             model.nav_was_focused = nav_focused;
             model.state.chrome.set_auto_hide(model.auto_hide_nav);
             if model.state.recorded_logins != model.saved_logins {
@@ -2313,7 +2283,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.nav_position = position;
             model.nav_width = width;
             model.applied_nav_height = model.nav_height;
-            model.applied_nav_collapsed = model.nav_collapsed;
             model.state.chrome.set_nav_position(position);
             Vec::new()
         }

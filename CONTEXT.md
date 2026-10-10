@@ -85,9 +85,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **chrome** - the furniture around the two views: the nav border, the prefix hint, and
   the view screens. Never a "status surface".
 - **nav size** - the nav's live geometry as one value: the set width, the on-screen
-  width, the horizontal nav height, the attached side, and the collapsed state.
-- **collapsed nav** - the nav reduced to its prefix hint, keeping its natural size
-  for when it expands.
+  width, the horizontal nav height, and the attached side.
 - **column flow** - how a horizontal nav lays out its rows: down a column, then right,
   a whole section per column.
 - **grid** - xmux's in-memory cell mirror of the attached session's screen, drawn in the

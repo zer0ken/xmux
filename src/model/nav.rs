@@ -33,8 +33,6 @@ pub struct NavSize {
     /// Which side of the terminal view the nav is attached to this frame. Auto-hide
     /// keeps it, so a hidden nav returns on the side it left.
     pub position: NavPosition,
-    /// Whether the nav shows only its prefix hint.
-    pub collapsed: bool,
     /// The floating nav's on-screen box, set by the app from the terminal's empty space
     /// when `position` is [`NavPosition::Floating`]. `None` when not floating.
     pub floating: Option<ratatui::layout::Rect>,
@@ -48,7 +46,6 @@ impl NavSize {
             width: natural,
             height: 0,
             position: NavPosition::Left,
-            collapsed: false,
             floating: None,
         }
     }
@@ -60,7 +57,6 @@ impl NavSize {
             width: 0,
             height: 0,
             position: NavPosition::Left,
-            collapsed: false,
             floating: None,
         }
     }

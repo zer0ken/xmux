@@ -6267,15 +6267,15 @@ async fn prefix_hint_and_help_reflect_new_model() {
         help.contains("focus the terminal"),
         "help explains focusing the terminal view:\n{help}"
     );
-    // The view tab scrolls its section, the collapse key among it, to the top.
+    // The view tab scrolls its section to the top.
     let r = h.plan.popup_rect;
     let inner = (r.width - 2, r.height - 2);
     h.sw.feed_reader_key(b"\x1b[C\x1b[C\x1b[C", 0x07, &mut false, inner, &mut h.state);
     h.draw();
     let view = h.text();
     assert!(
-        view.contains("collapse / expand the nav"),
-        "help explains the collapse key:\n{view}"
+        view.contains("toggle auto-hide-nav"),
+        "help explains the view keys:\n{view}"
     );
     assert!(
         help.contains("previous / next section (the machine cards as one)"),
@@ -6378,92 +6378,6 @@ async fn nav_border_uses_one_color_for_both_focus_states() {
         fg(&buf, bottom),
         pal.primary,
         "nav focus: whole rule active"
-    );
-}
-
-#[test]
-fn compute_regions_collapsed_geometry_for_all_positions() {
-    use ratatui::layout::Rect;
-
-    let area = Rect::new(0, 0, 140, 30);
-    let width = collapsed_nav_width("C-g");
-    let left = compute_regions(
-        area,
-        NavSize {
-            natural: 48,
-            width,
-            height: 0,
-            position: NavPosition::Left,
-            collapsed: true,
-            floating: None,
-        },
-    );
-    assert_eq!(width, 3, "exactly the prefix wide");
-    assert_eq!(left.nav, Rect::default());
-    assert_eq!(left.prefix_hint, Rect::new(0, 0, width, 1));
-    assert_eq!(
-        left.nav_border,
-        Rect::new(width - 1, 1, 1, 29),
-        "on the prefix's last column, below the prefix row"
-    );
-    assert_eq!(left.terminal, Rect::new(width, 0, 140 - width, 30));
-
-    let right = compute_regions(
-        area,
-        NavSize {
-            natural: 48,
-            width,
-            height: 0,
-            position: NavPosition::Right,
-            collapsed: true,
-            floating: None,
-        },
-    );
-    assert_eq!(right.nav, Rect::default());
-    assert_eq!(right.prefix_hint, Rect::new(140 - width, 0, width, 1));
-    assert_eq!(
-        right.nav_border,
-        Rect::new(140 - width, 1, 1, 29),
-        "on the prefix's terminal-side column, below the prefix row"
-    );
-    assert_eq!(right.terminal, Rect::new(0, 0, 140 - width, 30));
-
-    let top = compute_regions(
-        area,
-        NavSize {
-            collapsed: true,
-            position: NavPosition::Top,
-            ..NavSize::visible(48)
-        },
-    );
-    assert!(
-        top.nav.is_empty(),
-        "a collapsed horizontal nav is the border line only"
-    );
-    assert_eq!(top.nav_border, Rect::new(0, 0, 140, 1));
-    assert_eq!(
-        top.prefix_hint, top.nav_border,
-        "the prefix rests on the border row"
-    );
-    assert_eq!(top.terminal, Rect::new(0, 1, 140, 29));
-
-    let bottom = compute_regions(
-        area,
-        NavSize {
-            collapsed: true,
-            position: NavPosition::Bottom,
-            ..NavSize::visible(48)
-        },
-    );
-    assert!(
-        bottom.nav.is_empty(),
-        "a collapsed horizontal nav is the border line only"
-    );
-    assert_eq!(bottom.terminal, Rect::new(0, 0, 140, 29));
-    assert_eq!(bottom.nav_border, Rect::new(0, 29, 140, 1));
-    assert_eq!(
-        bottom.prefix_hint, bottom.nav_border,
-        "the prefix rests on the border row"
     );
 }
 

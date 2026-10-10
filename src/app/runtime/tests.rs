@@ -440,56 +440,28 @@ fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
 #[test]
 fn reconciled_nav_width_hides_only_when_focused_and_enabled_and_no_prefix() {
     // Tree focused (terminal_focused = false): always the natural width.
-    assert_eq!(
-        reconciled_nav_width(false, true, false, false, 48, false, "C-g"),
-        48
-    );
-    assert_eq!(
-        reconciled_nav_width(false, false, false, true, 48, false, "C-g"),
-        48
-    );
+    assert_eq!(reconciled_nav_width(false, true, false, false, 48), 48);
+    assert_eq!(reconciled_nav_width(false, false, false, true, 48), 48);
     // Terminal view focused + setting on + no prefix interaction: hidden (0).
-    assert_eq!(
-        reconciled_nav_width(true, true, false, false, 48, false, "C-g"),
-        0
-    );
+    assert_eq!(reconciled_nav_width(true, true, false, false, 48), 0);
     // Terminal view focused + setting on + prefix active: shown.
-    assert_eq!(
-        reconciled_nav_width(true, true, false, true, 48, false, "C-g"),
-        48
-    );
+    assert_eq!(reconciled_nav_width(true, true, false, true, 48), 48);
     // Terminal view focused + setting off: stays shown regardless.
-    assert_eq!(
-        reconciled_nav_width(true, false, false, false, 48, false, "C-g"),
-        48
-    );
-    assert_eq!(
-        reconciled_nav_width(true, false, false, true, 48, false, "C-g"),
-        48
-    );
-    assert_eq!(
-        reconciled_nav_width(false, false, false, false, 48, true, "C-g"),
-        3,
-        "collapsed is exactly the prefix wide"
-    );
-    assert_eq!(
-        reconciled_nav_width(true, true, false, false, 48, true, "C-g"),
-        0,
-        "auto-hide wins over collapse"
-    );
+    assert_eq!(reconciled_nav_width(true, false, false, false, 48), 48);
+    assert_eq!(reconciled_nav_width(true, false, false, true, 48), 48);
     // A nav that crowds the terminal view hides like auto-hide, and only on its terms.
     assert_eq!(
-        reconciled_nav_width(true, false, true, false, 48, false, "C-g"),
+        reconciled_nav_width(true, false, true, false, 48),
         0,
         "a crowding nav hides while the terminal view holds the focus"
     );
     assert_eq!(
-        reconciled_nav_width(true, false, true, true, 48, false, "C-g"),
+        reconciled_nav_width(true, false, true, true, 48),
         48,
         "a prefix interaction brings a crowding nav back"
     );
     assert_eq!(
-        reconciled_nav_width(false, false, true, false, 48, false, "C-g"),
+        reconciled_nav_width(false, false, true, false, 48),
         48,
         "a focused nav keeps its width however small the window"
     );
@@ -2409,7 +2381,6 @@ fn test_rt(env: Env) -> Runtime {
         state,
         nav_width: crate::ui::switcher::NAV_WIDTH,
         nav_width_natural: crate::ui::switcher::NAV_WIDTH,
-        nav_collapsed: false,
         nav_height: 0,
         nav_position: crate::ui::switcher::NavPosition::Left,
         nav_position_pinned: None,
@@ -2417,7 +2388,6 @@ fn test_rt(env: Env) -> Runtime {
         max_fps: crate::provision::config::DEFAULT_MAX_FPS,
         floating_rect: None,
         applied_nav_height: u16::MAX,
-        applied_nav_collapsed: true,
         auto_hide_nav: false,
         nav_was_focused: true,
         mouse_state: MouseState::default(),
@@ -5290,66 +5260,6 @@ fn handle_mouse_event_nav_border_grab_sets_dragging() {
 }
 
 #[test]
-fn focusing_the_nav_expands_a_collapsed_nav() {
-    use crate::ui::switcher::{Scan, Switcher};
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-
-    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
-    state
-        .focus
-        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_machines(&["local"]));
-    rt.model.state = state;
-    rt.model.switcher = switcher;
-    rt.model.nav_collapsed = true;
-    rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
-    rt.model.applied_nav_collapsed = true;
-    rt.model.nav_was_focused = false;
-
-    let out = rt.handle_stdin_bytes(b"\x07\x1b[D", &Selection::default());
-    assert!(out.focus_nav, "the prefix-left path requests nav focus");
-    let mut term = Terminal::new(TestBackend::new(80, 25)).unwrap();
-    rt.prepare_and_draw(&mut term);
-    assert!(!rt.model.nav_collapsed, "entering nav focus expands it");
-    assert_eq!(rt.model.nav_width, rt.model.nav_width_natural);
-}
-
-#[test]
-fn a_collapsed_nav_border_cannot_start_a_resize_drag() {
-    use crate::ui::switcher::{compute_regions, Scan, Switcher};
-
-    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
-    let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_machines(&["local"]));
-    rt.model.state = state;
-    rt.model.switcher = switcher;
-    rt.cols = 140;
-    rt.body_rows = 29;
-    rt.model.nav_collapsed = true;
-    rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
-    sync_test_render_plan(&mut rt);
-    let regions = compute_regions(ratatui::layout::Rect::new(0, 0, 140, 30), rt.nav_size());
-    assert_eq!(rt.model.render_plan.regions.nav_border, regions.nav_border);
-    let press = crate::display::mouse::MouseEvent {
-        cb: 0,
-        col: regions.nav_border.x + 1,
-        row: regions.nav_border.y + 1,
-        pressed: true,
-    };
-    rt.handle_mouse_event(
-        &press,
-        &Selection::default(),
-        &mut false,
-        &mut false,
-        &mut false,
-        &mut false,
-    );
-    assert!(!rt.model.mouse_state.dragging_nav_border);
-}
-
-#[test]
 fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     use crate::ui::switcher::{Scan, Switcher};
     // In a horizontal nav layout the nav border is a HORIZONTAL rule; a left-press on that
@@ -7246,7 +7156,7 @@ fn clear_screen_wipes_the_screen_and_repaints_every_cell() {
     term.backend().assert_buffer_lines(["y   ", "    "]);
 }
 
-fn collapse_rt(position: crate::ui::switcher::NavPosition) -> Runtime {
+fn positioned_rt(position: crate::ui::switcher::NavPosition) -> Runtime {
     use crate::ui::switcher::{Scan, Switcher};
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
@@ -7260,14 +7170,6 @@ fn collapse_rt(position: crate::ui::switcher::NavPosition) -> Runtime {
     sync_test_render_plan(&mut rt);
     rt
 }
-
-const EVERY_POSITION: [crate::ui::switcher::NavPosition; 4] = [
-    crate::ui::switcher::NavPosition::Left,
-    crate::ui::switcher::NavPosition::Right,
-    crate::ui::switcher::NavPosition::Top,
-    crate::ui::switcher::NavPosition::Bottom,
-];
-
 fn mouse(cb: u16, col: u16, row: u16, pressed: bool) -> crate::display::mouse::MouseEvent {
     crate::display::mouse::MouseEvent {
         cb,
@@ -7278,28 +7180,9 @@ fn mouse(cb: u16, col: u16, row: u16, pressed: bool) -> crate::display::mouse::M
 }
 
 #[test]
-fn prefix_z_toggles_the_collapse_from_either_view() {
-    let mut rt = collapse_rt(crate::ui::switcher::NavPosition::Left);
-    rt.handle_stdin_bytes(b"\x07z", &Selection::default());
-    assert!(rt.model.nav_collapsed, "prefix z collapses from nav focus");
-    rt.handle_stdin_bytes(b"\x07z", &Selection::default());
-    assert!(!rt.model.nav_collapsed, "a second prefix z expands");
-    rt.model
-        .state
-        .focus
-        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    let out = rt.handle_stdin_bytes(b"\x07z", &Selection::default());
-    assert!(
-        rt.model.nav_collapsed,
-        "prefix z collapses from terminal focus"
-    );
-    assert!(!out.focus_nav, "the terminal keeps the focus");
-}
-
-#[test]
 fn a_popup_takes_hover_and_a_click_on_its_entry_runs_it_as_enter_does() {
     let sel = Selection::default();
-    let mut rt = collapse_rt(crate::ui::switcher::NavPosition::Left);
+    let mut rt = positioned_rt(crate::ui::switcher::NavPosition::Left);
     let effects = update(&mut rt.model, Msg::TogglePalette);
     assert!(effects.is_empty());
     rt.handle_stdin_bytes(b"quit xmux", &sel);
@@ -7339,7 +7222,7 @@ fn a_popup_takes_hover_and_a_click_on_its_entry_runs_it_as_enter_does() {
 #[test]
 fn a_popup_drag_drops_the_hover_it_started_on() {
     let sel = Selection::default();
-    let mut rt = collapse_rt(crate::ui::switcher::NavPosition::Left);
+    let mut rt = positioned_rt(crate::ui::switcher::NavPosition::Left);
     let effects = update(&mut rt.model, Msg::TogglePalette);
     assert!(effects.is_empty());
     rt.handle_stdin_bytes(b"quit xmux", &sel);
@@ -7356,221 +7239,6 @@ fn a_popup_drag_drops_the_hover_it_started_on() {
     event(&mut rt, mouse(0, col.saturating_sub(3), row + 2, false));
     assert!(rt.model.state.modal.is_some(), "a drag executes nothing");
     assert_eq!(rt.model.state.modal_hover(), None);
-}
-
-#[test]
-fn dragging_the_nav_border_past_the_minimum_collapses_the_nav_at_every_position() {
-    use crate::ui::switcher::NavPosition;
-    let sel = Selection::default();
-    for position in EVERY_POSITION {
-        let mut rt = collapse_rt(position);
-        let nav_border = rt.model.render_plan.regions.nav_border;
-        rt.handle_mouse_event(
-            &mouse(0, nav_border.x + 1, nav_border.y + 1, true),
-            &sel,
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            rt.model.mouse_state.dragging_nav_border,
-            "{position:?}: the press grabs the nav border"
-        );
-        let (col, row) = match position {
-            NavPosition::Left => (1, nav_border.y + 1),
-            NavPosition::Right => (140, nav_border.y + 1),
-            NavPosition::Top => (nav_border.x + 1, 1),
-            NavPosition::Bottom => (nav_border.x + 1, 30),
-            NavPosition::Floating => unreachable!(),
-        };
-        rt.handle_mouse_event(
-            &mouse(0x20, col, row, true),
-            &sel,
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            rt.model.nav_collapsed,
-            "{position:?}: dragging past the minimum collapses the nav"
-        );
-        let (col, row) = match position {
-            NavPosition::Left => (61, nav_border.y + 1),
-            NavPosition::Right => (80, nav_border.y + 1),
-            NavPosition::Top => (nav_border.x + 1, 11),
-            NavPosition::Bottom => (nav_border.x + 1, 20),
-            NavPosition::Floating => unreachable!(),
-        };
-        rt.handle_mouse_event(
-            &mouse(0x20, col, row, true),
-            &sel,
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            !rt.model.nav_collapsed,
-            "{position:?}: dragging back out expands it within the same drag"
-        );
-        rt.handle_mouse_event(
-            &mouse(0, col, row, false),
-            &sel,
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(!rt.model.mouse_state.dragging_nav_border);
-    }
-}
-
-#[test]
-fn a_click_anywhere_on_a_collapsed_nav_expands_it_at_every_position() {
-    use crate::ui::switcher::NavPosition;
-    for position in EVERY_POSITION {
-        let mut rt = collapse_rt(position);
-        rt.model.nav_collapsed = true;
-        rt.model.applied_nav_collapsed = true;
-        rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
-        sync_test_render_plan(&mut rt);
-        let (col, row) = match position {
-            NavPosition::Left | NavPosition::Top => (1, 1),
-            NavPosition::Right => (140, 1),
-            NavPosition::Bottom => (1, 30),
-            NavPosition::Floating => unreachable!(),
-        };
-        let focus_before = rt.model.state.focus;
-        let mut focus_toggle = false;
-        rt.handle_mouse_event(
-            &mouse(0, col, row, true),
-            &Selection::default(),
-            &mut focus_toggle,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(!rt.model.nav_collapsed, "{position:?}: the click expands");
-        assert_eq!(rt.model.state.focus, focus_before, "{position:?}");
-        assert!(!focus_toggle, "{position:?}: the click is not a focus move");
-        assert!(
-            !rt.model.mouse_state.dragging_nav_border,
-            "{position:?}: the click is not a drag"
-        );
-    }
-}
-
-/// A collapsed side column is exactly the prefix wide and its border lies inside it, so
-/// the expand target is those three columns on every row, border cells and prefix row
-/// included, and the next column over already belongs to the terminal view. Once the
-/// click expands the nav, the border stands in its own column again and only that
-/// column grabs a resize drag.
-#[test]
-fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
-    use crate::ui::switcher::NavPosition;
-    let collapsed_rt = |position| {
-        let mut rt = collapse_rt(position);
-        rt.model.nav_collapsed = true;
-        rt.model.applied_nav_collapsed = true;
-        rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
-        sync_test_render_plan(&mut rt);
-        rt
-    };
-    for position in [NavPosition::Left, NavPosition::Right] {
-        // 1-based SGR columns of the three prefix cells and the first terminal column.
-        let (inside, outside) = match position {
-            NavPosition::Left => ([1, 2, 3], 4),
-            _ => ([138, 139, 140], 137),
-        };
-        let border = collapsed_rt(position).model.render_plan.regions.nav_border;
-        assert_eq!(
-            border.x + 1,
-            inside[if position == NavPosition::Left { 2 } else { 0 }]
-        );
-        for col in inside {
-            for row in [1, 15, 30] {
-                let mut rt = collapsed_rt(position);
-                rt.handle_mouse_event(
-                    &mouse(0, col, row, true),
-                    &Selection::default(),
-                    &mut false,
-                    &mut false,
-                    &mut false,
-                    &mut false,
-                );
-                assert!(
-                    !rt.model.nav_collapsed,
-                    "{position:?}: a click at ({col}, {row}) expands"
-                );
-                assert!(!rt.model.mouse_state.dragging_nav_border);
-            }
-        }
-        let mut rt = collapsed_rt(position);
-        rt.handle_mouse_event(
-            &mouse(0, outside, 1, true),
-            &Selection::default(),
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            rt.model.nav_collapsed,
-            "{position:?}: the column beside it is the terminal view"
-        );
-
-        let mut rt = collapsed_rt(position);
-        rt.handle_mouse_event(
-            &mouse(0, inside[0], 1, true),
-            &Selection::default(),
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        rt.handle_mouse_event(
-            &mouse(0, inside[0], 1, false),
-            &Selection::default(),
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        rt.model.nav_width = rt.model.nav_width_natural;
-        sync_test_render_plan(&mut rt);
-        let border = rt.model.render_plan.regions.nav_border;
-        let beside = if position == NavPosition::Left {
-            border.x
-        } else {
-            border.x + 2
-        };
-        rt.handle_mouse_event(
-            &mouse(0, beside, 1, true),
-            &Selection::default(),
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            !rt.model.mouse_state.dragging_nav_border,
-            "{position:?}: the cell beside the expanded border does not grab it"
-        );
-        rt.handle_mouse_event(
-            &mouse(0, border.x + 1, 1, true),
-            &Selection::default(),
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            rt.model.mouse_state.dragging_nav_border,
-            "{position:?}: the expanded border grabs a resize drag"
-        );
-    }
 }
 
 #[test]
@@ -8560,12 +8228,8 @@ fn palette_outcome(rt: &Runtime, out: &StdinOutcome) -> String {
         },
     };
     format!(
-        "quit={} focus={:?} modal={modal} collapsed={} auto_hide={} position={:?}",
-        out.quit,
-        rt.model.state.focus,
-        rt.model.nav_collapsed,
-        rt.model.auto_hide_nav,
-        rt.model.nav_position,
+        "quit={} focus={:?} modal={modal} auto_hide={} position={:?}",
+        out.quit, rt.model.state.focus, rt.model.auto_hide_nav, rt.model.nav_position,
     )
 }
 

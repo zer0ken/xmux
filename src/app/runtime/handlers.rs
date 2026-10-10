@@ -65,8 +65,8 @@ impl Runtime {
         } = self;
         let (cols, rows) = (*cols, *rows);
         // The nav's live size as one value, read once for this effect: the width the user
-        // set, the width on screen, the horizontal nav height, the attachment side, and whether it
-        // is collapsed. Every geometry below is cut from it, so none re-derives a part.
+        // set, the width on screen, the horizontal nav height, and the attachment side.
+        // Every geometry below is cut from it, so none re-derives a part.
         let mut followups = Vec::new();
         match effect {
             EventEffect::MarkConnected { .. }
@@ -687,12 +687,7 @@ impl Runtime {
             0,
             &env.ui_prefix,
         );
-        let nav_collapsed = crate::app::prefs::load_nav_collapsed(&env.xmux_dir);
-        let nav_width = if nav_collapsed {
-            crate::ui::switcher::collapsed_nav_width(&env.ui_prefix)
-        } else {
-            nav_width_natural
-        };
+        let nav_width = nav_width_natural;
         // Restore the horizontal nav-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::app::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
@@ -816,14 +811,12 @@ impl Runtime {
             state,
             nav_width,
             nav_width_natural,
-            nav_collapsed,
             nav_height,
             nav_position,
             nav_position_pinned,
             nav_default,
             max_fps,
             applied_nav_height: u16::MAX,
-            applied_nav_collapsed: !nav_collapsed,
             auto_hide_nav,
             nav_was_focused: true,
             floating_rect: None,
@@ -909,8 +902,8 @@ impl Runtime {
     /// width persist, then draw the gated frame. `term` is the loop-local ratatui
     /// terminal.
     /// The nav's live size, in one place: the width the user set, the width on screen
-    /// (0 while auto-hide has taken it), the horizontal nav height the user set, the side the nav is
-    /// attached to, and the collapsed state. Every geometry the loop computes reads this instead of picking
+    /// (0 while auto-hide has taken it), the horizontal nav height the user set, and the side the nav is
+    /// attached to. Every geometry the loop computes reads this instead of picking
     /// fields out of `self`, so a resize while xmux runs cannot reach one consumer and
     /// miss another.
     pub(super) fn nav_size(&self) -> crate::ui::switcher::NavSize {
@@ -1023,7 +1016,6 @@ impl Runtime {
         if self.model.state.chrome.armed != prefix_active {
             self.dirty = true;
         }
-        let collapsed_before = self.model.nav_collapsed;
         let effects = update(
             &mut self.model,
             Msg::SyncFrame {
@@ -1034,18 +1026,13 @@ impl Runtime {
             },
         );
         let _ = self.execute_effects(effects);
-        if collapsed_before != self.model.nav_collapsed {
-            self.dirty = true;
-        }
         // The single owner of the effective nav width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
-        // mux reflows, and mark dirty.
+        // mux reflows, and mark dirty. The crowd check always uses the nav's natural
+        // width (never the already-hidden width), so a hidden nav cannot look uncrowded
+        // on the next frame and come back.
         let shown = crate::ui::switcher::NavSize {
-            width: if self.model.nav_collapsed {
-                crate::ui::switcher::collapsed_nav_width(&self.env.ui_prefix)
-            } else {
-                self.model.nav_width_natural
-            },
+            width: self.model.nav_width_natural,
             ..self.model.nav_size()
         };
         let crowds = crate::ui::switcher::nav_crowds_terminal(
@@ -1058,8 +1045,6 @@ impl Runtime {
             crowds,
             prefix_active,
             self.model.nav_width_natural,
-            self.model.nav_collapsed,
-            &self.env.ui_prefix,
         );
         // The nav's attachment side is resolved here too, every frame: a pinned side
         // wins, else the [ui] default. The nav never moves on its own.
@@ -1084,7 +1069,6 @@ impl Runtime {
         // PTYs or the grid mismatches the draw.
         if want_nav_width != self.model.nav_width
             || self.model.nav_height != self.model.applied_nav_height
-            || self.model.nav_collapsed != self.model.applied_nav_collapsed
             || want_position != self.model.nav_position
         {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char

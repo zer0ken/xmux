@@ -50,18 +50,10 @@ pub use crate::ui::chrome::NavBorderColors;
 
 pub use crate::model::{NavSize, ViewLayout};
 
-/// The collapsed width of a side nav: exactly the resting prefix, which the collapsed
-/// column keeps on its bottom line with no padding. The column exists only to keep the
-/// prefix in view and to be clicked open, so every further cell would be taken from the
-/// terminal view. Its nav border shares the column's terminal-side edge.
-pub(crate) fn collapsed_nav_width(ui_prefix: &str) -> u16 {
-    UnicodeWidthStr::width(ui_prefix).min(u16::MAX as usize) as u16
-}
-
 /// The prefix hint with one cell either side: the chip a nav border row carries and
 /// the chip a vertical nav's prefix hint row paints.
 pub(crate) fn prefix_chip_width(ui_prefix: &str) -> u16 {
-    collapsed_nav_width(ui_prefix).saturating_add(2)
+    UnicodeWidthStr::width(ui_prefix).min(u16::MAX as usize) as u16 + 2
 }
 
 /// Whether the prefix key list is open: a live prefix that no input popup outranks.
@@ -95,12 +87,7 @@ fn top_nav_height(body_h: u16) -> u16 {
 /// the navigation view's start: the FIRST row of a vertical nav's column, and the nav
 /// border row itself in a horizontal nav, so every row a horizontal nav takes holds cards
 /// and the terminal view keeps every row it owns.
-/// A collapsed nav gives the cards no region: a vertical nav keeps a column as wide as
-/// its collapsed width with the prefix hint on its first row, a horizontal nav keeps the
-/// nav border row alone. A collapsed vertical nav's nav border takes no column of its
-/// own: it runs down the column's terminal-side edge on every row below the prefix hint,
-/// so the prefix keeps every one of its characters and the terminal view gains the
-/// column. `nav_width == 0` is the nav-hidden sentinel: the terminal owns the whole area.
+/// `nav_width == 0` is the nav-hidden sentinel: the terminal owns the whole area.
 /// `nav_height == 0` means the horizontal nav's height is auto (~40% of the area).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Regions {
@@ -148,51 +135,6 @@ fn split_prefix_row(nav: Rect) -> (Rect, Rect) {
     (r[0], r[1])
 }
 
-fn collapsed_prefix_row(nav: Rect) -> Rect {
-    if nav.height == 0 {
-        Rect::default()
-    } else {
-        Rect::new(nav.x, nav.y, nav.width, 1)
-    }
-}
-
-/// The regions of a collapsed vertical nav: a column exactly `nav_width` wide at the
-/// nav's side, its prefix hint on the first row, and the nav border on the column's
-/// terminal-side edge below that row. The prefix character on that edge stays readable
-/// because the border stops short of it; the terminal view keeps everything beside the
-/// column.
-fn collapsed_column(
-    area: Rect,
-    layout: ViewLayout,
-    nav_width: u16,
-    position: NavPosition,
-) -> Regions {
-    let w = nav_width.min(area.width);
-    let (nav_x, edge_x, terminal_x) = if position == NavPosition::Left {
-        (area.x, area.x + w.saturating_sub(1), area.x + w)
-    } else {
-        let nav_x = area.right() - w;
-        (nav_x, nav_x, area.x)
-    };
-    let nav = Rect::new(nav_x, area.y, w, area.height);
-    Regions {
-        layout,
-        nav: Rect::default(),
-        nav_border: if w == 0 {
-            Rect::default()
-        } else {
-            Rect::new(
-                edge_x,
-                area.y.saturating_add(1),
-                1,
-                area.height.saturating_sub(1),
-            )
-        },
-        terminal: Rect::new(terminal_x, area.y, area.width - w, area.height),
-        prefix_hint: collapsed_prefix_row(nav),
-    }
-}
-
 pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
     // The layout follows the attachment position: a left or right placement is a vertical
     // nav, a top or bottom one a horizontal nav. The position travels with the hidden nav
@@ -200,18 +142,17 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
     // gives the whole area to the terminal.
     let layout = nav.position.layout();
     let (nav_width, nav_height) = (nav.width, nav.height);
-    match nav.position {
-        NavPosition::Floating => floating_regions(area, nav, nav_width),
-        _ if nav_width == 0 => Regions {
+    if nav_width == 0 {
+        return Regions {
             layout,
             nav: Rect::default(),
             nav_border: Rect::default(),
             terminal: area,
             prefix_hint: Rect::default(),
-        },
-        NavPosition::Left | NavPosition::Right if nav.collapsed => {
-            collapsed_column(area, layout, nav_width, nav.position)
-        }
+        };
+    }
+    match nav.position {
+        NavPosition::Floating => floating_regions(area, nav, nav_width),
         NavPosition::Left => {
             let c = Layout::horizontal([
                 Constraint::Length(nav_width),
@@ -248,11 +189,7 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
             }
         }
         NavPosition::Top => {
-            let th = if nav.collapsed {
-                0
-            } else {
-                top_nav_height_for(area.height, nav_height)
-            };
+            let th = top_nav_height_for(area.height, nav_height);
             let r = Layout::vertical([
                 Constraint::Length(th),
                 Constraint::Length(1),
@@ -270,11 +207,7 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
         NavPosition::Bottom => {
             // The top placement mirrored: the nav border is the row ABOVE the cards, and
             // the prefix hint rests on it at the row's left.
-            let th = if nav.collapsed {
-                0
-            } else {
-                top_nav_height_for(area.height, nav_height)
-            };
+            let th = top_nav_height_for(area.height, nav_height);
             let r = Layout::vertical([
                 Constraint::Min(0),
                 Constraint::Length(1),
@@ -749,12 +682,12 @@ impl Switcher {
     /// move from the nav into the terminal view decides whether the host band is hidden
     /// (see `host_band_hidden`); the move back into the nav shows it again.
     pub fn sync_view_focus(&mut self, terminal: bool) {
-        // Each surface's hover lives only while that surface holds the focus.
+        // The nav's hover follows the pointer whether or not the nav holds the focus, so
+        // it survives a terminal focus. The link hover belongs to the terminal view, so
+        // it is dropped when the nav takes the focus (the landing screen excepted, which
+        // the nav's focus can still pick).
         let hovered = self.hover.is_some() || self.link_hover.is_some();
-        if terminal {
-            self.hover = None;
-        } else if !self.landing {
-            // The landing screen is pickable from the nav's focus, so its pointer stays.
+        if !terminal && !self.landing {
             self.link_hover = None;
         }
         let entered = terminal && !self.terminal_view;
