@@ -283,10 +283,14 @@ pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> 
     let mut best: Option<(u16, u16, u16)> = None; // (glyph_count, y, x)
     for y in area.y..area.bottom().saturating_sub(h).saturating_add(1) {
         for x in (x_lo..=x_last).rev() {
-            let glyphs = (0..w)
-                .flat_map(|dx| (0..h).map(move |dy| (x + dx, y + dy)))
-                .filter(|&(cx, cy)| !blank(cx, cy))
-                .count() as u16;
+            let mut glyphs = 0u16;
+            for cy in y..y + h {
+                for cx in x..x + w {
+                    if !blank(cx, cy) {
+                        glyphs += 1;
+                    }
+                }
+            }
             if glyphs == 0 {
                 return Rect::new(x, y, w, h);
             }
