@@ -2385,6 +2385,7 @@ fn test_rt(env: Env) -> Runtime {
         nav_position: crate::ui::switcher::NavPosition::Left,
         nav_position_pinned: None,
         nav_default: crate::ui::switcher::NavPosition::Left,
+        floating_docked: false,
         max_fps: crate::provision::config::DEFAULT_MAX_FPS,
         floating_rect: None,
         applied_nav_height: u16::MAX,

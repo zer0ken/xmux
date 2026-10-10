@@ -5629,6 +5629,44 @@ fn compute_regions_side_top_and_hidden() {
 }
 
 #[test]
+fn compute_regions_docked_floating_is_a_rounded_box() {
+    use ratatui::layout::Rect;
+    // A floating nav docked for an interaction keeps the right column but wraps it in a
+    // box: the border region is the outer box (content + 2), the nav content keeps
+    // nav_width inside it, the prefix hint rests on the top border, and the terminal
+    // keeps the remainder.
+    let area = Rect::new(0, 0, 100, 30);
+    let r = compute_regions(
+        area,
+        NavSize::visible(24)
+            .with_position(NavPosition::Right)
+            .with_docked_floating(true),
+    );
+    assert_eq!(r.layout, ViewLayout::Vertical);
+    assert_eq!(
+        r.nav_border.width, 26,
+        "the box is content plus two borders"
+    );
+    assert_eq!(r.nav_border.right(), area.right(), "the box is flush right");
+    assert_eq!(r.nav.width, 24, "the content keeps nav_width");
+    assert_eq!(
+        r.nav.x,
+        r.nav_border.x + 1,
+        "the content is inset from the left border"
+    );
+    assert_eq!(r.nav.y, 1, "the content is inset from the top border");
+    assert_eq!(
+        r.terminal.right(),
+        r.nav_border.x,
+        "the terminal keeps the remainder"
+    );
+    assert_eq!(
+        r.prefix_hint.y, 0,
+        "the prefix hint rests on the box's top border"
+    );
+}
+
+#[test]
 fn compute_regions_right_column() {
     use ratatui::layout::Rect;
     // Pinned right: terminal left, 1-col border, nav right. The nav region's inner

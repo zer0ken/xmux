@@ -166,22 +166,58 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
             }
         }
         NavPosition::Right => {
-            // The left column mirrored: the terminal view keeps the remainder, the border
-            // and the navigation view follow on the right. The navigation view's in-region
-            // layout (card flow, prefix hint) is identical at both placements.
-            let c = Layout::horizontal([
-                Constraint::Min(0),
-                Constraint::Length(1),
-                Constraint::Length(nav_width),
-            ])
-            .split(area);
-            let (prefix_hint, nav) = split_prefix_row(c[2]);
-            Regions {
-                layout,
-                nav,
-                nav_border: c[1],
-                terminal: c[0],
-                prefix_hint,
+            if nav.docked_floating {
+                // A docked floating nav: a rounded box over the right side, its border
+                // region the outer box and its interior the nav's content (nav_width
+                // wide), the terminal keeping the remainder, the prefix hint on the top
+                // border.
+                let box_x = area
+                    .right()
+                    .saturating_sub(nav_width)
+                    .saturating_sub(2)
+                    .max(area.x);
+                let outer = Rect::new(
+                    box_x,
+                    area.y,
+                    area.right().saturating_sub(box_x),
+                    area.height,
+                );
+                let inner = Rect::new(
+                    box_x.saturating_add(1),
+                    area.y.saturating_add(1),
+                    nav_width.min(outer.width.saturating_sub(2)),
+                    area.height.saturating_sub(2),
+                );
+                Regions {
+                    layout,
+                    nav: inner,
+                    nav_border: outer,
+                    terminal: Rect::new(area.x, area.y, box_x.saturating_sub(area.x), area.height),
+                    prefix_hint: Rect::new(
+                        box_x.saturating_add(1),
+                        area.y,
+                        outer.width.saturating_sub(2),
+                        1,
+                    ),
+                }
+            } else {
+                // The left column mirrored: the terminal view keeps the remainder, the border
+                // and the navigation view follow on the right. The navigation view's in-region
+                // layout (card flow, prefix hint) is identical at both placements.
+                let c = Layout::horizontal([
+                    Constraint::Min(0),
+                    Constraint::Length(1),
+                    Constraint::Length(nav_width),
+                ])
+                .split(area);
+                let (prefix_hint, nav) = split_prefix_row(c[2]);
+                Regions {
+                    layout,
+                    nav,
+                    nav_border: c[1],
+                    terminal: c[0],
+                    prefix_hint,
+                }
             }
         }
         NavPosition::Top => {

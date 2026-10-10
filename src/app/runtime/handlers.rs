@@ -815,6 +815,7 @@ impl Runtime {
             nav_position,
             nav_position_pinned,
             nav_default,
+            floating_docked: false,
             max_fps,
             applied_nav_height: u16::MAX,
             auto_hide_nav,
@@ -1068,6 +1069,9 @@ impl Runtime {
             && (self.model.state.focus.view_is_nav() || prefix_active)
         {
             want_position = crate::ui::switcher::NavPosition::Right;
+            self.model.floating_docked = true;
+        } else {
+            self.model.floating_docked = false;
         }
         // Resize when ANY dimension of the split moved: the width (focus / hide / prefix
         // Ctrl-←/→ in a column), the horizontal nav height (border drag / resize keys), or the side the

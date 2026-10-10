@@ -162,6 +162,10 @@ pub struct RenderPlan {
     pub(crate) view_screen: Option<crate::model::ViewScreen>,
     pub layout: ViewLayout,
     pub nav_position: NavPosition,
+    /// Whether this frame's nav is a floating nav docked for an interaction (the nav
+    /// view holds the focus or the prefix is armed), which renders as a rounded box
+    /// instead of a side-nav separator.
+    pub docked_floating: bool,
     pub regions: Regions,
     pub nav_inner: Rect,
     pub nav_cells: Vec<(usize, Rect)>,
@@ -205,6 +209,7 @@ impl Default for RenderPlan {
             view_screen: None,
             layout: ViewLayout::Vertical,
             nav_position: NavPosition::Left,
+            docked_floating: false,
             regions: Regions::default(),
             nav_inner: Rect::default(),
             nav_cells: Vec::new(),
@@ -335,6 +340,7 @@ impl Switcher {
             view_screen,
             layout: regions.layout,
             nav_position: nav.position,
+            docked_floating: nav.docked_floating,
             regions,
             nav_inner: if nav.width == 0 {
                 Rect::default()
@@ -939,8 +945,19 @@ impl Switcher {
         }
         // The floating nav: the terminal owns the whole area and the nav floats over it
         // as a rounded box, so it renders after the terminal, unlike the split placements.
-        if plan.nav_position == NavPosition::Floating {
-            self.render_floating(frame, area, grid, terminal_focused, state, plan, &palette);
+        // A docked floating nav keeps the right column (the terminal keeps the remainder)
+        // but still renders as the same rounded box; pass the terminal region as the view
+        // area so the live grid and cursor stay inside it.
+        if plan.nav_position == NavPosition::Floating || plan.docked_floating {
+            self.render_floating(
+                frame,
+                plan.regions.terminal,
+                grid,
+                terminal_focused,
+                state,
+                plan,
+                &palette,
+            );
             return;
         }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
