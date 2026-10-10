@@ -9435,15 +9435,39 @@ fn floating_nav_box_scans_rows_before_columns() {
 
 #[test]
 fn floating_nav_box_falls_back_to_the_first_least_glyph_spot() {
-    // No wall-margin window is empty, so the box takes the first-found spot whose
-    // window carries the fewest glyphs: a glyph in every window's shared column range
-    // (56..=74) at alternating rows keeps every window non-empty with an equal count,
-    // so the first-found topmost row wins.
+    // No wall-margin window is empty, so the box takes the spot whose window wins the
+    // fewest glyphs (every window ties on completely empty rows first): a glyph in
+    // every window's shared column range (56..=74) at alternating rows keeps every
+    // window at the same empty-row and glyph count, so the first-found topmost row
+    // wins.
     let area = Rect::new(0, 0, 80, 24);
     let blank = |x: u16, y: u16| !(x == 70 && y.is_multiple_of(2));
     assert_eq!(
         floating_nav_box(area, 24, 8, blank),
         Rect::new(56, 0, 24, 8),
         "the box falls back to the first-found fewest-glyph spot"
+    );
+}
+
+#[test]
+fn floating_nav_box_prefers_more_completely_empty_rows_over_fewer_glyphs() {
+    // The completely-empty-row count ranks before the glyph count: rows 6-7 are densely
+    // filled, so the topmost window carries 48 glyphs but six completely empty rows,
+    // while the lower windows carry 8 glyphs each with no completely empty row. The box
+    // sits on the window with the most completely empty rows, not the fewest glyphs.
+    let area = Rect::new(0, 0, 80, 24);
+    let blank = |x: u16, y: u16| {
+        if y < 6 {
+            true // rows 0-5 completely empty
+        } else if y < 8 {
+            false // rows 6-7 dense
+        } else {
+            x != 70 // rows 8-23: one glyph per row
+        }
+    };
+    assert_eq!(
+        floating_nav_box(area, 24, 8, blank),
+        Rect::new(56, 0, 24, 8),
+        "six completely empty rows beat eight glyphs"
     );
 }

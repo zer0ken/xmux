@@ -263,11 +263,12 @@ fn floating_regions(area: Rect, nav: NavSize, nav_width: u16) -> Regions {
 pub const FLOATING_MARGIN: u16 = 5;
 
 /// Where the floating nav's box sits: its right edge within [`FLOATING_MARGIN`] of the
-/// terminal's right wall. One pass over the wall-margin spots, rows before columns: the
-/// first spot whose window carries no glyph takes the box; when no spot is empty the
-/// box takes the first spot found with the fewest glyphs; with no wall-margin spot at
-/// all it holds at the top-right corner. `blank` reports whether a cell carries no
-/// glyph.
+/// terminal's right wall. One pass over the wall-margin spots, rows before columns,
+/// keeps the spot whose window wins the most completely empty rows, then the fewest
+/// glyphs; the scan's top-down, right-to-left order breaks an exact tie by the topmost,
+/// then the wall-most, spot. A window with no glyph at all (every row completely empty)
+/// takes the box at once. With no wall-margin spot at all it holds at the top-right
+/// corner. `blank` reports whether a cell carries no glyph.
 pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> bool) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
@@ -277,30 +278,39 @@ pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> 
         .saturating_sub(w)
         .max(area.x);
     let x_last = right.saturating_sub(w);
-    // One pass over the wall-margin spots, rows before columns. The first spot whose
-    // window carries no glyph breaks and takes the box; when no spot is empty the box
-    // takes the first spot found with the fewest glyphs.
-    let mut best: Option<(u16, u16, u16)> = None; // (glyph_count, y, x)
+    // One pass over the wall-margin spots, rows before columns. The best spot's window
+    // wins the most completely empty rows, then the fewest glyphs; the scan's top-down,
+    // right-to-left order breaks an exact tie by the topmost, then the wall-most, spot.
+    // A window with no glyph at all (every row empty) takes the box at once.
+    let mut best: Option<(u16, u16, u16, u16)> = None; // (empty_rows, glyphs, y, x)
     for y in area.y..area.bottom().saturating_sub(h).saturating_add(1) {
         for x in (x_lo..=x_last).rev() {
             let mut glyphs = 0u16;
+            let mut empty_rows = 0u16;
             for cy in y..y + h {
+                let mut row_glyphs = 0u16;
                 for cx in x..x + w {
                     if !blank(cx, cy) {
-                        glyphs += 1;
+                        row_glyphs += 1;
                     }
+                }
+                glyphs += row_glyphs;
+                if row_glyphs == 0 {
+                    empty_rows += 1;
                 }
             }
             if glyphs == 0 {
                 return Rect::new(x, y, w, h);
             }
-            if best.is_none_or(|(bg, _, _)| glyphs < bg) {
-                best = Some((glyphs, y, x));
+            if best
+                .is_none_or(|(be, bg, _, _)| empty_rows > be || (empty_rows == be && glyphs < bg))
+            {
+                best = Some((empty_rows, glyphs, y, x));
             }
         }
     }
     match best {
-        Some((_, y, x)) => Rect::new(x, y, w, h),
+        Some((_, _, y, x)) => Rect::new(x, y, w, h),
         // No spot at all: hold it at the top-right corner.
         None => Rect::new(area.right().saturating_sub(w), area.y, w, h),
     }
