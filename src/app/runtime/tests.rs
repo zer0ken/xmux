@@ -2416,8 +2416,6 @@ fn test_rt(env: Env) -> Runtime {
         nav_default: crate::ui::switcher::NavPosition::Left,
         max_fps: crate::provision::config::DEFAULT_MAX_FPS,
         floating_rect: None,
-        floating_lock_until: None,
-        floating_drag: None,
         applied_nav_height: u16::MAX,
         applied_nav_collapsed: true,
         auto_hide_nav: false,
@@ -5155,66 +5153,6 @@ fn resize_keys_adjust_height_in_top_layout() {
     );
     assert!(rt.resize_axis(false, -1), "shrink changes the height");
     assert_eq!(rt.model.nav_height, auto, "and shrinks it back");
-}
-
-#[test]
-fn a_drag_moves_the_floating_nav_and_locks_it_for_a_minute() {
-    use crate::ui::switcher::{Scan, Switcher};
-    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
-    let switcher = Switcher::new(&mut state);
-    let sel = Selection::default();
-    let mut rt = test_rt(fake_env_with_machines(&["local"]));
-    rt.model.state = state;
-    rt.model.switcher = switcher;
-    rt.cols = 100;
-    rt.body_rows = 59;
-    rt.model.nav_position = crate::ui::switcher::NavPosition::Floating;
-    let box_rect = ratatui::layout::Rect::new(70, 2, 30, 10);
-    rt.model.floating_rect = Some(box_rect);
-    sync_test_render_plan(&mut rt);
-    let mut ft = false;
-    let mut wheel = false;
-    rt.handle_mouse_event(
-        &mouse(0, 75, 5, true),
-        &sel,
-        &mut ft,
-        &mut wheel,
-        &mut false,
-        &mut false,
-    );
-    assert!(
-        rt.model.floating_drag.is_some(),
-        "a left press on the floating box grabs it"
-    );
-    // Drag 5 right, 3 down (motion bit held): the box follows the pointer.
-    rt.handle_mouse_event(
-        &mouse(0x20, 80, 8, true),
-        &sel,
-        &mut ft,
-        &mut wheel,
-        &mut false,
-        &mut false,
-    );
-    let moved = rt.model.floating_rect.unwrap();
-    assert_eq!(
-        (moved.x, moved.y),
-        (70, 5),
-        "the box follows the drag, clamped inside the screen: {moved:?}"
-    );
-    // Release ends the drag and locks the position for a minute.
-    rt.handle_mouse_event(
-        &mouse(0x20, 80, 8, false),
-        &sel,
-        &mut ft,
-        &mut wheel,
-        &mut false,
-        &mut false,
-    );
-    assert!(rt.model.floating_drag.is_none());
-    assert!(
-        rt.model.floating_lock_until.is_some(),
-        "release holds the position"
-    );
 }
 
 #[test]

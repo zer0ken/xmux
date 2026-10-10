@@ -47,12 +47,6 @@ pub(crate) struct AppModel {
     /// The floating nav's current box (auto-placed or dragged), recomputed by the runtime
     /// from the terminal's empty space when `nav_position` is [`NavPosition::Floating`].
     pub(crate) floating_rect: Option<ratatui::layout::Rect>,
-    /// When a drag of the floating nav ends, its position is held until this instant, then
-    /// it returns to the auto-placed box. `None` means no drag lock is held.
-    pub(crate) floating_lock_until: Option<std::time::Instant>,
-    /// An in-flight drag of the floating nav: the grab cell and the box's top-left at grab
-    /// time, so motion moves the box under the pointer. `None` while not dragging.
-    pub(crate) floating_drag: Option<(u16, u16, u16, u16)>,
     pub(crate) mouse_state: MouseState,
     pub(crate) connected: HashSet<String>,
     pub(crate) detecting: HashSet<String>,
@@ -161,8 +155,6 @@ impl AppModel {
             auto_hide_nav: false,
             nav_was_focused: true,
             floating_rect: None,
-            floating_lock_until: None,
-            floating_drag: None,
             mouse_state: MouseState::default(),
             connected: HashSet::new(),
             detecting: HashSet::new(),

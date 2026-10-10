@@ -985,8 +985,17 @@ fn floating_regions_keep_the_terminal_whole_and_float_the_box() {
         Rect::new(0, 0, W, H),
         "the terminal owns the whole area"
     );
-    assert_eq!(regions.nav, box_rect, "the nav floats as a box over it");
-    assert_eq!(regions.nav_border, Rect::default(), "no split border");
+    assert_eq!(regions.nav_border, box_rect, "the box border is its region");
+    assert_eq!(
+        regions.nav,
+        Rect::new(
+            box_rect.x + 1,
+            box_rect.y + 1,
+            box_rect.width - 2,
+            box_rect.height - 2
+        ),
+        "the cards fill the box interior, like a right nav's column"
+    );
     assert_eq!(
         regions.prefix_hint,
         Rect::new(box_rect.x + 1, box_rect.y, box_rect.width - 2, 1),
@@ -1020,9 +1029,10 @@ fn a_floating_nav_renders_a_rounded_box_with_the_prefix_hint() {
     let nav = NavSize::visible(SIDE_W)
         .with_position(NavPosition::Floating)
         .with_floating(Some(box_rect));
-    // terminal_focused=false: the box is expanded (shows its cards), not compact.
+    // The box renders its rounded border, the prefix hint on the top border, and the
+    // cards inside - a right nav's content in a content-fit box.
     let shot = Shot::new(two_groups(), nav, false);
-    assert_eq!(shot.plan.regions.nav, box_rect);
+    assert_eq!(shot.plan.regions.nav_border, box_rect);
     let top: String = (box_rect.x..box_rect.right())
         .map(|x| shot.buf[(x, box_rect.y)].symbol().to_string())
         .collect();
@@ -1035,21 +1045,19 @@ fn a_floating_nav_renders_a_rounded_box_with_the_prefix_hint() {
         top.contains("C-g"),
         "the prefix hint leads the top border: {top:?}"
     );
-    // The compact box shows only the hint, no card content.
-    let compact = NavSize::visible(SIDE_W)
-        .with_position(NavPosition::Floating)
-        .with_floating(Some(Rect::new(60, 2, SIDE_W, 3)));
-    let mut shot = Shot::new(two_groups(), compact, true);
-    shot.state
-        .focus
-        .set_view_focus(crate::state::ViewFocus::Terminal);
-    shot.draw(true);
-    assert!(shot.plan.floating_compact);
-    let interior: String = (box_rect.x + 1..box_rect.right() - 1)
-        .map(|x| shot.buf[(x, box_rect.y + 1)].symbol().to_string())
+    let bottom: String = (box_rect.x..box_rect.right())
+        .map(|x| shot.buf[(x, box_rect.bottom() - 1)].symbol().to_string())
         .collect();
     assert!(
-        interior.trim().is_empty(),
-        "a compact box carries no cards: {interior:?}"
+        bottom.contains('╰') && bottom.contains('╯'),
+        "rounded bottom border: {bottom:?}"
+    );
+    // The cards render inside the box (a machine name appears in the interior).
+    let interior: String = (box_rect.x + 1..box_rect.right() - 1)
+        .map(|x| shot.buf[(x, box_rect.y + 2)].symbol().to_string())
+        .collect();
+    assert!(
+        !interior.trim().is_empty(),
+        "the cards fill the box interior: {interior:?}"
     );
 }

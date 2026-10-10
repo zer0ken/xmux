@@ -206,12 +206,6 @@ pub struct RenderPlan {
     pub(super) border_thumb: Rect,
     pub nav_hidden: bool,
     pub nav_collapsed: bool,
-    /// Whether the floating nav shows only its prefix hint (the terminal view holds
-    /// focus and no prefix is live) rather than its card content.
-    pub floating_compact: bool,
-    /// The fraction (0..100) of the floating nav's post-drag lock still ahead, to paint
-    /// the countdown on its bottom border. `None` while no lock is held.
-    pub(crate) floating_lock_left: Option<u16>,
 }
 
 impl Default for RenderPlan {
@@ -242,8 +236,6 @@ impl Default for RenderPlan {
             border_thumb: Rect::default(),
             nav_hidden: true,
             nav_collapsed: false,
-            floating_compact: true,
-            floating_lock_left: None,
         }
     }
 }
@@ -362,15 +354,6 @@ impl Switcher {
             regions,
             nav_inner: if nav.width == 0 || nav.collapsed {
                 Rect::default()
-            } else if nav.position == NavPosition::Floating {
-                // The floating box's interior, inside its rounded border.
-                let b = regions.nav;
-                Rect::new(
-                    b.x + 1,
-                    b.y + 1,
-                    b.width.saturating_sub(2),
-                    b.height.saturating_sub(2),
-                )
             } else {
                 regions.nav
             },
@@ -395,9 +378,6 @@ impl Switcher {
             expand_area,
             nav_hidden: nav.width == 0,
             nav_collapsed: nav.collapsed,
-            floating_compact: nav.position == NavPosition::Floating
-                && state.focus.is_terminal_focused()
-                && !key_list_open(state),
             ..RenderPlan::default()
         };
         if !plan.nav_inner.is_empty() {
@@ -1083,8 +1063,8 @@ impl Switcher {
         self.render_modal_popup(frame, area, state, plan.popup_rect, palette);
     }
 
-    /// The floating nav's rounded box: a bordered box at its region, the prefix hint on
-    /// the top border's left, and the card content inside when not compact.
+    /// The floating nav's rounded, content-fit border drawn around the nav, whose cards
+    /// and prefix hint render exactly as a right nav's.
     fn render_floating_box(
         &self,
         frame: &mut Frame,
@@ -1092,7 +1072,7 @@ impl Switcher {
         plan: &RenderPlan,
         palette: &palette::Palette,
     ) {
-        let box_rect = plan.regions.nav;
+        let box_rect = plan.regions.nav_border;
         if box_rect.is_empty() {
             return;
         }
@@ -1102,6 +1082,9 @@ impl Switcher {
             .style(Style::reset());
         frame.render_widget(ratatui::widgets::Clear, box_rect);
         frame.render_widget(block, box_rect);
+        // The card content, identical to a right nav.
+        self.render_nav(frame, plan, palette);
+        // The prefix hint rests on the box's top border, like a title.
         let prefix_row = plan.regions.prefix_hint;
         if !prefix_row.is_empty() && !state.chrome.ui_prefix.is_empty() {
             let chip = prefix_hint_chip(
@@ -1111,30 +1094,6 @@ impl Switcher {
             );
             let padded = prefix_row.width >= prefix_chip_width(&state.chrome.ui_prefix);
             state.chrome.paint_prefix_hint(frame, chip, padded, palette);
-        }
-        if !plan.floating_compact && !plan.nav_inner.is_empty() {
-            self.render_nav(frame, plan, palette);
-        }
-        // A post-drag lock fills the bottom border for the share of its minute still
-        // ahead, the way a timed toast fills its own.
-        if let Some(left) = plan.floating_lock_left {
-            let inner_w = box_rect.width.saturating_sub(2);
-            let cells = left * inner_w / 100;
-            let buf = frame.buffer_mut();
-            for i in 0..inner_w {
-                let cell = &mut buf[(box_rect.x + 1 + i, box_rect.bottom() - 1)];
-                if i < cells {
-                    cell.set_symbol("━");
-                    cell.set_style(
-                        Style::default()
-                            .fg(palette.accent)
-                            .add_modifier(Modifier::BOLD),
-                    );
-                } else {
-                    cell.set_symbol("─");
-                    cell.set_style(Style::default().fg(palette.primary));
-                }
-            }
         }
     }
 

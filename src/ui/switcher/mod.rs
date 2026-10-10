@@ -214,18 +214,25 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
             collapsed_column(area, layout, nav_width, nav.position)
         }
         NavPosition::Floating => {
-            // The terminal keeps the whole area and the nav floats over it as a box,
-            // placed by the runtime over the terminal's empty space. Its prefix hint
-            // rests on the box border's top-left.
-            let nav = nav
+            // The terminal keeps the whole area and the nav floats over it as a
+            // content-fit box, placed by the runtime over the terminal's empty space.
+            // The box's border is its region; its interior holds the cards exactly as a
+            // right nav's column does, and the prefix hint rests on the box's top border.
+            let outer = nav
                 .floating
                 .unwrap_or_else(|| default_floating_box(area, nav_width));
+            let inner = Rect::new(
+                outer.x + 1,
+                outer.y + 1,
+                outer.width.saturating_sub(2),
+                outer.height.saturating_sub(2),
+            );
             Regions {
                 layout,
-                nav,
-                nav_border: Rect::default(),
+                nav: inner,
+                nav_border: outer,
                 terminal: area,
-                prefix_hint: floating_prefix_hint(nav),
+                prefix_hint: Rect::new(outer.x + 1, outer.y, outer.width.saturating_sub(2), 1),
             }
         }
         NavPosition::Left => {
@@ -389,19 +396,6 @@ fn tallest_blank_run(
     }
     close(&mut run_y, &mut run_h, &mut best);
     best
-}
-
-/// The prefix hint's row on a floating nav's box: the box's top border, on its left.
-fn floating_prefix_hint(box_rect: Rect) -> Rect {
-    if box_rect.height == 0 {
-        return Rect::default();
-    }
-    Rect::new(
-        box_rect.x + 1,
-        box_rect.y,
-        box_rect.width.saturating_sub(2),
-        1,
-    )
 }
 
 /// The smallest window xmux draws its split view in; a smaller one shows the required
