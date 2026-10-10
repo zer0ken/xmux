@@ -4602,6 +4602,184 @@ fn a_dropped_floating_drag_holds_the_box_then_the_scan_resumes() {
 }
 
 #[test]
+fn floating_box_width_equals_the_nav_width() {
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The box's width is the nav width the user set, not a content measure.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let nav = rt.place_floating_nav(area, None, rt.model.nav_size());
+    let rect = rt.model.floating_rect.unwrap();
+    assert_eq!(rect.width, nav.natural, "the box's width is the nav width");
+}
+
+#[test]
+fn a_drag_in_flight_keeps_the_floating_box_following() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The empty-space scan skips while a drag is in flight: the re-place used to reset
+    // the drag offset every frame, so the box never followed the pointer. The drop then
+    // holds the box where it was dragged.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    sync_test_render_plan(&mut rt);
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let nav = rt.place_floating_nav(area, None, rt.model.nav_size());
+    let base = rt.model.floating_rect.unwrap();
+    let (col, row) = (base.x + 2, base.y + 2);
+    rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}M").as_bytes(),
+        &Selection::default(),
+    );
+    assert!(
+        rt.model.switcher.popup_drag_active(),
+        "the press grabs the box"
+    );
+    // The scan must not fight the in-flight drag.
+    let _ = rt.place_floating_nav(area, None, nav);
+    assert_eq!(
+        rt.model.floating_rect,
+        Some(base),
+        "the scan skips while a drag is in flight"
+    );
+    // The motion carries the box through the drag offset.
+    rt.handle_stdin_bytes(
+        format!("\x1b[<32;{};{}M", col + 4, row + 2).as_bytes(),
+        &Selection::default(),
+    );
+    sync_test_render_plan(&mut rt);
+    let dragged = rt.model.render_plan.regions.nav_border;
+    assert_ne!(dragged, base, "the box follows the pointer");
+    // The drop holds the spot.
+    rt.handle_stdin_bytes(
+        format!("\x1b[<0;{};{}m", col + 4, row + 2).as_bytes(),
+        &Selection::default(),
+    );
+    sync_test_render_plan(&mut rt);
+    assert_eq!(
+        rt.model.render_plan.regions.nav_border, dragged,
+        "the dropped box stays where it was dragged"
+    );
+}
+
+#[test]
+fn prefix_ready_docks_the_floating_nav() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The floating nav docks as a right nav while the prefix is armed (prefix ready),
+    // the same way the nav focus docks it.
+    let sess = |host: &str, name: &str| crate::session::Session {
+        host: host.into(),
+        name: name.into(),
+        mux: String::new(),
+        id: String::new(),
+        windows: 1,
+        clients: 0,
+        stopped: false,
+    };
+    let scan = Scan {
+        groups: vec![crate::model::Group {
+            host: "local".into(),
+            err: None,
+            sessions: vec![sess("local", "emem"), sess("local", "xmux")],
+        }],
+    };
+    let mut state = crate::state::State::from_scan(scan);
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    rt.cols = 80;
+    rt.body_rows = 23;
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let _ = rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(rt.prefix_active(), "the prefix arms");
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    assert_eq!(
+        rt.model.nav_position,
+        NavPosition::Right,
+        "the armed prefix docks the floating nav"
+    );
+}
+
+#[test]
+fn floating_box_height_wraps_every_painted_row() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The box's height counts the rows the paint actually draws: the painted cards and
+    // the band rule rows between them, so the box has room for every card and the row
+    // right above the bottom border is a card or a rule, never blank.
+    let sess = |host: &str, name: &str| crate::session::Session {
+        host: host.into(),
+        name: name.into(),
+        mux: String::new(),
+        id: String::new(),
+        windows: 1,
+        clients: 0,
+        stopped: false,
+    };
+    let scan = Scan {
+        groups: vec![
+            crate::model::Group {
+                host: "local".into(),
+                err: None,
+                sessions: vec![sess("local", "emem"), sess("local", "xmux")],
+            },
+            crate::model::Group {
+                host: "db-2".into(),
+                err: Some("unreachable".into()),
+                sessions: vec![],
+            },
+        ],
+    };
+    let mut state = crate::state::State::from_scan(scan);
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    rt.cols = 80;
+    rt.body_rows = 23;
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let _ = rt.place_floating_nav(area, None, rt.model.nav_size());
+    let rect = rt.model.floating_rect.unwrap();
+    assert_eq!(
+        rect.height as usize,
+        rt.model.switcher.nav_content_rows() as usize + 2,
+        "the box wraps the painted rows"
+    );
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    // The draw re-places the box with the frame's size; read the rect it settled on.
+    let rect = rt.model.floating_rect.unwrap();
+    let buf = term.backend().buffer();
+    let last_row: String = (rect.x + 1..rect.right().saturating_sub(1))
+        .map(|x| buf[(x, rect.bottom() - 2)].symbol().to_string())
+        .collect();
+    assert!(
+        !last_row.trim().is_empty(),
+        "the row above the bottom border is painted, not blank"
+    );
+}
+
+#[test]
 fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
     use crate::ui::switcher::{Scan, Switcher};
     // prefix is Ctrl-G (0x07) in the default config; prefix then 'q' = quit.

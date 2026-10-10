@@ -936,10 +936,12 @@ impl Runtime {
         let frozen = self
             .floating_frozen_at
             .is_some_and(|t| t.elapsed() < Self::FLOATING_FREEZE);
-        if !frozen {
+        // A drag in flight owns the box's position and a drop holds it for the freeze
+        // span; the empty-space scan only relocates outside those.
+        if !frozen && !self.model.switcher.popup_drag_active() {
             self.floating_frozen_at = None;
             self.model.switcher.reset_floating_offset();
-            let w = self.floating_box_width(area);
+            let w = self.floating_box_width(area, nav);
             let h = self.floating_box_height(area).max(1);
             let rect = match grid {
                 Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
@@ -954,15 +956,14 @@ impl Runtime {
     /// release to the forget.
     const FLOATING_FREEZE: std::time::Duration = std::time::Duration::from_secs(10);
 
-    /// The floating nav's box width: the widest natural card line plus its two border
-    /// columns (content-fit), never narrower than the nav width floor. Sized from the
-    /// rows themselves, never from a previous frame, so a long card still widens the box.
-    fn floating_box_width(&self, area: ratatui::layout::Rect) -> u16 {
-        let natural = self.model.switcher.nav_natural_width(&self.model.state) as u32;
-        natural
-            .saturating_add(2)
-            .max(crate::app::model::nav_width_min(&self.env.ui_prefix) as u32)
-            .min(area.width as u32) as u16
+    /// The floating nav's box width: the nav width the user set, the same value a
+    /// right nav's column is wide, capped by the screen.
+    fn floating_box_width(
+        &self,
+        area: ratatui::layout::Rect,
+        nav: crate::ui::switcher::NavSize,
+    ) -> u16 {
+        nav.natural.min(area.width)
     }
 
     /// The floating nav's box height: the nav's card content height from the previous
@@ -1035,12 +1036,13 @@ impl Runtime {
             .nav_position_pinned
             .unwrap_or(self.model.nav_default);
         // The floating nav docks for the span of the interaction: while the nav view
-        // holds the focus it behaves exactly as a right nav does (the column takes its
-        // region, the terminal view keeps the remainder, every right-nav key and drag
-        // works), and the focus's return to the terminal view undocks it. The flip is a
-        // position change, so the reconcile below resizes the PTYs and forces a repaint.
+        // holds the focus or the prefix is armed (prefix ready) it behaves exactly as a
+        // right nav does (the column takes its region, the terminal view keeps the
+        // remainder, every right-nav key and drag works), and the focus's return to the
+        // terminal view or the chord's end undocks it. The flip is a position change, so
+        // the reconcile below resizes the PTYs and forces a repaint.
         if want_position == crate::ui::switcher::NavPosition::Floating
-            && self.model.state.focus.view_is_nav()
+            && (self.model.state.focus.view_is_nav() || prefix_active)
         {
             want_position = crate::ui::switcher::NavPosition::Right;
         }

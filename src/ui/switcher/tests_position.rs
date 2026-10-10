@@ -1024,6 +1024,59 @@ fn floating_nav_box_lands_over_the_widest_empty_strip_near_the_right_wall() {
 }
 
 #[test]
+fn floating_nav_box_prefers_the_topmost_run_the_box_fits_in() {
+    let area = Rect::new(0, 0, 100, 40);
+    // Two all-blank bands near the right wall: a short one above (rows 2..10) and a
+    // tall one below (rows 22..40). Both fit the 8-tall box; the topmost wins, not the
+    // widest, and the box sits at the run's top rather than centered.
+    let text = |x: u16, y: u16| !((2..10).contains(&y) || (22..40).contains(&y)) || x < 60;
+    let rect = floating_nav_box(area, 30, 8, |x, y| !text(x, y));
+    assert_eq!(rect.y, 2, "the topmost fitting run wins: {rect:?}");
+    assert!(rect.bottom() <= 10, "the box fits the upper band: {rect:?}");
+}
+
+#[test]
+fn floating_nav_box_lands_at_the_top_of_the_widest_run_when_none_fits() {
+    let area = Rect::new(0, 0, 100, 30);
+    // A single blank band (rows 12..17, 5 tall) too short for the 8-tall box: the box
+    // sits at the band's top, never centered.
+    let text = |x: u16, y: u16| !((12..17).contains(&y) && x >= 60);
+    let rect = floating_nav_box(area, 30, 8, |x, y| !text(x, y));
+    assert_eq!(rect.y, 12, "the box sits at the widest run's top: {rect:?}");
+}
+
+#[test]
+fn the_floating_box_blanks_a_wide_char_orphaned_at_its_left_edge() {
+    use crate::display::grid::Grid;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // A wide char whose right half the box covers must not keep painting its left half
+    // over the box's border: the orphan half is blanked.
+    let mut state = crate::state::State::from_scan(two_groups());
+    let sw = Switcher::new(&mut state);
+    let box_rect = Rect::new(20, 2, 12, 6);
+    let nav = NavSize::visible(12)
+        .with_position(NavPosition::Floating)
+        .with_floating(Some(box_rect));
+    let mut grid = Grid::new(10, 40);
+    // The wide char's left half lands at box.x - 1, its right half under the box.
+    grid.feed(format!("\x1b[{};{}H한", box_rect.y + 3, box_rect.x + 1).as_bytes());
+    let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let previous = RenderPlan::default();
+    term.draw(|f| {
+        let plan = sw.layout(f.area(), nav, &state, &previous);
+        sw.render(f, Some(&grid), false, &state, &plan);
+    })
+    .unwrap();
+    let buf = term.backend().buffer();
+    assert_eq!(
+        buf[(box_rect.x - 1, box_rect.y + 2)].symbol(),
+        " ",
+        "the orphan wide half outside the box is blanked"
+    );
+}
+
+#[test]
 fn a_floating_nav_renders_a_rounded_box_with_the_prefix_hint() {
     let box_rect = Rect::new(60, 2, SIDE_W, 10);
     let nav = NavSize::visible(SIDE_W)

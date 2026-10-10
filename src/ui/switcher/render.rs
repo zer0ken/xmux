@@ -1094,6 +1094,17 @@ impl Switcher {
             .style(Style::reset());
         frame.render_widget(ratatui::widgets::Clear, box_rect);
         frame.render_widget(block, box_rect);
+        // A wide char whose right half the box covers would keep painting its left
+        // half over the box's border: blank the orphan half.
+        if box_rect.x > 0 {
+            let buf = frame.buffer_mut();
+            for y in box_rect.y..box_rect.bottom() {
+                let cell = &mut buf[(box_rect.x - 1, y)];
+                if UnicodeWidthStr::width(cell.symbol()) > 1 {
+                    cell.set_symbol(" ");
+                }
+            }
+        }
         // The card content, identical to a right nav.
         self.render_nav(frame, plan, palette);
         // The prefix hint rests on the box's top border, like a title.
@@ -1315,33 +1326,6 @@ impl Switcher {
     /// numbers themselves line up by units place.
     fn number_width(&self) -> usize {
         self.highest_number().to_string().len().max(1)
-    }
-
-    /// The widest natural card line, generated at an unbounded paint width: the floating
-    /// nav's content width, so its box wraps the widest card. The measure never feeds
-    /// back through the box's own clipping, so a long card still widens the box.
-    pub(crate) fn nav_natural_width(&self, state: &crate::state::State) -> u16 {
-        let num_w = self.number_width();
-        let spinner = crate::ui::spinner_glyph(state.chrome.spinner_frame);
-        self.rows
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
-                self.nav_row_lines(
-                    i,
-                    num_w,
-                    spinner,
-                    NavRowPaint {
-                        width: u16::MAX,
-                        filter: &state.filter,
-                        palette: &self.palette,
-                    },
-                )
-                .remove(0)
-                .width() as u16
-            })
-            .max()
-            .unwrap_or(0)
     }
 
     /// One row measured for the column flow: whether it opens a unit, how wide its

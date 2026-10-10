@@ -67,9 +67,10 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   (a left or right column) or a horizontal nav (a top or bottom row), or floating as a
   content-fit box over the terminal view. Never the
   "sidebar" or the "tree".
-- **floating nav** - the nav floating as a content-fit box over the full-screen
-  terminal view, placed over the widest text-free area near the right wall, draggable,
-  docked as a right nav while the nav view holds focus. The attachment position
+- **floating nav** - the nav floating as a box over the full-screen terminal view, as
+  wide as the nav width and as tall as its card list, placed over the topmost text-free
+  area that fits it (or the top of the widest blank area), draggable, docked as a right
+  nav while the nav view holds focus or the prefix is armed. The attachment position
   `floating`.
 - **terminal view** - the other region: the selected session's grid or a view screen.
 - **`ViewFocus`** - which region holds focus, the nav or the terminal view.

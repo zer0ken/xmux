@@ -88,16 +88,16 @@ clockwise in `~/.xmux/nav_position`. The cycle unpins at `floating`, the last po
 the default applies again, and the next step re-pins from it. The nav never moves on
 its own.
 
-The floating nav is a content-fit box over the full-screen terminal: as wide as the
-widest card line plus its border, as tall as the card list plus its border, with the
-prefix hint on its top border's left. It starts at the top-right corner and moves in
-real time to the widest area no terminal text covers, its right border never more than
-five cells from the window's right wall; when no empty area fits the box it holds at the
-top-right corner. Dragging it from anywhere on the box moves it anywhere in the window,
-the way the prefix key list and a modal popup drag. A drop holds the position for ten
-seconds, then the position is forgotten and the scan resumes. While the nav view holds
-the focus the box docks: it behaves exactly as a right nav does, the terminal view
-keeping the remainder, and the focus's return to the terminal view undocks it. A click
+The floating nav is a box over the full-screen terminal: as wide as the nav width the
+user set, as tall as the card list it shows plus its border, with the prefix hint on
+its top border's left. It moves in real time to the topmost area the box fits whole,
+its right border never more than five cells from the window's right wall; when no area
+fits the box it sits at the top of the widest blank area. Dragging it from anywhere on
+the box moves it anywhere in the window, the way the prefix key list and a modal popup
+drag. A drop holds the position for ten seconds, then the position is forgotten and the
+scan resumes. While the nav view holds the focus or the prefix is armed the box docks:
+it behaves exactly as a right nav does, the terminal view keeping the remainder, and
+the focus's return to the terminal view or the chord's end undocks it. A click
 on the box routes as a nav click: with the terminal view focused it docks the nav, with
 the nav focused it selects and executes the card under it.
 
