@@ -6533,7 +6533,7 @@ async fn nav_border_highlights_on_hover() {
 
 #[tokio::test]
 async fn nav_border_glyph_reflects_auto_hide_mode() {
-    // ║ (double) when auto-hide-nav mode is on, │ (single) when off - so a visible
+    // ╎ (dashed) when auto-hide-nav mode is on, │ (single) when off - so a visible
     // tree that will vanish on blur is distinguishable from a pinned one.
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
@@ -6555,8 +6555,8 @@ async fn nav_border_glyph_reflects_auto_hide_mode() {
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
-        "║",
-        "mode on → double line"
+        "╎",
+        "mode on → dashed line"
     );
 }
 
