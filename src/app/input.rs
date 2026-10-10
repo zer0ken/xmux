@@ -255,6 +255,10 @@ pub(crate) struct MouseState {
     pub(crate) dragging_nav_border: bool,
     /// True while the mouse hovers the nav border rule (no button) - the drag-resize cue.
     pub(crate) hovered_nav_border: bool,
+    /// True while the pointer rests on the floating nav's box (no button) - the box holds
+    /// its position for as long as it, so a relocation never yanks it out from under the
+    /// cursor.
+    pub(crate) hovering_floating_nav: bool,
     /// The resize mode a prefix resize starts: bare Ctrl+arrows keep resizing until
     /// another key ends it.
     pub(crate) resizing: bool,

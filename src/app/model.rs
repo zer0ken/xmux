@@ -324,6 +324,9 @@ pub(crate) enum Msg {
         horizontal: bool,
     },
     SetMouseHovered(bool),
+    /// Whether the pointer rests on the floating nav's box: while it does, the box holds
+    /// its position and no relocation moves it out from under the cursor.
+    SetMouseOverFloating(bool),
     SetResizing(bool),
     /// The button-up that ends a popup drag: a release on the grabbed cell is a click.
     EndPopupDrag,
@@ -2129,6 +2132,10 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::SetMouseHovered(hovered) => {
             model.mouse_state.hovered_nav_border = hovered;
+            Vec::new()
+        }
+        Msg::SetMouseOverFloating(over) => {
+            model.mouse_state.hovering_floating_nav = over;
             Vec::new()
         }
         Msg::SetResizing(resizing) => {
