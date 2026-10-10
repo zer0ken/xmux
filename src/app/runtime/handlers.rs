@@ -930,11 +930,9 @@ impl Runtime {
     ) -> crate::ui::switcher::NavSize {
         use crate::ui::switcher::{floating_nav_box, NavPosition};
         if nav.position != NavPosition::Floating {
-            self.model.switcher.floating_overlay = false;
             self.model.floating_rect = None;
             return nav;
         }
-        self.model.switcher.floating_overlay = true;
         let frozen = self
             .floating_frozen_at
             .is_some_and(|t| t.elapsed() < Self::FLOATING_FREEZE);
