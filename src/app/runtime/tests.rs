@@ -4677,6 +4677,63 @@ fn a_floating_box_holds_its_spot_while_the_pointer_rests_on_it() {
 }
 
 #[test]
+fn a_floating_box_grows_with_its_content_while_the_pointer_rests_on_it() {
+    use crate::display::grid::Grid;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The pointer on the box holds its POSITION, not its size: a card that reveals more
+    // rows (a taller list, a shown host band) grows the box in place.
+    let group = |host: &str, names: &[&str]| crate::model::Group {
+        host: host.into(),
+        err: None,
+        sessions: names
+            .iter()
+            .map(|name| crate::session::Session {
+                host: host.into(),
+                mux: String::new(),
+                id: String::new(),
+                name: (*name).into(),
+                windows: 1,
+                ..Default::default()
+            })
+            .collect(),
+    };
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![group("local", &["a", "b", "c"])],
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 40);
+    let grid = Grid::new(40, 80);
+    let nav = rt.place_floating_nav(area, Some(&grid), rt.model.nav_size());
+    let first = rt.model.floating_rect.unwrap();
+    let (x, y) = (first.x, first.y);
+
+    // The pointer rests on the box: its position holds, but a taller list grows it in
+    // place instead of leaving it too short for its cards.
+    rt.model.mouse_state.hovering_floating_nav = true;
+    let mut state2 = crate::state::State::from_scan(Scan {
+        groups: vec![group("local", &["a", "b", "c", "d", "e", "f"])],
+    });
+    let switcher2 = Switcher::new(&mut state2);
+    rt.model.switcher = switcher2;
+    rt.model.state = state2;
+    let _ = rt.place_floating_nav(area, Some(&grid), nav);
+    let grown = rt.model.floating_rect.unwrap();
+    assert_eq!(
+        (grown.x, grown.y),
+        (x, y),
+        "the hover holds the box's position"
+    );
+    assert!(
+        grown.height > first.height,
+        "the box grows to fit its taller content"
+    );
+}
+
+#[test]
 fn a_dropped_floating_drag_draws_the_remaining_hold_on_the_bottom_border() {
     use crate::model::FocusTarget;
     use crate::ui::switcher::{NavPosition, Scan, Switcher};

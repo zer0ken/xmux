@@ -933,23 +933,23 @@ impl Runtime {
         // span, and a pointer resting on the box locks it; outside those the box
         // re-places every frame, so it always sits on the current best spot instead of
         // holding a covered one.
+        let w = self.floating_box_width(area, nav);
+        let h = self.floating_box_height(area).max(1);
+        // A non-session screen (machine, host, login, ...) is drawn straight to the
+        // frame, not from the displayed session's grid, so the box scans nothing it can
+        // see; pin it to the top-right corner instead of leaving it over a stale spot on
+        // the underlying grid.
+        let panel = self
+            .model
+            .switcher
+            .current_view_screen(&self.model.state)
+            .is_some();
         if !frozen
             && !self.model.mouse_state.hovering_floating_nav
             && !self.model.switcher.popup_drag_active()
         {
             self.floating_frozen_at = None;
-            let w = self.floating_box_width(area, nav);
-            let h = self.floating_box_height(area).max(1);
             self.model.switcher.reset_floating_offset();
-            // A non-session screen (machine, host, login, ...) is drawn straight to the
-            // frame, not from the displayed session's grid, so the box scans nothing it
-            // can see; pin it to the top-right corner instead of leaving it over a stale
-            // spot on the underlying grid.
-            let panel = self
-                .model
-                .switcher
-                .current_view_screen(&self.model.state)
-                .is_some();
             let rect = if panel {
                 ratatui::layout::Rect::new(area.right().saturating_sub(w), area.y, w, h)
             } else {
@@ -961,6 +961,13 @@ impl Runtime {
                 }
             };
             self.model.floating_rect = Some(rect);
+        } else if let Some(rect) = self.model.floating_rect.as_mut() {
+            // The pointer on the box, a drag in flight, or a drop's freeze holds the
+            // box's POSITION, not its size: the box still grows or shrinks to fit its
+            // content, so a card that reveals the hidden host band grows the box in
+            // place instead of leaving it too small for its cards.
+            *rect =
+                ratatui::layout::Rect::new(rect.x, rect.y, w.min(area.width), h.min(area.height));
         }
         self.model.nav_size()
     }
