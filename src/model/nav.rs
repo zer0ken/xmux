@@ -14,6 +14,9 @@ pub enum NavPosition {
     Top,
     Right,
     Bottom,
+    /// The nav as a floating box over the terminal, kept near the right edge and
+    /// auto-placed over the terminal's empty space.
+    Floating,
 }
 
 /// The nav's live size as one value, never loose values: the effective width has a single
@@ -32,6 +35,9 @@ pub struct NavSize {
     pub position: NavPosition,
     /// Whether the nav shows only its prefix hint.
     pub collapsed: bool,
+    /// The floating nav's on-screen box, set by the app from the terminal's empty space
+    /// when `position` is [`NavPosition::Floating`]. `None` when not floating.
+    pub floating: Option<ratatui::layout::Rect>,
 }
 
 impl NavSize {
@@ -43,6 +49,7 @@ impl NavSize {
             height: 0,
             position: NavPosition::Left,
             collapsed: false,
+            floating: None,
         }
     }
 
@@ -54,6 +61,7 @@ impl NavSize {
             height: 0,
             position: NavPosition::Left,
             collapsed: false,
+            floating: None,
         }
     }
 
@@ -66,6 +74,11 @@ impl NavSize {
     pub fn with_position(self, position: NavPosition) -> Self {
         Self { position, ..self }
     }
+
+    /// The same nav with its floating box set.
+    pub fn with_floating(self, floating: Option<ratatui::layout::Rect>) -> Self {
+        Self { floating, ..self }
+    }
 }
 
 /// One step of the attachment-position cycle.
@@ -74,7 +87,6 @@ pub fn step_nav_position(
     effective: NavPosition,
 ) -> Option<NavPosition> {
     match pinned {
-        Some(NavPosition::Bottom) => None,
         Some(position) => Some(position.clockwise()),
         None => Some(effective.clockwise()),
     }
@@ -84,7 +96,7 @@ impl NavPosition {
     /// The view stacking this placement produces.
     pub fn layout(self) -> ViewLayout {
         match self {
-            Self::Left | Self::Right => ViewLayout::Vertical,
+            Self::Left | Self::Right | Self::Floating => ViewLayout::Vertical,
             Self::Top | Self::Bottom => ViewLayout::Horizontal,
         }
     }
@@ -100,7 +112,8 @@ impl NavPosition {
             Self::Left => Self::Top,
             Self::Top => Self::Right,
             Self::Right => Self::Bottom,
-            Self::Bottom => Self::Left,
+            Self::Bottom => Self::Floating,
+            Self::Floating => Self::Left,
         }
     }
 
@@ -112,6 +125,7 @@ impl NavPosition {
             "top" => Some(Self::Top),
             "right" => Some(Self::Right),
             "bottom" => Some(Self::Bottom),
+            "floating" => Some(Self::Floating),
             _ => None,
         }
     }
@@ -123,6 +137,7 @@ impl NavPosition {
             Self::Top => "top",
             Self::Right => "right",
             Self::Bottom => "bottom",
+            Self::Floating => "floating",
         }
     }
 }
@@ -135,6 +150,7 @@ mod tests {
     fn layout_maps_vertical_and_horizontal_navs() {
         assert_eq!(NavPosition::Left.layout(), ViewLayout::Vertical);
         assert_eq!(NavPosition::Right.layout(), ViewLayout::Vertical);
+        assert_eq!(NavPosition::Floating.layout(), ViewLayout::Vertical);
         assert_eq!(NavPosition::Top.layout(), ViewLayout::Horizontal);
         assert_eq!(NavPosition::Bottom.layout(), ViewLayout::Horizontal);
     }
@@ -144,7 +160,8 @@ mod tests {
         assert_eq!(NavPosition::Left.clockwise(), NavPosition::Top);
         assert_eq!(NavPosition::Top.clockwise(), NavPosition::Right);
         assert_eq!(NavPosition::Right.clockwise(), NavPosition::Bottom);
-        assert_eq!(NavPosition::Bottom.clockwise(), NavPosition::Left);
+        assert_eq!(NavPosition::Bottom.clockwise(), NavPosition::Floating);
+        assert_eq!(NavPosition::Floating.clockwise(), NavPosition::Left);
     }
 
     #[test]
@@ -153,20 +170,22 @@ mod tests {
         assert!(NavPosition::Top.forward_arrows_face_terminal());
         assert!(!NavPosition::Right.forward_arrows_face_terminal());
         assert!(!NavPosition::Bottom.forward_arrows_face_terminal());
+        assert!(!NavPosition::Floating.forward_arrows_face_terminal());
     }
 
     #[test]
-    fn parse_reads_the_four_words() {
+    fn parse_reads_the_five_words() {
         assert_eq!(NavPosition::parse("left"), Some(NavPosition::Left));
         assert_eq!(NavPosition::parse(" top "), Some(NavPosition::Top));
         assert_eq!(NavPosition::parse("Right"), Some(NavPosition::Right));
         assert_eq!(NavPosition::parse("\nbottom\n"), Some(NavPosition::Bottom));
+        assert_eq!(NavPosition::parse("Floating"), Some(NavPosition::Floating));
         assert_eq!(NavPosition::parse("diagonal"), None);
         assert_eq!(NavPosition::parse(""), None);
     }
 
     #[test]
-    fn step_nav_position_cycles_one_step_clockwise() {
+    fn step_nav_position_cycles_one_step_clockwise_without_unpin() {
         assert_eq!(
             step_nav_position(None, NavPosition::Left),
             Some(NavPosition::Top)
@@ -181,7 +200,7 @@ mod tests {
         );
         assert_eq!(
             step_nav_position(None, NavPosition::Bottom),
-            Some(NavPosition::Left)
+            Some(NavPosition::Floating)
         );
         assert_eq!(
             step_nav_position(Some(NavPosition::Left), NavPosition::Bottom),
@@ -197,8 +216,13 @@ mod tests {
         );
         assert_eq!(
             step_nav_position(Some(NavPosition::Bottom), NavPosition::Right),
-            None,
-            "the fifth step unpins"
+            Some(NavPosition::Floating),
+            "the fifth step goes floating, never unpinning"
+        );
+        assert_eq!(
+            step_nav_position(Some(NavPosition::Floating), NavPosition::Right),
+            Some(NavPosition::Left),
+            "the floating step wraps back to left"
         );
     }
 
@@ -209,6 +233,7 @@ mod tests {
             NavPosition::Top,
             NavPosition::Right,
             NavPosition::Bottom,
+            NavPosition::Floating,
         ] {
             assert_eq!(NavPosition::parse(position.word()), Some(position));
         }

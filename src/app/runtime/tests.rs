@@ -2415,6 +2415,9 @@ fn test_rt(env: Env) -> Runtime {
         nav_position_pinned: None,
         nav_default: crate::ui::switcher::NavPosition::Left,
         max_fps: crate::provision::config::DEFAULT_MAX_FPS,
+        floating_rect: None,
+        floating_lock_until: None,
+        floating_drag: None,
         applied_nav_height: u16::MAX,
         applied_nav_collapsed: true,
         auto_hide_nav: false,
@@ -4480,8 +4483,8 @@ fn prefix_p_cycles_the_nav_position_and_persists_it() {
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
     // `prefix p` moves the pin one step clockwise from the CURRENT effective position
     // and saves it at once, the same moment `prefix t` saves the auto-hide toggle. The
-    // fifth step unpins (back to following the [ui] nav-position default), which stores
-    // "auto".
+    // cycle never unpins: a pinned side cycles forward, and `left` is reached again
+    // after `floating`.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_machines(&["local"]));
@@ -4501,12 +4504,18 @@ fn prefix_p_cycles_the_nav_position_and_persists_it() {
     let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
     assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Bottom));
     let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(rt.model.nav_position_pinned, None, "the fifth step unpins");
+    assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Floating));
     assert!(
         std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
             .unwrap()
-            .contains("auto"),
-        "unpinning stores \"auto\""
+            .contains("floating"),
+        "the cycle never unpins; floating persists"
+    );
+    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(
+        rt.model.nav_position_pinned,
+        Some(NavPosition::Left),
+        "the sixth step wraps back to left"
     );
     // The cycle itself does not claim the focus flags the outcome carries.
     assert!(!out.focus_terminal && !out.focus_nav && !out.quit);
@@ -5146,6 +5155,66 @@ fn resize_keys_adjust_height_in_top_layout() {
     );
     assert!(rt.resize_axis(false, -1), "shrink changes the height");
     assert_eq!(rt.model.nav_height, auto, "and shrinks it back");
+}
+
+#[test]
+fn a_drag_moves_the_floating_nav_and_locks_it_for_a_minute() {
+    use crate::ui::switcher::{Scan, Switcher};
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let sel = Selection::default();
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.cols = 100;
+    rt.body_rows = 59;
+    rt.model.nav_position = crate::ui::switcher::NavPosition::Floating;
+    let box_rect = ratatui::layout::Rect::new(70, 2, 30, 10);
+    rt.model.floating_rect = Some(box_rect);
+    sync_test_render_plan(&mut rt);
+    let mut ft = false;
+    let mut wheel = false;
+    rt.handle_mouse_event(
+        &mouse(0, 75, 5, true),
+        &sel,
+        &mut ft,
+        &mut wheel,
+        &mut false,
+        &mut false,
+    );
+    assert!(
+        rt.model.floating_drag.is_some(),
+        "a left press on the floating box grabs it"
+    );
+    // Drag 5 right, 3 down (motion bit held): the box follows the pointer.
+    rt.handle_mouse_event(
+        &mouse(0x20, 80, 8, true),
+        &sel,
+        &mut ft,
+        &mut wheel,
+        &mut false,
+        &mut false,
+    );
+    let moved = rt.model.floating_rect.unwrap();
+    assert_eq!(
+        (moved.x, moved.y),
+        (70, 5),
+        "the box follows the drag, clamped inside the screen: {moved:?}"
+    );
+    // Release ends the drag and locks the position for a minute.
+    rt.handle_mouse_event(
+        &mouse(0x20, 80, 8, false),
+        &sel,
+        &mut ft,
+        &mut wheel,
+        &mut false,
+        &mut false,
+    );
+    assert!(rt.model.floating_drag.is_none());
+    assert!(
+        rt.model.floating_lock_until.is_some(),
+        "release holds the position"
+    );
 }
 
 #[test]
@@ -7002,6 +7071,7 @@ fn dragging_the_nav_border_past_the_minimum_collapses_the_nav_at_every_position(
             NavPosition::Right => (140, nav_border.y + 1),
             NavPosition::Top => (nav_border.x + 1, 1),
             NavPosition::Bottom => (nav_border.x + 1, 30),
+            NavPosition::Floating => unreachable!(),
         };
         rt.handle_mouse_event(
             &mouse(0x20, col, row, true),
@@ -7020,6 +7090,7 @@ fn dragging_the_nav_border_past_the_minimum_collapses_the_nav_at_every_position(
             NavPosition::Right => (80, nav_border.y + 1),
             NavPosition::Top => (nav_border.x + 1, 11),
             NavPosition::Bottom => (nav_border.x + 1, 20),
+            NavPosition::Floating => unreachable!(),
         };
         rt.handle_mouse_event(
             &mouse(0x20, col, row, true),
@@ -7058,6 +7129,7 @@ fn a_click_anywhere_on_a_collapsed_nav_expands_it_at_every_position() {
             NavPosition::Left | NavPosition::Top => (1, 1),
             NavPosition::Right => (140, 1),
             NavPosition::Bottom => (1, 30),
+            NavPosition::Floating => unreachable!(),
         };
         let focus_before = rt.model.state.focus;
         let mut focus_toggle = false;

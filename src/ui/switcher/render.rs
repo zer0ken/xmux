@@ -15,7 +15,9 @@ pub(super) fn prefix_hint_chip(row: Rect, position: NavPosition, prefix_w: u16) 
     let w = prefix_w.min(row.width);
     let x = match position {
         NavPosition::Left => row.right().saturating_sub(w),
-        NavPosition::Right | NavPosition::Top | NavPosition::Bottom => row.x,
+        NavPosition::Right | NavPosition::Top | NavPosition::Bottom | NavPosition::Floating => {
+            row.x
+        }
     };
     Rect { x, width: w, ..row }
 }
@@ -204,6 +206,12 @@ pub struct RenderPlan {
     pub(super) border_thumb: Rect,
     pub nav_hidden: bool,
     pub nav_collapsed: bool,
+    /// Whether the floating nav shows only its prefix hint (the terminal view holds
+    /// focus and no prefix is live) rather than its card content.
+    pub floating_compact: bool,
+    /// The fraction (0..100) of the floating nav's post-drag lock still ahead, to paint
+    /// the countdown on its bottom border. `None` while no lock is held.
+    pub(crate) floating_lock_left: Option<u16>,
 }
 
 impl Default for RenderPlan {
@@ -234,6 +242,8 @@ impl Default for RenderPlan {
             border_thumb: Rect::default(),
             nav_hidden: true,
             nav_collapsed: false,
+            floating_compact: true,
+            floating_lock_left: None,
         }
     }
 }
@@ -305,6 +315,7 @@ impl Switcher {
                     ..area
                 },
                 NavPosition::Top | NavPosition::Bottom => seam,
+                NavPosition::Floating => regions.nav,
             }
         } else {
             Rect::default()
@@ -351,6 +362,15 @@ impl Switcher {
             regions,
             nav_inner: if nav.width == 0 || nav.collapsed {
                 Rect::default()
+            } else if nav.position == NavPosition::Floating {
+                // The floating box's interior, inside its rounded border.
+                let b = regions.nav;
+                Rect::new(
+                    b.x + 1,
+                    b.y + 1,
+                    b.width.saturating_sub(2),
+                    b.height.saturating_sub(2),
+                )
             } else {
                 regions.nav
             },
@@ -375,6 +395,9 @@ impl Switcher {
             expand_area,
             nav_hidden: nav.width == 0,
             nav_collapsed: nav.collapsed,
+            floating_compact: nav.position == NavPosition::Floating
+                && state.focus.is_terminal_focused()
+                && !key_list_open(state),
             ..RenderPlan::default()
         };
         if !plan.nav_inner.is_empty() {
@@ -961,6 +984,12 @@ impl Switcher {
             self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
             return;
         }
+        // The floating nav: the terminal owns the whole area and the nav floats over it
+        // as a rounded box, so it renders after the terminal, unlike the split placements.
+        if plan.nav_position == NavPosition::Floating {
+            self.render_floating(frame, area, grid, terminal_focused, state, plan, &palette);
+            return;
+        }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
         // sizing and mouse hit-testing so they never diverge: the navigation view /
         // terminal view split side by side (a vertical nav) or stacked (a horizontal nav),
@@ -1016,6 +1045,97 @@ impl Switcher {
         }
         self.place_field_cursor(frame, state, plan, view_caret);
         self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
+    }
+
+    /// The floating nav: the terminal owns the whole area and the nav renders as a
+    /// rounded box over it, with the prefix hint on its top border. A compact box (the
+    /// terminal holds focus and no prefix is live) shows only the hint; otherwise it
+    /// shows the nav's card content like a right nav.
+    #[allow(clippy::too_many_arguments)] // mirrors the main render's surface, all needed
+    fn render_floating(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        grid: Option<&crate::display::grid::Grid>,
+        terminal_focused: bool,
+        state: &crate::state::State,
+        plan: &RenderPlan,
+        palette: &palette::Palette,
+    ) {
+        let view_caret = if let Some(kind) = plan.view_screen {
+            self.render_view_screen(frame, area, state, kind, terminal_focused)
+        } else {
+            self.render_terminal_view(frame, area, grid);
+            None
+        };
+        if terminal_focused && plan.view_screen.is_none() {
+            if let Some(g) = grid {
+                if !g.hide_cursor() {
+                    frame.set_cursor_position(terminal_cursor_pos(area, g.cursor()));
+                }
+            }
+        }
+        self.render_floating_box(frame, state, plan, palette);
+        self.place_field_cursor(frame, state, plan, view_caret);
+        self.render_key_list(frame, state, plan, palette);
+        self.render_scan_box(frame, plan, palette);
+        self.render_toasts(frame, state, plan, palette);
+        self.render_modal_popup(frame, area, state, plan.popup_rect, palette);
+    }
+
+    /// The floating nav's rounded box: a bordered box at its region, the prefix hint on
+    /// the top border's left, and the card content inside when not compact.
+    fn render_floating_box(
+        &self,
+        frame: &mut Frame,
+        state: &crate::state::State,
+        plan: &RenderPlan,
+        palette: &palette::Palette,
+    ) {
+        let box_rect = plan.regions.nav;
+        if box_rect.is_empty() {
+            return;
+        }
+        let block = ratatui::widgets::Block::bordered()
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(palette.primary))
+            .style(Style::reset());
+        frame.render_widget(ratatui::widgets::Clear, box_rect);
+        frame.render_widget(block, box_rect);
+        let prefix_row = plan.regions.prefix_hint;
+        if !prefix_row.is_empty() && !state.chrome.ui_prefix.is_empty() {
+            let chip = prefix_hint_chip(
+                prefix_row,
+                NavPosition::Floating,
+                prefix_chip_width(&state.chrome.ui_prefix),
+            );
+            let padded = prefix_row.width >= prefix_chip_width(&state.chrome.ui_prefix);
+            state.chrome.paint_prefix_hint(frame, chip, padded, palette);
+        }
+        if !plan.floating_compact && !plan.nav_inner.is_empty() {
+            self.render_nav(frame, plan, palette);
+        }
+        // A post-drag lock fills the bottom border for the share of its minute still
+        // ahead, the way a timed toast fills its own.
+        if let Some(left) = plan.floating_lock_left {
+            let inner_w = box_rect.width.saturating_sub(2);
+            let cells = left * inner_w / 100;
+            let buf = frame.buffer_mut();
+            for i in 0..inner_w {
+                let cell = &mut buf[(box_rect.x + 1 + i, box_rect.bottom() - 1)];
+                if i < cells {
+                    cell.set_symbol("━");
+                    cell.set_style(
+                        Style::default()
+                            .fg(palette.accent)
+                            .add_modifier(Modifier::BOLD),
+                    );
+                } else {
+                    cell.set_symbol("─");
+                    cell.set_style(Style::default().fg(palette.primary));
+                }
+            }
+        }
     }
 
     /// Whether the cursor a frame shows is the session grid's, the one a focused terminal

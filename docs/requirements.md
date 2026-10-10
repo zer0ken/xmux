@@ -101,8 +101,8 @@ against, naming no source file, function, or test.
   unreachable, and inventory failure, where Enter or a click selects the machine and
   opens its login pane.
 - **FR-B25** - The nav attaches on the left, top, right, or bottom of the terminal view,
-  with `prefix p` cycling the side clockwise and the layout inside the nav identical at
-  every side.
+  or floats as a box over the terminal's empty space, with `prefix p` cycling the side
+  clockwise and the layout inside the nav identical at every side.
 - **FR-B26** - A machine ssh refuses for a reason a login can fix is blocked: it shows `?`
   and the login pane, with the failing input field marked `✗`.
 - **FR-B27** - The login pane takes the address, port, username, and an optional masked

@@ -314,6 +314,14 @@ impl Grid {
             .all(|l| l.is_empty() || ignored(l))
     }
 
+    /// Whether the cell at `(row, col)` carries no visible glyph. The floating nav scans
+    /// these to sit over the terminal's empty space.
+    pub fn cell_blank(&self, row: u16, col: u16) -> bool {
+        self.visible()
+            .cell(row, col)
+            .is_none_or(|c| !c.has_contents())
+    }
+
     /// A cheap, stable hash of the visible cell contents. Changes if and only if the
     /// rendered text changes - used to detect whether a display transition actually
     /// produced a different screen, so a `display_show decision=switch` not followed

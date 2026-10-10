@@ -184,7 +184,7 @@ auto-hide-nav = false                 # initial auto-hide-nav state
 renumbering = true                     # keep card numbers in sorted nav order
 notifications = true                  # show results as toasts (the prefix m history keeps them either way)
 braille-animation = true             # show the central Braille X on scanning, machine, and host screens
-nav-position = "left"                 # the nav's default side (left|top|right|bottom)
+nav-position = "left"                 # the nav's default side (left|top|right|bottom|floating)
 max-fps = 30                          # maximum xmux draws per second (10 to 120)
 nav-active-border-style = "green"   # focused nav-border colour
 selection-style = ""                  # selection background; empty: the theme's accent
@@ -240,11 +240,12 @@ login. Turning off neighbour discovery removes machines offered only by that
 provider; explicit entries and other enabled providers still apply.
 
 - **Nav position.** The nav rides on one of the four sides of the terminal view
-  (a left or right column, a top or bottom horizontal nav). `[ui] nav-position` picks the
-  default, and the nav never moves on its own. `prefix p` places it one side
-  clockwise (left → top → right → bottom → default) and remembers the choice in
-  `~/.xmux/nav_position`, which wins over the setting until the key cycles back
-  to the default.
+  (a left or right column, a top or bottom horizontal nav) or floats as a box over the
+  terminal's empty space. `[ui] nav-position` picks the default, and the nav never moves
+  on its own. `prefix p` places it one side clockwise
+  (left → top → right → bottom → floating) and remembers the choice in
+  `~/.xmux/nav_position`, which wins over the default. The cycle never returns to the
+  default; the default applies only on a first boot before the first cycle.
 - **Machines.** Machines you write down scan first: `[[hosts]]` and `[[wsl]]` entries
   lead, then discovery adds `~/.ssh/config` aliases and neighbors. The config file
   augments discovery and never replaces it.

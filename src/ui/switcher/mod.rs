@@ -213,6 +213,21 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
         NavPosition::Left | NavPosition::Right if nav.collapsed => {
             collapsed_column(area, layout, nav_width, nav.position)
         }
+        NavPosition::Floating => {
+            // The terminal keeps the whole area and the nav floats over it as a box,
+            // placed by the runtime over the terminal's empty space. Its prefix hint
+            // rests on the box border's top-left.
+            let nav = nav
+                .floating
+                .unwrap_or_else(|| default_floating_box(area, nav_width));
+            Regions {
+                layout,
+                nav,
+                nav_border: Rect::default(),
+                terminal: area,
+                prefix_hint: floating_prefix_hint(nav),
+            }
+        }
         NavPosition::Left => {
             let c = Layout::horizontal([
                 Constraint::Length(nav_width),
@@ -291,6 +306,102 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
             }
         }
     }
+}
+
+/// The floating nav's box when the runtime has not placed it yet: the top-right corner,
+/// as wide as the nav and half the area tall.
+pub(crate) fn default_floating_box(area: Rect, nav_width: u16) -> Rect {
+    let w = nav_width.min(area.width);
+    let h = (area.height / 2).max(3).min(area.height);
+    Rect::new(area.right().saturating_sub(w), area.y, w, h)
+}
+
+/// The farthest the floating nav's right edge may stand off the terminal's right wall.
+/// The box sits flush against the wall or up to this many cells left of it.
+pub const FLOATING_MARGIN: u16 = 10;
+
+/// Where the floating nav's box sits: its right edge within [`FLOATING_MARGIN`] of the
+/// terminal's right wall, over the strip whose tallest all-blank vertical run fits the
+/// box and is largest, with the box centered in that run. Falls back to the top-right
+/// corner when no all-blank run fits the box. `blank` reports whether a cell carries no
+/// glyph.
+pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> bool) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    let right = area.right();
+    let x_lo = right
+        .saturating_sub(FLOATING_MARGIN)
+        .saturating_sub(w)
+        .max(area.x);
+    let mut best: Option<(u16, u16, u16)> = None; // (run_height, x, y)
+    let mut x = right.saturating_sub(w);
+    loop {
+        if let Some((y, run)) = tallest_blank_run(area, x, w, &blank) {
+            if run >= h && best.is_none_or(|(bh, _, _)| run > bh) {
+                best = Some((run, x, y + (run - h) / 2));
+            }
+        }
+        if x == x_lo {
+            break;
+        }
+        x = x.saturating_sub(1);
+        if x < x_lo {
+            break;
+        }
+    }
+    match best {
+        Some((_, x, y)) => Rect::new(x, y, w, h),
+        None => default_floating_box(area, w),
+    }
+}
+
+/// The tallest vertical run of all-blank cells in the `w`-wide strip starting at column
+/// `x`, as `(row, height)`. `None` when no cell in the strip is blank.
+fn tallest_blank_run(
+    area: Rect,
+    x: u16,
+    w: u16,
+    blank: &impl Fn(u16, u16) -> bool,
+) -> Option<(u16, u16)> {
+    let mut best: Option<(u16, u16)> = None;
+    let mut run_y: Option<u16> = None;
+    let mut run_h = 0u16;
+    let close = |run_y: &mut Option<u16>, run_h: &mut u16, best: &mut Option<(u16, u16)>| {
+        if let Some(sy) = run_y.take() {
+            if best.is_none_or(|(_, bh)| *run_h > bh) {
+                *best = Some((sy, *run_h));
+            }
+            *run_h = 0;
+        }
+    };
+    for y in area.y..area.bottom() {
+        let all_blank = (x..x + w).all(|cx| blank(cx, y));
+        if all_blank {
+            if run_y.is_none() {
+                run_y = Some(y);
+                run_h = 1;
+            } else {
+                run_h += 1;
+            }
+        } else {
+            close(&mut run_y, &mut run_h, &mut best);
+        }
+    }
+    close(&mut run_y, &mut run_h, &mut best);
+    best
+}
+
+/// The prefix hint's row on a floating nav's box: the box's top border, on its left.
+fn floating_prefix_hint(box_rect: Rect) -> Rect {
+    if box_rect.height == 0 {
+        return Rect::default();
+    }
+    Rect::new(
+        box_rect.x + 1,
+        box_rect.y,
+        box_rect.width.saturating_sub(2),
+        1,
+    )
 }
 
 /// The smallest window xmux draws its split view in; a smaller one shows the required

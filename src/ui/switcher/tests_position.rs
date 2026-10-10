@@ -425,6 +425,7 @@ fn pl5_a_collapsed_nav_is_the_seam_line_or_a_prefix_wide_column() {
         let shot = Shot::new(two_groups(), collapsed_at(position), false);
         let r = shot.plan.regions;
         match position {
+            NavPosition::Floating => unreachable!(),
             NavPosition::Top | NavPosition::Bottom => {
                 assert_eq!(
                     r.terminal.height,
@@ -730,6 +731,7 @@ fn the_prefix_key_list_opens_toward_the_terminal_and_the_indicator_keeps_the_pre
         let (list, _) = shot.plan.key_list.clone().expect("the key list is open");
         // At the card flow's start, against the nav border on the terminal view's side.
         match position {
+            NavPosition::Floating => unreachable!(),
             NavPosition::Left => {
                 assert_eq!(list.x, r.terminal.x, "{position:?}: {list:?}");
                 assert_eq!(list.y, r.terminal.y, "{position:?}: {list:?}");
@@ -860,6 +862,7 @@ fn every_prefix_surface_opens_where_the_key_list_opens() {
             assert!(!pop.is_empty(), "{position:?} #{n}");
             assert!(pop.right() <= area.right() && pop.bottom() <= area.bottom());
             match position {
+                Some(NavPosition::Floating) => unreachable!(),
                 Some(NavPosition::Left) => {
                     assert_eq!((pop.x, pop.y), (r.terminal.x, r.terminal.y), "#{n}")
                 }
@@ -968,4 +971,85 @@ fn pl5_b_a_collapsed_column_is_the_prefix_with_the_border_on_its_edge() {
             );
         }
     }
+}
+
+#[test]
+fn floating_regions_keep_the_terminal_whole_and_float_the_box() {
+    let box_rect = Rect::new(70, 2, SIDE_W, 10);
+    let nav = NavSize::visible(SIDE_W)
+        .with_position(NavPosition::Floating)
+        .with_floating(Some(box_rect));
+    let regions = compute_regions(Rect::new(0, 0, W, H), nav);
+    assert_eq!(
+        regions.terminal,
+        Rect::new(0, 0, W, H),
+        "the terminal owns the whole area"
+    );
+    assert_eq!(regions.nav, box_rect, "the nav floats as a box over it");
+    assert_eq!(regions.nav_border, Rect::default(), "no split border");
+    assert_eq!(
+        regions.prefix_hint,
+        Rect::new(box_rect.x + 1, box_rect.y, box_rect.width - 2, 1),
+        "the prefix hint rests on the box top border"
+    );
+}
+
+#[test]
+fn floating_nav_box_lands_over_the_widest_empty_strip_near_the_right_wall() {
+    let area = Rect::new(0, 0, 100, 30);
+    // Text everywhere except a blank band in rows 10..24 from column 60 on.
+    let text = |x: u16, y: u16| !((10..24).contains(&y) && x >= 60);
+    let rect = floating_nav_box(area, 30, 8, |x, y| !text(x, y));
+    assert!(
+        rect.right()
+            >= area
+                .right()
+                .saturating_sub(crate::ui::switcher::FLOATING_MARGIN)
+            && rect.right() <= area.right(),
+        "the right edge stays within the wall band: {rect:?}"
+    );
+    assert!(
+        rect.y >= 10 && rect.bottom() <= 24,
+        "the box sits in the blank band: {rect:?}"
+    );
+}
+
+#[test]
+fn a_floating_nav_renders_a_rounded_box_with_the_prefix_hint() {
+    let box_rect = Rect::new(60, 2, SIDE_W, 10);
+    let nav = NavSize::visible(SIDE_W)
+        .with_position(NavPosition::Floating)
+        .with_floating(Some(box_rect));
+    // terminal_focused=false: the box is expanded (shows its cards), not compact.
+    let shot = Shot::new(two_groups(), nav, false);
+    assert_eq!(shot.plan.regions.nav, box_rect);
+    let top: String = (box_rect.x..box_rect.right())
+        .map(|x| shot.buf[(x, box_rect.y)].symbol().to_string())
+        .collect();
+    assert!(
+        top.contains('╭') && top.contains('╮'),
+        "rounded border: {top:?}"
+    );
+    assert!(top.starts_with('╭'), "rounded border: {top:?}");
+    assert!(
+        top.contains("C-g"),
+        "the prefix hint leads the top border: {top:?}"
+    );
+    // The compact box shows only the hint, no card content.
+    let compact = NavSize::visible(SIDE_W)
+        .with_position(NavPosition::Floating)
+        .with_floating(Some(Rect::new(60, 2, SIDE_W, 3)));
+    let mut shot = Shot::new(two_groups(), compact, true);
+    shot.state
+        .focus
+        .set_view_focus(crate::state::ViewFocus::Terminal);
+    shot.draw(true);
+    assert!(shot.plan.floating_compact);
+    let interior: String = (box_rect.x + 1..box_rect.right() - 1)
+        .map(|x| shot.buf[(x, box_rect.y + 1)].symbol().to_string())
+        .collect();
+    assert!(
+        interior.trim().is_empty(),
+        "a compact box carries no cards: {interior:?}"
+    );
 }

@@ -826,6 +826,9 @@ impl Runtime {
             applied_nav_collapsed: !nav_collapsed,
             auto_hide_nav,
             nav_was_focused: true,
+            floating_rect: None,
+            floating_lock_until: None,
+            floating_drag: None,
             mouse_state: MouseState::default(),
             connected: HashSet::new(),
             detecting: HashSet::new(),
@@ -913,6 +916,80 @@ impl Runtime {
     /// miss another.
     pub(super) fn nav_size(&self) -> crate::ui::switcher::NavSize {
         self.model.nav_size()
+    }
+
+    /// The floating nav's compact height: a rounded border around just the prefix hint.
+    const FLOATING_COMPACT_HEIGHT: u16 = 3;
+
+    /// Recomputes and stores the floating nav's box each frame: its size from the
+    /// expanded / compact state and the previous content height, its position from the
+    /// terminal's empty space, or held where a recent drag locked it. Returns the nav
+    /// size the frame should use.
+    fn place_floating_nav(
+        &mut self,
+        area: ratatui::layout::Rect,
+        grid: Option<&crate::display::grid::Grid>,
+        nav: crate::ui::switcher::NavSize,
+    ) -> crate::ui::switcher::NavSize {
+        use crate::ui::switcher::{floating_nav_box, NavPosition};
+        if nav.position != NavPosition::Floating {
+            self.model.floating_rect = None;
+            return nav;
+        }
+        let dragging = self.model.floating_drag.is_some();
+        let locked = self
+            .model
+            .floating_lock_until
+            .is_some_and(|until| std::time::Instant::now() < until);
+        let rect = if dragging || locked {
+            self.model
+                .floating_rect
+                .unwrap_or_else(|| crate::ui::switcher::default_floating_box(area, nav.width))
+        } else {
+            self.model.floating_lock_until = None;
+            let expanded =
+                !self.model.state.focus.is_terminal_focused() || self.model.state.chrome.armed;
+            let h = if expanded {
+                self.floating_expanded_height(area)
+            } else {
+                Self::FLOATING_COMPACT_HEIGHT
+            };
+            let w = nav.width.max(1);
+            match grid {
+                Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
+                None => crate::ui::switcher::default_floating_box(area, w),
+            }
+        };
+        self.model.floating_rect = Some(rect);
+        self.model.nav_size()
+    }
+
+    /// The floating nav's expanded height: the card content's height from the previous
+    /// frame, capped to the terminal.
+    fn floating_expanded_height(&self, area: ratatui::layout::Rect) -> u16 {
+        let plan = &self.model.render_plan;
+        let content = plan
+            .nav_cells
+            .iter()
+            .map(|(_, r)| r.bottom())
+            .max()
+            .unwrap_or(plan.nav_inner.y);
+        content
+            .saturating_sub(plan.nav_inner.y)
+            .max(Self::FLOATING_COMPACT_HEIGHT)
+            .min(area.height.saturating_sub(2))
+            .max(Self::FLOATING_COMPACT_HEIGHT)
+    }
+
+    /// The fraction (0..100) of the floating nav's post-drag lock still ahead, for the
+    /// countdown on its bottom border. `None` while no lock is held or it has expired.
+    fn floating_lock_left(&self) -> Option<u16> {
+        self.model.floating_lock_until.and_then(|until| {
+            let now = std::time::Instant::now();
+            (now < until).then(|| {
+                (until.duration_since(now).as_secs_f32() / 60.0 * 100.0).clamp(0.0, 100.0) as u16
+            })
+        })
     }
 
     /// Generic over the backend so the headless tests drive the same loop-top reconcile
@@ -1107,9 +1184,11 @@ impl Runtime {
                     // of `self` (the fingerprint block's borrows have ended above).
                     let drawn = term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        let plan = self
-                            .model
-                            .prepare_render_plan(f.area(), nav, &previous_plan);
+                        let nav = self.place_floating_nav(f.area(), guard.as_deref(), nav);
+                        let mut plan =
+                            self.model
+                                .prepare_render_plan(f.area(), nav, &previous_plan);
+                        plan.floating_lock_left = self.floating_lock_left();
                         let switcher = &self.model.switcher;
                         let state = &self.model.state;
                         switcher.render(f, guard.as_deref(), terminal_focused, state, &plan);
@@ -1125,9 +1204,11 @@ impl Runtime {
                     Self::sync_kitty_images(&mut self.kitty_images, None);
                     let drawn = term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        let plan = self
-                            .model
-                            .prepare_render_plan(f.area(), nav, &previous_plan);
+                        let nav = self.place_floating_nav(f.area(), None, nav);
+                        let mut plan =
+                            self.model
+                                .prepare_render_plan(f.area(), nav, &previous_plan);
+                        plan.floating_lock_left = self.floating_lock_left();
                         let switcher = &self.model.switcher;
                         let state = &self.model.state;
                         switcher.render(f, None, terminal_focused, state, &plan);

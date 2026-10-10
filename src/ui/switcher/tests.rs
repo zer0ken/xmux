@@ -6395,6 +6395,7 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
             height: 0,
             position: NavPosition::Left,
             collapsed: true,
+            floating: None,
         },
     );
     assert_eq!(width, 3, "exactly the prefix wide");
@@ -6415,6 +6416,7 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
             height: 0,
             position: NavPosition::Right,
             collapsed: true,
+            floating: None,
         },
     );
     assert_eq!(right.nav, Rect::default());

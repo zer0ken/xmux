@@ -81,10 +81,11 @@ Shift+Enter, when the terminal running xmux has the protocol too.
 ## Nav Placement
 
 The nav rides on one of four sides of the terminal view: a left or right column, or a
-top or bottom horizontal nav. `[ui] nav-position` (`left`, `top`, `right`, or `bottom`; an unknown
+top or bottom horizontal nav, or floats as a box over the terminal's empty space.
+`[ui] nav-position` (`left`, `top`, `right`, `bottom`, or `floating`; an unknown
 word falls back to `left`) names the default, and `prefix p` pins the next side
-clockwise in `~/.xmux/nav_position` until the key cycles back to the default. The nav
-never moves on its own.
+clockwise in `~/.xmux/nav_position`. The cycle never returns to the default; the default
+applies only on a first boot before the first cycle. The nav never moves on its own.
 
 The layout inside the nav is identical at every side: a right column is the same list
 as a left one, and a bottom horizontal nav is the same down-then-right flow as a top one, a whole

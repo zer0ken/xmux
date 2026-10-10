@@ -294,6 +294,43 @@ impl Runtime {
             dirty = true;
             return dirty;
         }
+        // The floating nav box drags to move: a left press on its box begins it, motion
+        // moves the box under the pointer, and release holds the position for a minute
+        // before it returns to the terminal's empty space.
+        if self.model.nav_position == crate::ui::switcher::NavPosition::Floating {
+            if let Some((gc, gr, ox, oy)) = self.model.floating_drag {
+                if !ev.pressed {
+                    self.model.floating_drag = None;
+                    self.model.floating_lock_until =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+                    dirty = true;
+                } else if !is_wheel {
+                    let dx = i32::from(col0) - i32::from(gc);
+                    let dy = i32::from(row0) - i32::from(gr);
+                    if let Some(rect) = self.model.floating_rect {
+                        let area = self.model.render_plan.screen_area;
+                        let x = (i32::from(ox) + dx)
+                            .clamp(0, i32::from(area.width.saturating_sub(rect.width)))
+                            as u16;
+                        let y = (i32::from(oy) + dy)
+                            .clamp(0, i32::from(area.height.saturating_sub(rect.height)))
+                            as u16;
+                        self.model.floating_rect =
+                            Some(ratatui::layout::Rect::new(x, y, rect.width, rect.height));
+                    }
+                    dirty = true;
+                }
+                return dirty;
+            }
+            if is_left_press {
+                let box_rect = self.model.floating_rect.unwrap_or_default();
+                if box_rect.contains(ratatui::layout::Position { x: col0, y: row0 }) {
+                    self.model.floating_drag = Some((col0, row0, box_rect.x, box_rect.y));
+                    dirty = true;
+                    return dirty;
+                }
+            }
+        }
         if is_left_press {
             let effects = update(
                 &mut self.model,
