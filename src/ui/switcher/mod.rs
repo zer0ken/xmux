@@ -152,6 +152,7 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
         };
     }
     match nav.position {
+        NavPosition::Floating => floating_regions(area, nav, nav_width),
         NavPosition::Left => {
             let c = Layout::horizontal([
                 Constraint::Length(nav_width),
@@ -222,6 +223,112 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
             }
         }
     }
+}
+
+/// The floating nav's box when the runtime has not placed it yet: the top-right corner,
+/// as wide as the nav and half the area tall.
+pub(crate) fn default_floating_box(area: Rect, nav_width: u16) -> Rect {
+    let w = nav_width.min(area.width);
+    let h = (area.height / 2).max(3).min(area.height);
+    Rect::new(area.right().saturating_sub(w), area.y, w, h)
+}
+
+/// The regions of a floating nav: the terminal keeps the whole area and the nav floats
+/// over it as a content-fit box, placed by the runtime over the terminal's empty space.
+/// The box's border is its region; its interior holds the cards exactly as a right nav's
+/// column does, and the prefix hint rests on the box's top border. The box ignores the
+/// width reconcile entirely (auto-hide and the resize keys have no target here), so this
+/// arm runs before the hidden-sentinel arm.
+fn floating_regions(area: Rect, nav: NavSize, nav_width: u16) -> Regions {
+    let outer = nav
+        .floating
+        .unwrap_or_else(|| default_floating_box(area, nav_width.max(1)));
+    let inner = Rect::new(
+        outer.x + 1,
+        outer.y + 1,
+        outer.width.saturating_sub(2),
+        outer.height.saturating_sub(2),
+    );
+    Regions {
+        layout: nav.position.layout(),
+        nav: inner,
+        nav_border: outer,
+        terminal: area,
+        prefix_hint: Rect::new(outer.x + 1, outer.y, outer.width.saturating_sub(2), 1),
+    }
+}
+
+/// The farthest the floating nav's right edge may stand off the terminal's right wall.
+/// The box sits flush against the wall or up to this many cells left of it.
+pub const FLOATING_MARGIN: u16 = 5;
+
+/// Where the floating nav's box sits: its right edge within [`FLOATING_MARGIN`] of the
+/// terminal's right wall. Over the strips whose tallest all-blank vertical run fits the
+/// box whole, the topmost such run wins, the box at its top. When no run fits the box,
+/// the widest run wins, the box at its top. With no all-blank run at all the box holds
+/// at the top-right corner. `blank` reports whether a cell carries no glyph.
+pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> bool) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    let right = area.right();
+    let x_lo = right
+        .saturating_sub(FLOATING_MARGIN)
+        .saturating_sub(w)
+        .max(area.x);
+    let mut fitting: Option<(u16, u16)> = None; // (x, y)
+    let mut widest: Option<(u16, u16, u16)> = None; // (run_height, y, x)
+    let mut x = right.saturating_sub(w);
+    loop {
+        for (y, run) in blank_runs(area, x, w, &blank) {
+            if run >= h {
+                if fitting.is_none_or(|(_, fy)| y < fy) {
+                    fitting = Some((x, y));
+                }
+            } else if widest.is_none_or(|(br, by, _)| run > br || (run == br && y < by)) {
+                widest = Some((run, y, x));
+            }
+        }
+        if x == x_lo {
+            break;
+        }
+        x = x.saturating_sub(1);
+        if x < x_lo {
+            break;
+        }
+    }
+    match fitting {
+        Some((x, y)) => Rect::new(x, y, w, h),
+        None => match widest {
+            // No run fits the box whole: the top of the widest blank strip.
+            Some((_, y, x)) => Rect::new(x, y, w, h),
+            // No all-blank run at all: hold it at the top-right corner.
+            None => Rect::new(area.right().saturating_sub(w), area.y, w, h),
+        },
+    }
+}
+
+/// The tallest vertical run of all-blank cells in the `w`-wide strip starting at column
+/// `x`, as `(row, height)`. `None` when no cell in the strip is blank.
+/// The all-blank vertical runs of the column strip `x..x+w`, each as `(start_y,
+/// height)` in row order. A wide char's right half is not blank (see [`Grid`]'s
+/// `cell_blank`), so a run never slices a glyph in two.
+fn blank_runs(area: Rect, x: u16, w: u16, blank: &impl Fn(u16, u16) -> bool) -> Vec<(u16, u16)> {
+    let mut runs = Vec::new();
+    let mut run_y: Option<u16> = None;
+    let mut run_h = 0u16;
+    for y in area.y..area.bottom() {
+        if (x..x + w).all(|cx| blank(cx, y)) {
+            run_h += 1;
+            run_y.get_or_insert(y);
+        } else if let Some(sy) = run_y.take() {
+            runs.push((sy, run_h));
+            run_h = 0;
+        }
+    }
+    if let Some(sy) = run_y.take() {
+        runs.push((sy, run_h));
+    }
+    runs
 }
 
 /// The smallest window xmux draws its split view in; a smaller one shows the required
@@ -1135,6 +1242,14 @@ impl Switcher {
         } else {
             self.rows.len()
         }
+    }
+
+    /// The rows the nav paints plus the band rule rows between the bands: the floating
+    /// nav's content height, from what the paint actually draws, so its box wraps every
+    /// painted row and no card drops and no blank row is left inside. Follows the band
+    /// hiding: the band's hide shows fewer rows and the box shrinks with them.
+    pub(crate) fn nav_content_rows(&self) -> u16 {
+        self.painted_rows() as u16 + self.painted_boundaries().len() as u16
     }
 
     /// The band boundary as the paint sees it: none while the host band is hidden, since

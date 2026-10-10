@@ -313,6 +313,7 @@ mod tests {
             NavPosition::Right => Rect::new(0, 0, 69, 30),
             NavPosition::Top => Rect::new(0, 11, 100, 19),
             NavPosition::Bottom => Rect::new(0, 0, 100, 19),
+            NavPosition::Floating => Rect::new(0, 0, 100, 30),
         }
     }
 

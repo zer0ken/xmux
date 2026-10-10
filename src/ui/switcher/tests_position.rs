@@ -660,6 +660,7 @@ fn the_prefix_key_list_opens_toward_the_terminal_and_the_indicator_keeps_the_pre
         let (list, _) = shot.plan.key_list.clone().expect("the key list is open");
         // At the card flow's start, against the nav border on the terminal view's side.
         match position {
+            NavPosition::Floating => unreachable!(),
             NavPosition::Left => {
                 assert_eq!(list.x, r.terminal.x, "{position:?}: {list:?}");
                 assert_eq!(list.y, r.terminal.y, "{position:?}: {list:?}");
@@ -790,6 +791,7 @@ fn every_prefix_surface_opens_where_the_key_list_opens() {
             assert!(!pop.is_empty(), "{position:?} #{n}");
             assert!(pop.right() <= area.right() && pop.bottom() <= area.bottom());
             match position {
+                Some(NavPosition::Floating) => unreachable!(),
                 Some(NavPosition::Left) => {
                     assert_eq!((pop.x, pop.y), (r.terminal.x, r.terminal.y), "#{n}")
                 }

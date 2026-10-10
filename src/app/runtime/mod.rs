@@ -1722,6 +1722,10 @@ struct Runtime {
     term_input: crate::display::input::TermInput,
     nav_decoder: crate::display::decode::KeyDecoder,
     paste: crate::display::paste::PasteSplitter,
+    /// When the user last dropped a drag of the floating nav's box: the auto-relocation
+    /// holds for 10 seconds from here, then the position is forgotten and the scan
+    /// resumes. `None` means no drag holds the box.
+    floating_frozen_at: Option<std::time::Instant>,
     /// Whether xmux's window holds the focus, as its terminal last reported.
     window_focused: bool,
     /// The attachment last told it holds the focus. See [`Runtime::sync_child_focus`].

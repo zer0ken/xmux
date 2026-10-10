@@ -332,7 +332,7 @@ pub(crate) fn place(room: Rect, position: NavPosition, nav_hidden: bool, size: (
     } else {
         match position {
             NavPosition::Left | NavPosition::Top => (left, top),
-            NavPosition::Right => (right, top),
+            NavPosition::Right | NavPosition::Floating => (right, top),
             NavPosition::Bottom => (left, bottom),
         }
     };
