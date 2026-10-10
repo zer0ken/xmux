@@ -941,9 +941,24 @@ impl Runtime {
             let w = self.floating_box_width(area, nav);
             let h = self.floating_box_height(area).max(1);
             self.model.switcher.reset_floating_offset();
-            let rect = match grid {
-                Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
-                None => ratatui::layout::Rect::new(area.right().saturating_sub(w), area.y, w, h),
+            // A non-session screen (machine, host, login, ...) is drawn straight to the
+            // frame, not from the displayed session's grid, so the box scans nothing it
+            // can see; pin it to the top-right corner instead of leaving it over a stale
+            // spot on the underlying grid.
+            let panel = self
+                .model
+                .switcher
+                .current_view_screen(&self.model.state)
+                .is_some();
+            let rect = if panel {
+                ratatui::layout::Rect::new(area.right().saturating_sub(w), area.y, w, h)
+            } else {
+                match grid {
+                    Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
+                    None => {
+                        ratatui::layout::Rect::new(area.right().saturating_sub(w), area.y, w, h)
+                    }
+                }
             };
             self.model.floating_rect = Some(rect);
         }
