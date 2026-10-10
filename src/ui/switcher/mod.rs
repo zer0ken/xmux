@@ -264,11 +264,11 @@ pub const FLOATING_MARGIN: u16 = 5;
 
 /// Where the floating nav's box sits: its right edge within [`FLOATING_MARGIN`] of the
 /// terminal's right wall. One pass over the wall-margin spots, rows before columns,
-/// keeps the spot whose window wins the most completely empty rows, then the fewest
-/// glyphs; the scan's top-down, right-to-left order breaks an exact tie by the topmost,
-/// then the wall-most, spot. A window with no glyph at all (every row completely empty)
-/// takes the box at once. With no wall-margin spot at all it holds at the top-right
-/// corner. `blank` reports whether a cell carries no glyph.
+/// keeps the spot whose window wins the most completely empty rows, then the most empty
+/// cells (the fewest glyphs); the scan's top-down, right-to-left order breaks an exact
+/// tie by the topmost, then the wall-most, spot. A window with no glyph at all (every
+/// row completely empty) takes the box at once. With no wall-margin spot at all it
+/// holds at the top-right corner. `blank` reports whether a cell carries no glyph.
 pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> bool) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
@@ -279,10 +279,11 @@ pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> 
         .max(area.x);
     let x_last = right.saturating_sub(w);
     // One pass over the wall-margin spots, rows before columns. The best spot's window
-    // wins the most completely empty rows, then the fewest glyphs; the scan's top-down,
-    // right-to-left order breaks an exact tie by the topmost, then the wall-most, spot.
-    // A window with no glyph at all (every row empty) takes the box at once.
-    let mut best: Option<(u16, u16, u16, u16)> = None; // (empty_rows, glyphs, y, x)
+    // wins the most completely empty rows, then the most empty cells; the scan's
+    // top-down, right-to-left order breaks an exact tie by the topmost, then the
+    // wall-most, spot. A window with no glyph at all (every row empty) takes the box at
+    // once.
+    let mut best: Option<(u16, u32, u16, u16)> = None; // (empty_rows, empty_cells, y, x)
     for y in area.y..area.bottom().saturating_sub(h).saturating_add(1) {
         for x in (x_lo..=x_last).rev() {
             let mut glyphs = 0u16;
@@ -302,10 +303,12 @@ pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> 
             if glyphs == 0 {
                 return Rect::new(x, y, w, h);
             }
-            if best
-                .is_none_or(|(be, bg, _, _)| empty_rows > be || (empty_rows == be && glyphs < bg))
-            {
-                best = Some((empty_rows, glyphs, y, x));
+            // The window's own blank cells: its w×h area minus the glyphs inside it.
+            let empty_cells = (w as u32) * (h as u32) - (glyphs as u32);
+            if best.is_none_or(|(be, bc, _, _)| {
+                empty_rows > be || (empty_rows == be && empty_cells > bc)
+            }) {
+                best = Some((empty_rows, empty_cells, y, x));
             }
         }
     }
