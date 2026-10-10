@@ -84,8 +84,22 @@ The nav rides on one of four sides of the terminal view: a left or right column,
 top or bottom horizontal nav, or floats as a box over the terminal's empty space.
 `[ui] nav-position` (`left`, `top`, `right`, `bottom`, or `floating`; an unknown
 word falls back to `left`) names the default, and `prefix p` pins the next side
-clockwise in `~/.xmux/nav_position`. The cycle never returns to the default; the default
-applies only on a first boot before the first cycle. The nav never moves on its own.
+clockwise in `~/.xmux/nav_position`. The cycle unpins at `floating`, the last position:
+the default applies again, and the next step re-pins from it. The nav never moves on
+its own.
+
+The floating nav is a content-fit box over the full-screen terminal: as wide as the
+widest card line plus its border, as tall as the card list plus its border, with the
+prefix hint on its top border's left. It starts at the top-right corner and moves in
+real time to the widest area no terminal text covers, its right border never more than
+five cells from the window's right wall; when no empty area fits the box it holds at the
+top-right corner. Dragging it from anywhere on the box moves it anywhere in the window,
+the way the prefix key list and a modal popup drag. A drop holds the position for ten
+seconds, then the position is forgotten and the scan resumes. While the nav view holds
+the focus the box docks: it behaves exactly as a right nav does, the terminal view
+keeping the remainder, and the focus's return to the terminal view undocks it. A click
+on the box routes as a nav click: with the terminal view focused it docks the nav, with
+the nav focused it selects and executes the card under it.
 
 The layout inside the nav is identical at every side: a right column is the same list
 as a left one, and a bottom horizontal nav is the same down-then-right flow as a top one, a whole

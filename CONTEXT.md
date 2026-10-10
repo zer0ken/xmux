@@ -64,8 +64,13 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   routing.
 - **split view** - the whole two-region layout.
 - **navigation view (nav)** - the region holding the cards, attached as a vertical nav
-  (a left or right column) or a horizontal nav (a top or bottom row). Never the
+  (a left or right column) or a horizontal nav (a top or bottom row), or floating as a
+  content-fit box over the terminal view. Never the
   "sidebar" or the "tree".
+- **floating nav** - the nav floating as a content-fit box over the full-screen
+  terminal view, placed over the widest text-free area near the right wall, draggable,
+  docked as a right nav while the nav view holds focus. The attachment position
+  `floating`.
 - **terminal view** - the other region: the selected session's grid or a view screen.
 - **`ViewFocus`** - which region holds focus, the nav or the terminal view.
 - **nav border** - the line between the nav and the terminal view. Its colour states

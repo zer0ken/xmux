@@ -2146,10 +2146,30 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::EndPopupDrag => {
-            model
+            // A click on the floating nav's box routes as a nav click: the terminal
+            // view's focus switches into the nav (docking), the nav's focus selects and
+            // executes the card under it. A click on the key list or a modal popup
+            // executes its list choice as before.
+            match model
                 .switcher
-                .end_popup_drag_in_plan(&model.render_plan, &mut model.state);
-            execute_list_choice(model)
+                .end_popup_drag_in_plan(&model.render_plan, &mut model.state)
+            {
+                Some((crate::ui::modal::PopupSurface::FloatingNav, col, row)) => {
+                    if model.state.focus.is_terminal_focused() {
+                        update(model, Msg::Action(crate::model::Action::FocusToggle))
+                    } else {
+                        update(
+                            model,
+                            Msg::MouseSelect {
+                                col,
+                                row,
+                                execute: true,
+                            },
+                        )
+                    }
+                }
+                _ => execute_list_choice(model),
+            }
         }
         Msg::AbandonPopupDrag => {
             model.switcher.end_popup_drag();

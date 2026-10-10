@@ -87,6 +87,7 @@ pub fn step_nav_position(
     effective: NavPosition,
 ) -> Option<NavPosition> {
     match pinned {
+        Some(NavPosition::Floating) => None,
         Some(position) => Some(position.clockwise()),
         None => Some(effective.clockwise()),
     }
@@ -217,12 +218,17 @@ mod tests {
         assert_eq!(
             step_nav_position(Some(NavPosition::Bottom), NavPosition::Right),
             Some(NavPosition::Floating),
-            "the fifth step goes floating, never unpinning"
+            "the fifth step goes floating"
         );
         assert_eq!(
             step_nav_position(Some(NavPosition::Floating), NavPosition::Right),
+            None,
+            "the sixth step unpins at floating, the last position"
+        );
+        assert_eq!(
+            step_nav_position(None, NavPosition::Floating),
             Some(NavPosition::Left),
-            "the floating step wraps back to left"
+            "a step after the unpin re-pins from the effective position"
         );
     }
 

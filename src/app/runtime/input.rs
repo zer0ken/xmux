@@ -171,6 +171,23 @@ impl Runtime {
             dirty = true;
         }
         let in_mux = to_grid_local(self.model.render_plan.regions.terminal, ev.col, ev.row);
+        // A pointer over the floating nav's box is over the nav, not the mux: the wheel
+        // scrolls the box's card list in the nav's focus and is inert in the terminal's,
+        // like the side nav. The box's press and release are the popup drag's, handled
+        // below.
+        let in_mux = if self.model.render_plan.nav_position
+            == crate::ui::switcher::NavPosition::Floating
+            && self
+                .model
+                .render_plan
+                .regions
+                .nav_border
+                .contains(ratatui::layout::Position { x: at.x, y: at.y })
+        {
+            None
+        } else {
+            in_mux
+        };
         // A LEFT-button press in the UNFOCUSED view switches focus to that
         // view: focus only, the click is not delivered. Within the focused
         // terminal view, the click forwards.
@@ -191,6 +208,7 @@ impl Runtime {
         let regions = self.model.render_plan.regions;
         let on_nav_border = !self.model.render_plan.nav_hidden
             && !self.model.render_plan.nav_collapsed
+            && self.model.render_plan.nav_position != crate::ui::switcher::NavPosition::Floating
             && regions
                 .nav_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
@@ -277,10 +295,22 @@ impl Runtime {
         // the popup item under it as Enter would.
         if self.model.switcher.popup_drag_active() {
             if !ev.pressed {
+                // A dropped drag of the floating nav's box holds its position for 10
+                // seconds from the release, then the forget hands it back to the scan.
+                let floating_dropped =
+                    self.model
+                        .switcher
+                        .popup_drag_of()
+                        .is_some_and(|(surface, moved)| {
+                            surface == crate::ui::modal::PopupSurface::FloatingNav && moved
+                        });
                 let effects = update(&mut self.model, Msg::EndPopupDrag);
                 let (q, w, _) = self.execute_effects(effects);
                 *quit |= q;
                 *width_changed |= w;
+                if floating_dropped {
+                    self.floating_frozen_at = Some(std::time::Instant::now());
+                }
             } else if !is_wheel {
                 let effects = update(
                     &mut self.model,

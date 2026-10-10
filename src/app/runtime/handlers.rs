@@ -864,6 +864,7 @@ impl Runtime {
             term_input,
             nav_decoder,
             paste: Default::default(),
+            floating_frozen_at: None,
             window_focused: true,
             child_focus: None,
             keyboard_pushed: false,
@@ -918,8 +919,10 @@ impl Runtime {
 
     /// Recomputes and stores the floating nav's box each frame: a content-fit box sized
     /// to the nav's card content, placed over the terminal's widest empty strip near the
-    /// right wall. Returns the nav size the frame should use.
-    fn place_floating_nav(
+    /// right wall. A drop of the box's drag holds the position for 10 seconds from the
+    /// release, then the position is forgotten (the drag offset dropped) and the scan
+    /// resumes. Returns the nav size the frame should use.
+    pub(super) fn place_floating_nav(
         &mut self,
         area: ratatui::layout::Rect,
         grid: Option<&crate::display::grid::Grid>,
@@ -930,31 +933,46 @@ impl Runtime {
             self.model.floating_rect = None;
             return nav;
         }
-        let w = nav.width.max(1);
-        let h = self.floating_box_height(area).max(1);
-        let rect = match grid {
-            Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
-            None => crate::ui::switcher::default_floating_box(area, w),
-        };
-        self.model.floating_rect = Some(rect);
+        let frozen = self
+            .floating_frozen_at
+            .is_some_and(|t| t.elapsed() < Self::FLOATING_FREEZE);
+        if !frozen {
+            self.floating_frozen_at = None;
+            self.model.switcher.reset_floating_offset();
+            let w = self.floating_box_width(area);
+            let h = self.floating_box_height(area).max(1);
+            let rect = match grid {
+                Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
+                None => ratatui::layout::Rect::new(area.right().saturating_sub(w), area.y, w, h),
+            };
+            self.model.floating_rect = Some(rect);
+        }
         self.model.nav_size()
+    }
+
+    /// How long a drop of the floating nav's box holds the auto-relocation, from the
+    /// release to the forget.
+    const FLOATING_FREEZE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// The floating nav's box width: the widest natural card line plus its two border
+    /// columns (content-fit), never narrower than the nav width floor. Sized from the
+    /// rows themselves, never from a previous frame, so a long card still widens the box.
+    fn floating_box_width(&self, area: ratatui::layout::Rect) -> u16 {
+        let natural = self.model.switcher.nav_natural_width(&self.model.state) as u32;
+        natural
+            .saturating_add(2)
+            .max(crate::app::model::nav_width_min(&self.env.ui_prefix) as u32)
+            .min(area.width as u32) as u16
     }
 
     /// The floating nav's box height: the nav's card content height from the previous
     /// frame plus its two border rows, so the box wraps the content (content-fit).
     fn floating_box_height(&self, area: ratatui::layout::Rect) -> u16 {
-        let plan = &self.model.render_plan;
-        let content = plan
-            .nav_cells
-            .iter()
-            .map(|(_, r)| r.bottom())
-            .max()
-            .unwrap_or(plan.nav_inner.y);
-        content
-            .saturating_sub(plan.nav_inner.y)
-            .saturating_add(2)
-            .min(area.height)
-            .max(3)
+        // Content-fit: the box is as tall as the nav's card content plus its two border
+        // rows. Sized from the actual content (the painted row count), never from a
+        // previous frame's laid-out cells, so the box always has room for every card.
+        let content = self.model.switcher.nav_content_rows();
+        content.saturating_add(2).min(area.height).max(3)
     }
 
     /// Generic over the backend so the headless tests drive the same loop-top reconcile
@@ -1012,10 +1030,20 @@ impl Runtime {
         );
         // The nav's attachment side is resolved here too, every frame: a pinned side
         // wins, else the [ui] default. The nav never moves on its own.
-        let want_position = self
+        let mut want_position = self
             .model
             .nav_position_pinned
             .unwrap_or(self.model.nav_default);
+        // The floating nav docks for the span of the interaction: while the nav view
+        // holds the focus it behaves exactly as a right nav does (the column takes its
+        // region, the terminal view keeps the remainder, every right-nav key and drag
+        // works), and the focus's return to the terminal view undocks it. The flip is a
+        // position change, so the reconcile below resizes the PTYs and forces a repaint.
+        if want_position == crate::ui::switcher::NavPosition::Floating
+            && self.model.state.focus.view_is_nav()
+        {
+            want_position = crate::ui::switcher::NavPosition::Right;
+        }
         // Resize when ANY dimension of the split moved: the width (focus / hide / prefix
         // Ctrl-←/→ in a column), the horizontal nav height (border drag / resize keys), or the side the
         // nav is attached to. All change the mux terminal region, so all must resize the

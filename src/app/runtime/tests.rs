@@ -2452,6 +2452,7 @@ fn test_rt(env: Env) -> Runtime {
         term_input: crate::display::input::TermInput::new(prefix),
         nav_decoder: crate::display::decode::KeyDecoder::new(),
         paste: Default::default(),
+        floating_frozen_at: None,
         window_focused: true,
         child_focus: None,
         keyboard_pushed: false,
@@ -4481,8 +4482,9 @@ fn prefix_p_cycles_the_nav_position_and_persists_it() {
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
     // `prefix p` moves the pin one step clockwise from the CURRENT effective position
     // and saves it at once, the same moment `prefix t` saves the auto-hide toggle. The
-    // cycle never unpins: a pinned side cycles forward, and `left` is reached again
-    // after `floating`.
+    // cycle unpins at floating, the last position: a pinned side cycles forward, the
+    // unpin hands the position back to the config default, and a step after it re-pins
+    // from the effective position.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_machines(&["local"]));
@@ -4507,16 +4509,96 @@ fn prefix_p_cycles_the_nav_position_and_persists_it() {
         std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
             .unwrap()
             .contains("floating"),
-        "the cycle never unpins; floating persists"
+        "the fifth step pins floating"
+    );
+    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(
+        rt.model.nav_position_pinned, None,
+        "the sixth step unpins at floating, the last position"
     );
     let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
     assert_eq!(
         rt.model.nav_position_pinned,
-        Some(NavPosition::Left),
-        "the sixth step wraps back to left"
+        Some(NavPosition::Top),
+        "a step after the unpin re-pins from the effective position"
     );
     // The cycle itself does not claim the focus flags the outcome carries.
     assert!(!out.focus_terminal && !out.focus_nav && !out.quit);
+}
+
+#[test]
+fn a_click_on_the_floating_box_docks_the_nav() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The floating nav, the terminal view focused: a click on the box (a press and a
+    // release on the same cell, no drag) routes as a nav click, so the focus switches
+    // into the nav and the nav docks as a right nav for the span of the interaction.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    sync_test_render_plan(&mut rt);
+    let box_rect = rt.model.render_plan.regions.nav_border;
+    assert!(
+        box_rect.width >= 3 && box_rect.height >= 3,
+        "the floating box is placed"
+    );
+    let (col, row) = (box_rect.x + 2, box_rect.y + 2);
+    let press = rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}M").as_bytes(),
+        &Selection::default(),
+    );
+    assert!(!press.quit, "a press alone runs nothing");
+    let _ = rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}m").as_bytes(),
+        &Selection::default(),
+    );
+    assert!(
+        rt.model.state.focus.view_is_nav(),
+        "the click docks the nav: the focus switched into it"
+    );
+}
+
+#[test]
+fn a_dropped_floating_drag_holds_the_box_then_the_scan_resumes() {
+    use crate::display::grid::Grid;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // A drop of the floating nav's box holds its position for 10 seconds: a grid whose
+    // empty strip moves does not move the box. After the freeze the forget hands the
+    // position back to the scan, so the box re-places over the new empty strip.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let mut top_text = Grid::new(24, 80);
+    top_text.feed(&b"top half text\n".repeat(10));
+    let mut bottom_bytes = b"\n\n\n\n\n\n\n\n\n\n".to_vec();
+    bottom_bytes.extend(b"bottom text\n".repeat(10));
+    let mut bottom_text = Grid::new(24, 80);
+    bottom_text.feed(&bottom_bytes);
+    let nav = rt.place_floating_nav(area, Some(&top_text), rt.model.nav_size());
+    let first = rt.model.floating_rect.unwrap();
+    rt.floating_frozen_at = Some(std::time::Instant::now());
+    let _ = rt.place_floating_nav(area, Some(&bottom_text), nav);
+    assert_eq!(
+        rt.model.floating_rect,
+        Some(first),
+        "the freeze holds the box where the drop left it"
+    );
+    rt.floating_frozen_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11));
+    let _ = rt.place_floating_nav(area, Some(&bottom_text), nav);
+    assert_ne!(
+        rt.model.floating_rect,
+        Some(first),
+        "the expired forget re-places the box over the new empty strip"
+    );
 }
 
 #[test]

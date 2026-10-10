@@ -200,40 +200,17 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
     // gives the whole area to the terminal.
     let layout = nav.position.layout();
     let (nav_width, nav_height) = (nav.width, nav.height);
-    if nav_width == 0 {
-        return Regions {
+    match nav.position {
+        NavPosition::Floating => floating_regions(area, nav, nav_width),
+        _ if nav_width == 0 => Regions {
             layout,
             nav: Rect::default(),
             nav_border: Rect::default(),
             terminal: area,
             prefix_hint: Rect::default(),
-        };
-    }
-    match nav.position {
+        },
         NavPosition::Left | NavPosition::Right if nav.collapsed => {
             collapsed_column(area, layout, nav_width, nav.position)
-        }
-        NavPosition::Floating => {
-            // The terminal keeps the whole area and the nav floats over it as a
-            // content-fit box, placed by the runtime over the terminal's empty space.
-            // The box's border is its region; its interior holds the cards exactly as a
-            // right nav's column does, and the prefix hint rests on the box's top border.
-            let outer = nav
-                .floating
-                .unwrap_or_else(|| default_floating_box(area, nav_width));
-            let inner = Rect::new(
-                outer.x + 1,
-                outer.y + 1,
-                outer.width.saturating_sub(2),
-                outer.height.saturating_sub(2),
-            );
-            Regions {
-                layout,
-                nav: inner,
-                nav_border: outer,
-                terminal: area,
-                prefix_hint: Rect::new(outer.x + 1, outer.y, outer.width.saturating_sub(2), 1),
-            }
         }
         NavPosition::Left => {
             let c = Layout::horizontal([
@@ -323,9 +300,34 @@ pub(crate) fn default_floating_box(area: Rect, nav_width: u16) -> Rect {
     Rect::new(area.right().saturating_sub(w), area.y, w, h)
 }
 
+/// The regions of a floating nav: the terminal keeps the whole area and the nav floats
+/// over it as a content-fit box, placed by the runtime over the terminal's empty space.
+/// The box's border is its region; its interior holds the cards exactly as a right nav's
+/// column does, and the prefix hint rests on the box's top border. The box ignores the
+/// width reconcile entirely (auto-hide and the resize keys have no target here), so this
+/// arm runs before the hidden-sentinel arm.
+fn floating_regions(area: Rect, nav: NavSize, nav_width: u16) -> Regions {
+    let outer = nav
+        .floating
+        .unwrap_or_else(|| default_floating_box(area, nav_width.max(1)));
+    let inner = Rect::new(
+        outer.x + 1,
+        outer.y + 1,
+        outer.width.saturating_sub(2),
+        outer.height.saturating_sub(2),
+    );
+    Regions {
+        layout: nav.position.layout(),
+        nav: inner,
+        nav_border: outer,
+        terminal: area,
+        prefix_hint: Rect::new(outer.x + 1, outer.y, outer.width.saturating_sub(2), 1),
+    }
+}
+
 /// The farthest the floating nav's right edge may stand off the terminal's right wall.
 /// The box sits flush against the wall or up to this many cells left of it.
-pub const FLOATING_MARGIN: u16 = 10;
+pub const FLOATING_MARGIN: u16 = 5;
 
 /// Where the floating nav's box sits: its right edge within [`FLOATING_MARGIN`] of the
 /// terminal's right wall, over the strip whose tallest all-blank vertical run fits the
@@ -358,7 +360,8 @@ pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> 
     }
     match best {
         Some((_, x, y)) => Rect::new(x, y, w, h),
-        None => default_floating_box(area, w),
+        // No blank strip fits the box: hold it at the top-right corner, content-fit.
+        None => Rect::new(area.right().saturating_sub(w), area.y, w, h),
     }
 }
 
@@ -1309,6 +1312,13 @@ impl Switcher {
         } else {
             self.rows.len()
         }
+    }
+
+    /// The nav's full card-row count, from the row data itself: the floating nav's
+    /// content height, independent of the split layout's scrolling or the previous
+    /// frame, so its box always has room for every card.
+    pub(crate) fn nav_content_rows(&self) -> u16 {
+        self.rows.len() as u16
     }
 
     /// The band boundary as the paint sees it: none while the host band is hidden, since

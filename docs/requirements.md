@@ -102,7 +102,15 @@ against, naming no source file, function, or test.
   opens its login pane.
 - **FR-B25** - The nav attaches on the left, top, right, or bottom of the terminal view,
   or floats as a box over the terminal's empty space, with `prefix p` cycling the side
-  clockwise and the layout inside the nav identical at every side.
+  clockwise and unpinning at `floating`, the last position, and the layout inside the
+  nav identical at every side. The floating box is content-fit (the widest card line
+  plus its border wide, the card list plus its border tall) with the prefix hint on its
+  top border's left, starts at the top-right corner, and moves in real time to the
+  widest text-free area, its right border never more than five cells from the window's
+  right wall. Dragging it from anywhere on the box moves it anywhere in the window; a
+  drop holds the position for ten seconds, then the position is forgotten and the scan
+  resumes. While the nav view holds the focus the box docks and behaves exactly as a
+  right nav does; the focus's return to the terminal view undocks it.
 - **FR-B26** - A machine ssh refuses for a reason a login can fix is blocked: it shows `?`
   and the login pane, with the failing input field marked `✗`.
 - **FR-B27** - The login pane takes the address, port, username, and an optional masked

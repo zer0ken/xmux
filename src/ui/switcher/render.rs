@@ -271,6 +271,18 @@ impl Switcher {
         previous: &RenderPlan,
     ) -> RenderPlan {
         let band = nav.position.layout() == ViewLayout::Horizontal;
+        // The floating nav's box rides its drag offset: the auto-placed rect the runtime
+        // keeps plus the offset a drag holds, clamped inside the window like any popup.
+        let nav = if nav.position == NavPosition::Floating {
+            NavSize {
+                floating: nav
+                    .floating
+                    .map(|r| self.settle(r, area, modal::PopupSurface::FloatingNav)),
+                ..nav
+            }
+        } else {
+            nav
+        };
         let regions = compute_regions(area, nav);
         let prefix_w = prefix_chip_width(&state.chrome.ui_prefix);
         // A live prefix opens its key list from the prefix hint toward the terminal view,
@@ -1028,9 +1040,9 @@ impl Switcher {
     }
 
     /// The floating nav: the terminal owns the whole area and the nav renders as a
-    /// rounded box over it, with the prefix hint on its top border. A compact box (the
-    /// terminal holds focus and no prefix is live) shows only the hint; otherwise it
-    /// shows the nav's card content like a right nav.
+    /// rounded box over it, with the prefix hint on its top border. Its cards render
+    /// exactly as a right nav's, focus-independent, so the box always shows the full
+    /// nav content.
     #[allow(clippy::too_many_arguments)] // mirrors the main render's surface, all needed
     fn render_floating(
         &self,
@@ -1303,6 +1315,33 @@ impl Switcher {
     /// numbers themselves line up by units place.
     fn number_width(&self) -> usize {
         self.highest_number().to_string().len().max(1)
+    }
+
+    /// The widest natural card line, generated at an unbounded paint width: the floating
+    /// nav's content width, so its box wraps the widest card. The measure never feeds
+    /// back through the box's own clipping, so a long card still widens the box.
+    pub(crate) fn nav_natural_width(&self, state: &crate::state::State) -> u16 {
+        let num_w = self.number_width();
+        let spinner = crate::ui::spinner_glyph(state.chrome.spinner_frame);
+        self.rows
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                self.nav_row_lines(
+                    i,
+                    num_w,
+                    spinner,
+                    NavRowPaint {
+                        width: u16::MAX,
+                        filter: &state.filter,
+                        palette: &self.palette,
+                    },
+                )
+                .remove(0)
+                .width() as u16
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// One row measured for the column flow: whether it opens a unit, how wide its

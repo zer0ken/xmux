@@ -4,9 +4,10 @@ impl Switcher {
     // --- mouse --------------------------------------------------------------
 
     /// Begins a popup drag against the rectangle painted for the latest frame. A press
-    /// anywhere on the key list or a modal popup grabs it, a help tab and a list item
-    /// included: the press becomes a drag once the pointer moves, and a click on the
-    /// grabbed cell if it is released there (see [`Self::end_popup_drag_in_plan`]).
+    /// anywhere on the key list, a modal popup, or the floating nav's box grabs it, a
+    /// help tab and a list item included: the press becomes a drag once the pointer
+    /// moves, and a click on the grabbed cell if it is released there (see
+    /// [`Self::end_popup_drag_in_plan`]).
     pub fn begin_popup_drag_in_plan(
         &mut self,
         plan: &RenderPlan,
@@ -16,7 +17,9 @@ impl Switcher {
     ) -> bool {
         // The plan is frame-gated, so a box a keystroke closed can still have a rect in
         // it; only a box that is live can be grabbed. The modal popup paints above the
-        // key list, so it is hit first.
+        // key list, so it is hit first. The floating nav's box is grabbable while it
+        // floats and no modal popup is open: the popup is mouse-modal, so a click meant
+        // for a popup behind the box must not land on the box.
         let modal = state
             .is_modal_popup_open()
             .then_some((modal::PopupSurface::Modal, plan.popup_rect));
@@ -24,7 +27,10 @@ impl Switcher {
             .key_list
             .as_ref()
             .map(|(rect, _)| (modal::PopupSurface::KeyList, *rect));
-        let boxes: Vec<_> = modal.into_iter().chain(key_list).collect();
+        let floating = (plan.nav_position == crate::model::NavPosition::Floating
+            && !state.is_modal_popup_open())
+        .then_some((modal::PopupSurface::FloatingNav, plan.regions.nav_border));
+        let boxes: Vec<_> = modal.into_iter().chain(key_list).chain(floating).collect();
         self.popup_geo.begin_drag(col, row, &boxes)
     }
 
@@ -32,9 +38,15 @@ impl Switcher {
     /// executes the help tab or the list item under it the way Enter executes the
     /// selection: a tab becomes the selection and scrolls its section's title to the
     /// top of the body, and an item becomes the selection and is marked for the
-    /// switcher to act on as an Enter.
-    pub fn end_popup_drag_in_plan(&mut self, plan: &RenderPlan, state: &mut crate::state::State) {
-        let Some((col, row)) = self.popup_geo.end_drag() else {
+    /// switcher to act on as an Enter. A click on the floating nav's box routes as a nav
+    /// click instead: the caller reads the returned surface and cell. `None` means the
+    /// drag moved the box (or no drag was in flight).
+    pub(crate) fn end_popup_drag_in_plan(
+        &mut self,
+        plan: &RenderPlan,
+        state: &mut crate::state::State,
+    ) -> Option<(modal::PopupSurface, u16, u16)> {
+        let Some((surface, col, row)) = self.popup_geo.end_drag() else {
             // A drag moved the popup under the pointer, so the hover set before
             // it names a cell the pointer may no longer be on. The next motion sets it
             // again from where the popup now is.
@@ -46,7 +58,7 @@ impl Switcher {
             {
                 *hover = None;
             }
-            return;
+            return None;
         };
         match (
             self.popup_target_at(plan, col, row, state),
@@ -78,6 +90,7 @@ impl Switcher {
             }
             _ => {}
         }
+        Some((surface, col, row))
     }
 
     /// Sets the hover of the open popup to the help tab or the list item under

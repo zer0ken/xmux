@@ -244,8 +244,8 @@ provider; explicit entries and other enabled providers still apply.
   terminal's empty space. `[ui] nav-position` picks the default, and the nav never moves
   on its own. `prefix p` places it one side clockwise
   (left → top → right → bottom → floating) and remembers the choice in
-  `~/.xmux/nav_position`, which wins over the default. The cycle never returns to the
-  default; the default applies only on a first boot before the first cycle.
+  `~/.xmux/nav_position`, which wins over the default. The cycle unpins at `floating`,
+  the last position: the default applies again, and the next step re-pins from it.
 - **Machines.** Machines you write down scan first: `[[hosts]]` and `[[wsl]]` entries
   lead, then discovery adds `~/.ssh/config` aliases and neighbors. The config file
   augments discovery and never replaces it.
