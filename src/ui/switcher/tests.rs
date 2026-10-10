@@ -9432,3 +9432,18 @@ fn floating_nav_box_scans_rows_before_columns() {
         "the box sits on the topmost blank row, wall-most column"
     );
 }
+
+#[test]
+fn floating_nav_box_falls_back_to_the_first_least_glyph_spot() {
+    // No wall-margin window is empty, so the box takes the first-found spot whose
+    // window carries the fewest glyphs: a glyph in every window's shared column range
+    // (56..=74) at alternating rows keeps every window non-empty with an equal count,
+    // so the first-found topmost row wins.
+    let area = Rect::new(0, 0, 80, 24);
+    let blank = |x: u16, y: u16| !(x == 70 && y.is_multiple_of(2));
+    assert_eq!(
+        floating_nav_box(area, 24, 8, blank),
+        Rect::new(56, 0, 24, 8),
+        "the box falls back to the first-found fewest-glyph spot"
+    );
+}

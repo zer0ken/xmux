@@ -263,12 +263,11 @@ fn floating_regions(area: Rect, nav: NavSize, nav_width: u16) -> Regions {
 pub const FLOATING_MARGIN: u16 = 5;
 
 /// Where the floating nav's box sits: its right edge within [`FLOATING_MARGIN`] of the
-/// terminal's right wall. The rows scan before the columns, so the box sits as high on
-/// the screen as it can before the wall side matters: the topmost row where the box fits
-/// whole anywhere in the wall margin wins, the wall-most column on that row. When no
-/// spot fits the box whole, the widest all-blank vertical run wins, the box at its top;
-/// with no all-blank run at all the box holds at the top-right corner. `blank` reports
-/// whether a cell carries no glyph.
+/// terminal's right wall. One pass over the wall-margin spots, rows before columns: the
+/// first spot whose window carries no glyph takes the box; when no spot is empty the
+/// box takes the first spot found with the fewest glyphs; with no wall-margin spot at
+/// all it holds at the top-right corner. `blank` reports whether a cell carries no
+/// glyph.
 pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> bool) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
@@ -278,53 +277,29 @@ pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> 
         .saturating_sub(w)
         .max(area.x);
     let x_last = right.saturating_sub(w);
-    // Rows outer, columns inner: the box lands on the topmost row it fits whole before
-    // the wall side matters, the wall-most column on that row.
+    // One pass over the wall-margin spots, rows before columns. The first spot whose
+    // window carries no glyph breaks and takes the box; when no spot is empty the box
+    // takes the first spot found with the fewest glyphs.
+    let mut best: Option<(u16, u16, u16)> = None; // (glyph_count, y, x)
     for y in area.y..area.bottom().saturating_sub(h).saturating_add(1) {
         for x in (x_lo..=x_last).rev() {
-            if (y..y + h).all(|cy| (x..x + w).all(|cx| blank(cx, cy))) {
+            let glyphs = (0..w)
+                .flat_map(|dx| (0..h).map(move |dy| (x + dx, y + dy)))
+                .filter(|&(cx, cy)| !blank(cx, cy))
+                .count() as u16;
+            if glyphs == 0 {
                 return Rect::new(x, y, w, h);
             }
-        }
-    }
-    // No spot fits the box whole: the widest all-blank run in the wall margin, its top;
-    // with no all-blank run at all the box holds at the top-right corner.
-    let mut widest: Option<(u16, u16, u16)> = None; // (run_height, y, x)
-    for x in (x_lo..=x_last).rev() {
-        for (y, run) in blank_runs(area, x, w, &blank) {
-            if widest.is_none_or(|(br, by, _)| run > br || (run == br && y < by)) {
-                widest = Some((run, y, x));
+            if best.is_none_or(|(bg, _, _)| glyphs < bg) {
+                best = Some((glyphs, y, x));
             }
         }
     }
-    match widest {
+    match best {
         Some((_, y, x)) => Rect::new(x, y, w, h),
+        // No spot at all: hold it at the top-right corner.
         None => Rect::new(area.right().saturating_sub(w), area.y, w, h),
     }
-}
-
-/// The tallest vertical run of all-blank cells in the `w`-wide strip starting at column
-/// `x`, as `(row, height)`. `None` when no cell in the strip is blank.
-/// The all-blank vertical runs of the column strip `x..x+w`, each as `(start_y,
-/// height)` in row order. A wide char's right half is not blank (see [`Grid`]'s
-/// `cell_blank`), so a run never slices a glyph in two.
-fn blank_runs(area: Rect, x: u16, w: u16, blank: &impl Fn(u16, u16) -> bool) -> Vec<(u16, u16)> {
-    let mut runs = Vec::new();
-    let mut run_y: Option<u16> = None;
-    let mut run_h = 0u16;
-    for y in area.y..area.bottom() {
-        if (x..x + w).all(|cx| blank(cx, y)) {
-            run_h += 1;
-            run_y.get_or_insert(y);
-        } else if let Some(sy) = run_y.take() {
-            runs.push((sy, run_h));
-            run_h = 0;
-        }
-    }
-    if let Some(sy) = run_y.take() {
-        runs.push((sy, run_h));
-    }
-    runs
 }
 
 /// The smallest window xmux draws its split view in; a smaller one shows the required
