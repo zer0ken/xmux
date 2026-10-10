@@ -930,8 +930,13 @@ impl Runtime {
             .floating_frozen_at
             .is_some_and(|t| t.elapsed() < Self::FLOATING_FREEZE);
         // A drag in flight owns the box's position and a drop holds it for the freeze
-        // span; the empty-space scan only relocates outside those.
-        if !frozen && !self.model.switcher.popup_drag_active() {
+        // span; the empty-space scan only relocates outside those. While the pointer
+        // rests on the box, nothing moves it: no matter what the grid or the content
+        // does, the box holds where it is until the pointer leaves.
+        if !frozen
+            && !self.model.mouse_state.hovering_floating_nav
+            && !self.model.switcher.popup_drag_active()
+        {
             // A freeze that just ended is a forget: the dropped position is abandoned
             // and the box re-places. Otherwise the box keeps its spot while it still
             // fits there whole, so a scrolling grid never makes it hop frame to frame.

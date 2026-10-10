@@ -4572,6 +4572,47 @@ fn a_floating_box_keeps_its_spot_while_it_still_fits() {
 }
 
 #[test]
+fn a_floating_box_holds_its_spot_while_the_pointer_rests_on_it() {
+    use crate::display::grid::Grid;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // While the pointer rests on the floating box, nothing may move it - not even a
+    // grid that covers its spot, which would otherwise relocate the box. It holds where
+    // it is until the pointer leaves.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let mut top = Grid::new(24, 80);
+    top.feed(&b"top text\n".repeat(10));
+    let nav = rt.place_floating_nav(area, Some(&top), rt.model.nav_size());
+    let first = rt.model.floating_rect.unwrap();
+
+    // The pointer rests on the box: a covered spot would relocate it, but the box holds.
+    rt.model.mouse_state.hovering_floating_nav = true;
+    let mut covered = Grid::new(24, 80);
+    covered.feed(&b"X".repeat(80));
+    covered.feed(b"\n");
+    let _ = rt.place_floating_nav(area, Some(&covered), nav);
+    assert_eq!(
+        rt.model.floating_rect,
+        Some(first),
+        "while the pointer rests on the box, a covered spot does not move it"
+    );
+
+    // The pointer leaves the box: the relocation resumes and the covered spot re-places it.
+    rt.model.mouse_state.hovering_floating_nav = false;
+    let _ = rt.place_floating_nav(area, Some(&covered), nav);
+    assert_ne!(
+        rt.model.floating_rect,
+        Some(first),
+        "once the pointer leaves, a covered spot re-places the box"
+    );
+}
+
+#[test]
 fn a_dropped_floating_drag_draws_the_remaining_hold_on_the_bottom_border() {
     use crate::model::FocusTarget;
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
