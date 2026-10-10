@@ -929,10 +929,14 @@ impl Runtime {
         let frozen = self
             .floating_frozen_at
             .is_some_and(|t| t.elapsed() < Self::FLOATING_FREEZE);
-        // A drag in flight owns the box's position and a drop holds it for the freeze
-        // span; outside those the box re-places every frame, so it always sits on the
-        // current best spot instead of holding a covered one.
-        if !frozen && !self.model.switcher.popup_drag_active() {
+        // A drag in flight owns the box's position, a drop holds it for the freeze
+        // span, and a pointer resting on the box locks it; outside those the box
+        // re-places every frame, so it always sits on the current best spot instead of
+        // holding a covered one.
+        if !frozen
+            && !self.model.mouse_state.hovering_floating_nav
+            && !self.model.switcher.popup_drag_active()
+        {
             self.floating_frozen_at = None;
             let w = self.floating_box_width(area, nav);
             let h = self.floating_box_height(area).max(1);
