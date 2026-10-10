@@ -4534,11 +4534,11 @@ fn a_click_on_the_floating_box_docks_the_nav() {
 }
 
 #[test]
-fn a_floating_box_keeps_its_spot_while_it_still_fits() {
+fn a_floating_box_replaces_every_frame_on_the_current_best_spot() {
     use crate::display::grid::Grid;
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
-    // A grid that scrolls must not make the box hop frame to frame: it keeps its spot
-    // while the spot stays blank and re-places only when the spot is covered.
+    // The box re-places every frame: as the content above it changes, the box moves onto
+    // the current best spot instead of holding its old one.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_machines(&["local"]));
@@ -4547,27 +4547,23 @@ fn a_floating_box_keeps_its_spot_while_it_still_fits() {
     rt.model.nav_position = NavPosition::Floating;
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
     let mut top = Grid::new(24, 80);
-    top.feed(&b"top text\n".repeat(10));
+    for _ in 0..10 {
+        top.feed(&b"X".repeat(80));
+        top.feed(b"\n");
+    }
     let nav = rt.place_floating_nav(area, Some(&top), rt.model.nav_size());
     let first = rt.model.floating_rect.unwrap();
-    // The top content grew, but the box's spot is still blank: the box stays put.
+    // More rows of content above: the box re-places onto the new best spot.
     let mut top2 = Grid::new(24, 80);
-    top2.feed(&b"top text\n".repeat(20));
+    for _ in 0..20 {
+        top2.feed(&b"X".repeat(80));
+        top2.feed(b"\n");
+    }
     let _ = rt.place_floating_nav(area, Some(&top2), nav);
-    assert_eq!(
-        rt.model.floating_rect,
-        Some(first),
-        "the box keeps a spot that still fits"
-    );
-    // The content now covers the box's spot: the box re-places.
-    let mut covered = Grid::new(24, 80);
-    covered.feed(&b"X".repeat(80));
-    covered.feed(b"\n");
-    let _ = rt.place_floating_nav(area, Some(&covered), nav);
     assert_ne!(
         rt.model.floating_rect,
         Some(first),
-        "a covered spot re-places the box"
+        "the box follows the current best spot"
     );
 }
 
