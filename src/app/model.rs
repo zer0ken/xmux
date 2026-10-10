@@ -1659,6 +1659,10 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             let hit = model.switcher.mouse_select(&model.render_plan, col, row);
             if hit && execute {
                 update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
+            } else if !hit && execute {
+                // A click on the nav that lands on no target is a click ON the nav and
+                // nothing else: it brings the nav the focus without selecting anything.
+                update(model, Msg::Focus(crate::model::FocusTarget::Nav))
             } else {
                 Vec::new()
             }
@@ -2141,18 +2145,18 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .end_popup_drag_in_plan(&model.render_plan, &mut model.state)
             {
                 Some((crate::ui::modal::PopupSurface::FloatingNav, col, row)) => {
-                    if model.state.focus.is_terminal_focused() {
-                        update(model, Msg::Action(crate::model::Action::FocusToggle))
-                    } else {
-                        update(
-                            model,
-                            Msg::MouseSelect {
-                                col,
-                                row,
-                                execute: true,
-                            },
-                        )
-                    }
+                    // The nav's general mouse rule applies to the floating box too: a
+                    // click on a card interacts with it (selects and executes) whether or
+                    // not the nav holds the focus, and a click on the box's empty area
+                    // focuses the nav.
+                    update(
+                        model,
+                        Msg::MouseSelect {
+                            col,
+                            row,
+                            execute: true,
+                        },
+                    )
                 }
                 _ => execute_list_choice(model),
             }

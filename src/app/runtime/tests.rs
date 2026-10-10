@@ -4534,6 +4534,74 @@ fn a_click_on_the_floating_box_docks_the_nav() {
 }
 
 #[test]
+fn a_click_on_a_floating_card_selects_and_executes_it() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The floating nav's general mouse rule: with the terminal view focused, a click on
+    // a card interacts with it at once (selects and executes) instead of only docking.
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![crate::model::Group {
+            host: "local".into(),
+            err: None,
+            sessions: vec![
+                crate::session::Session {
+                    host: "local".into(),
+                    name: "api".into(),
+                    windows: 1,
+                    ..Default::default()
+                },
+                crate::session::Session {
+                    host: "local".into(),
+                    name: "db".into(),
+                    windows: 1,
+                    ..Default::default()
+                },
+            ],
+        }],
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    sync_test_render_plan(&mut rt);
+    assert!(rt.model.state.focus.is_terminal_focused());
+    // Click the db card inside the floating box (press and release, no drag).
+    let db = rt.model.switcher.session_row("local", "db").unwrap();
+    let rect = rt
+        .model
+        .render_plan
+        .nav_cells
+        .iter()
+        .find(|(i, _)| *i == db)
+        .map(|(_, r)| *r)
+        .unwrap();
+    let (col, row) = (rect.x + 1, rect.y + 1);
+    let press = rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}M").as_bytes(),
+        &Selection::default(),
+    );
+    assert!(!press.quit, "a press alone runs nothing");
+    let _ = rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}m").as_bytes(),
+        &Selection::default(),
+    );
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        Some(crate::model::Node::Session(crate::session::Address::new(
+            "local", "db"
+        ))),
+        "the clicked card is selected at once"
+    );
+    assert!(
+        rt.model.state.focus.is_terminal_focused(),
+        "a card click executes: the terminal view keeps the focus"
+    );
+}
+
+#[test]
 fn a_floating_box_keeps_its_spot_while_it_still_fits() {
     use crate::display::grid::Grid;
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
@@ -7859,6 +7927,49 @@ fn a_click_off_the_landing_links_executes_nothing() {
     click(&mut rt, 0, area.right() - 2, area.bottom() - 2);
     assert!(rt.model.switcher.landing_open());
     assert!(rt.model.state.focus.is_nav_focused());
+}
+
+#[test]
+fn a_click_on_the_navs_empty_area_brings_the_nav_the_focus() {
+    let mut rt = hierarchy_rt();
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.model.switcher.sync_view_focus(true);
+    sync_test_render_plan(&mut rt);
+    assert!(rt.model.state.focus.is_terminal_focused());
+    // A cell inside the nav that sits on no card and no half: the empty area of the nav.
+    let nav = rt.model.render_plan.nav_inner;
+    let occupied = |x: u16, y: u16| {
+        let at = ratatui::layout::Position { x, y };
+        rt.model
+            .render_plan
+            .nav_cells
+            .iter()
+            .any(|(_, r)| r.contains(at))
+            || rt
+                .model
+                .render_plan
+                .nav_parts
+                .iter()
+                .any(|(_, _, r)| r.contains(at))
+    };
+    let empty = (nav.x..nav.right())
+        .flat_map(|x| (nav.y..nav.bottom()).map(move |y| (x, y)))
+        .find(|&(x, y)| !occupied(x, y))
+        .expect("the nav has a blank cell to click");
+    let before = rt.model.switcher.selected_node();
+    click(&mut rt, 0, empty.0, empty.1);
+    assert!(
+        rt.model.state.focus.is_nav_focused(),
+        "a click on the nav's empty area brings the nav the focus"
+    );
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        before,
+        "the empty click selects nothing"
+    );
 }
 
 #[test]
