@@ -61,7 +61,6 @@ removes the collision.
 | `prefix h` | open the table of machine problems |
 | `prefix :` | open the command palette |
 | `prefix t` | toggle auto-hide-nav |
-| `prefix z` | collapse or expand the nav |
 | `prefix Ctrl-←` / `prefix Ctrl-→` | move a side nav's nav border, then bare `Ctrl-←` / `Ctrl-→` keep resizing until another key |
 | `prefix Ctrl-↑` / `prefix Ctrl-↓` | move a horizontal nav's nav border, then bare `Ctrl-↑` / `Ctrl-↓` keep resizing until another key |
 | the prefix arrow pair facing the terminal | focus the terminal view |
@@ -98,13 +97,6 @@ right or below. The resize keys move the nav border the way they point, so the n
 on a left or top nav and shrinks on a right or bottom one. An expanded side nav is never
 narrower than a card's indent, a two-digit number, and eight cells of name; a horizontal nav is at
 least one row.
-
-`prefix z` collapses the nav to its prefix hint: a side nav keeps a column as wide
-as the prefix, with the nav border running down its edge, and a horizontal nav keeps only its
-nav border row. Dragging the nav border past the minimum collapses the nav too, and
-dragging back out in the same drag expands it. A click anywhere on the collapsed nav, or
-focusing the nav by keyboard, expands it. Auto-hide takes the whole nav away and returns
-it in the state it left.
 
 A nav that would leave the terminal view smaller than 24 columns by 4 rows, the size xmux
 draws in at all, hides the way auto-hide hides it whenever the terminal view holds the
@@ -280,10 +272,9 @@ toasts off; the history still records every result.
 | left-click a screen link | open the screen it names, or run the action it names as its key does |
 | point at or left-click a landing card | mark it, or open it as `Enter` does, from either focus |
 | left-click a view | focus that view |
-| left-click a collapsed nav | expand the nav |
 | left-click `‹ 5` or `7 ›` | select the nearest card scrolled off that side |
 | wheel over the nav | move the selection |
-| drag the nav border | resize the nav, collapsing it past the minimum |
+| drag the nav border | resize the nav, clamping it at its minimum |
 | drag the key list or a popup | move it |
 | left-click a popup item | execute it, as `Enter` would |
 | left-click a toast | dismiss it |

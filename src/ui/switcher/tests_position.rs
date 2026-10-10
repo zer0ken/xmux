@@ -1,6 +1,6 @@
 //! The nav's position-independent layout, checked at every attachment side on fixed
 //! backend sizes: the group grammar, the one seam, the prefix hint, the overflow
-//! marks, the collapsed shape, the one-row band, and the hit-test that reads them back.
+//! marks, the one-row band, and the hit-test that reads them back.
 
 use super::*;
 use ratatui::backend::TestBackend;
@@ -28,14 +28,6 @@ fn nav_at(position: NavPosition) -> NavSize {
         nav.with_height(BAND_H)
     } else {
         nav
-    }
-}
-
-fn collapsed_at(position: NavPosition) -> NavSize {
-    NavSize {
-        width: collapsed_nav_width("C-g"),
-        collapsed: true,
-        ..nav_at(position)
     }
 }
 
@@ -420,39 +412,6 @@ fn pl4_overflow_is_a_thick_seam_segment_or_counts_on_the_band_seam() {
 }
 
 #[test]
-fn pl5_a_collapsed_nav_is_the_seam_line_or_a_prefix_wide_column() {
-    for position in ALL {
-        let shot = Shot::new(two_groups(), collapsed_at(position), false);
-        let r = shot.plan.regions;
-        match position {
-            NavPosition::Top | NavPosition::Bottom => {
-                assert_eq!(
-                    r.terminal.height,
-                    H - 1,
-                    "{position:?}: the collapsed horizontal nav is the border line only"
-                );
-                assert!(
-                    shot.seam_text().starts_with(" C-g"),
-                    "{position:?}: the border row still carries the prefix"
-                );
-            }
-            NavPosition::Left => {
-                assert_eq!(r.nav_border.x, 2, "on the prefix's last column");
-                assert_eq!(r.terminal.x, 3);
-            }
-            NavPosition::Right => {
-                assert_eq!(r.nav_border.x, W - 3, "on the prefix's first column");
-                assert_eq!(r.terminal.width, W - 3);
-            }
-        }
-        let text = shot.area_text(shot.nav_area());
-        for token in ["<<", ">>", "▲", "▼"] {
-            assert!(!text.contains(token), "{position:?}: no button: {text:?}");
-        }
-    }
-}
-
-#[test]
 fn pl7_a_one_row_band_runs_title_and_cards_on_one_line() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
         let shot = Shot::new(two_groups(), nav_at(position).with_height(1), false);
@@ -612,35 +571,6 @@ fn hit_test_a_band_overflow_count_selects_the_nearest_hidden_card() {
             "{position:?}: and the band scrolls to show it"
         );
     }
-}
-
-#[test]
-fn pl9_the_key_list_and_the_help_name_prefix_z() {
-    let list = crate::ui::keylist::key_list("C-g", NavPosition::Left, 160, 30).unwrap();
-    assert!(
-        list.columns.iter().flatten().any(|c| matches!(
-            c,
-            crate::ui::keylist::Cell::Key { key, desc } if key == "z" && desc.contains("collapse")
-        )),
-        "the key list names z: {list:?}"
-    );
-    let (_, lines) = crate::ui::modal::help_lines(
-        "C-g",
-        NavPosition::Left,
-        &Default::default(),
-        "",
-        0,
-        None,
-        None,
-        200,
-        u16::MAX,
-    );
-    let help: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    assert!(
-        help.iter()
-            .any(|l| l.contains("C-g z") && l.contains("collapse")),
-        "the help names prefix z: {help:#?}"
-    );
 }
 
 #[test]
@@ -907,65 +837,5 @@ fn an_input_popup_too_short_for_its_rows_keeps_its_field() {
         let (_, lines) = switcher.input_popup_at(&state, 50, 1).expect("an input");
         assert_eq!(lines.len(), 1);
         assert!(crate::ui::modal::caret_offset(&lines[0]).is_some());
-    }
-}
-
-/// The collapsed side column, cell by cell, at rest, armed, hovered, and under auto-hide:
-/// the prefix keeps all three of its cells on the first row, the border runs down the
-/// prefix's terminal-side column on every row below it, and the terminal view starts
-/// on the next column.
-/// A named chrome state to draw in, and the border glyph that state paints.
-type ChromeCase = (&'static str, fn(&mut crate::state::State), &'static str);
-
-#[test]
-fn pl5_b_a_collapsed_column_is_the_prefix_with_the_border_on_its_edge() {
-    let cases: [ChromeCase; 4] = [
-        ("rest", |_| {}, "│"),
-        ("armed", |s| s.chrome.armed = true, "│"),
-        ("hovered", |s| s.chrome.nav_border_hovered = true, "┃"),
-        ("auto-hide", |s| s.chrome.auto_hide = true, "║"),
-    ];
-    for position in [NavPosition::Left, NavPosition::Right] {
-        for (name, set, glyph) in cases {
-            let mut shot = Shot::new(two_groups(), collapsed_at(position), false);
-            set(&mut shot.state);
-            shot.draw(false);
-            let r = shot.plan.regions;
-            let (nav_x, edge_x, terminal_x) = match position {
-                NavPosition::Left => (0, 2, 3),
-                _ => (W - 3, W - 3, 0),
-            };
-            assert_eq!(
-                r.prefix_hint,
-                Rect::new(nav_x, 0, 3, 1),
-                "{position:?} {name}"
-            );
-            assert_eq!(
-                r.terminal,
-                Rect::new(terminal_x, 0, W - 3, H),
-                "{position:?} {name}"
-            );
-            assert_eq!(
-                shot.row(0, nav_x, nav_x + 3),
-                "C-g",
-                "{position:?} {name}: the prefix keeps every cell, no padding"
-            );
-            for y in 1..H {
-                assert_eq!(
-                    shot.buf[(edge_x, y)].symbol(),
-                    glyph,
-                    "{position:?} {name}: the border on row {y}"
-                );
-            }
-            let off_edge = if position == NavPosition::Left {
-                0
-            } else {
-                W - 1
-            };
-            assert!(
-                (1..H).all(|y| shot.buf[(off_edge, y)].symbol() == " "),
-                "{position:?} {name}: the rest of the column is blank"
-            );
-        }
     }
 }

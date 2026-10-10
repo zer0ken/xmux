@@ -13,9 +13,8 @@ use crate::app::model::{nav_width_min, NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH
 use crate::display::dispatch::Action;
 use crate::model::keys::{prefix_command, Chord, KeyCommand};
 
-/// The nav width a nav border drag to 1-based screen column `col` sets, capped at the
-/// max, or `None` when the drag is narrower than the expanded nav's minimum, which
-/// collapses the nav. With the nav on the left the dragged column becomes the border
+/// The nav width a nav border drag to 1-based screen column `col` sets, clamped to the
+/// min..max range. With the nav on the left the dragged column becomes the border
 /// position (= the nav width); with the nav on the right the mirror applies and the size
 /// is the window minus the dragged column.
 pub(crate) fn nav_border_drag_width(
@@ -23,32 +22,27 @@ pub(crate) fn nav_border_drag_width(
     ui_prefix: &str,
     window_cols: u16,
     nav_on_right: bool,
-) -> Option<u16> {
+) -> u16 {
     let w = if nav_on_right {
         window_cols.saturating_sub(col)
     } else {
         col.saturating_sub(1)
     };
-    (w >= nav_width_min(ui_prefix)).then(|| w.min(NAV_WIDTH_MAX))
+    w.clamp(nav_width_min(ui_prefix), NAV_WIDTH_MAX)
 }
 
 /// The horizontal-nav layout nav height a horizontal nav border drag to 1-based screen row `row`
-/// sets, capped at the max, or `None` when the drag leaves the horizontal nav less than its minimum,
-/// which collapses the horizontal nav. With the nav on top the dragged row becomes the border
+/// sets, clamped to the min..max range. With the nav on top the dragged row becomes the border
 /// position (0-based), which is the nav height; with the nav on the bottom the mirror
 /// applies and the size is the window minus the dragged row. compute_regions clamps
 /// further to the live body height.
-pub(crate) fn nav_border_drag_height(
-    row: u16,
-    window_rows: u16,
-    nav_on_bottom: bool,
-) -> Option<u16> {
+pub(crate) fn nav_border_drag_height(row: u16, window_rows: u16, nav_on_bottom: bool) -> u16 {
     let h = if nav_on_bottom {
         window_rows.saturating_sub(row)
     } else {
         row.saturating_sub(1)
     };
-    (h >= NAV_HEIGHT_MIN).then(|| h.min(NAV_HEIGHT_MAX))
+    h.clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX)
 }
 /// If `bytes` STARTS with a Ctrl-arrow, legacy (`ESC [ 1 ; 5 A/B/C/D`) or in the kitty
 /// keyboard protocol's form, returns `(horizontal, delta, len)`: the axis (true = ←/→
@@ -243,7 +237,6 @@ fn nav_action(command: KeyCommand, key: ratatui::crossterm::event::KeyEvent) -> 
         KeyCommand::Check => Some(Action::ShowCheck),
         KeyCommand::Palette => Some(Action::ShowPalette),
         KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
-        KeyCommand::Collapse => Some(Action::ToggleCollapse),
         KeyCommand::Position => Some(Action::CycleNavPosition),
         KeyCommand::Width(d) => Some(Action::Width(d)),
         KeyCommand::Height(d) => Some(Action::Height(d)),
@@ -450,7 +443,6 @@ mod tests {
             KeyCommand::Check => Some(Action::ShowCheck),
             KeyCommand::Palette => Some(Action::ShowPalette),
             KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
-            KeyCommand::Collapse => Some(Action::ToggleCollapse),
             KeyCommand::Position => Some(Action::CycleNavPosition),
             KeyCommand::Width(d) => Some(Action::Width(d)),
             KeyCommand::Height(d) => Some(Action::Height(d)),
@@ -986,24 +978,20 @@ mod tests {
     }
 
     #[test]
-    fn nav_border_drag_width_caps_and_collapses_past_the_floor() {
+    fn nav_border_drag_width_caps_and_clamps_at_the_floor() {
         // The dragged 1-based column becomes the 0-based nav width, capped at the max.
-        // Narrower than the expanded floor is a collapse, not a clamp.
+        // Narrower than the expanded floor clamps at it.
         let floor = crate::app::model::nav_width_min("C-g");
-        assert_eq!(nav_border_drag_width(51, "C-g", 140, false), Some(50));
-        assert_eq!(
-            nav_border_drag_width(floor + 1, "C-g", 140, false),
-            Some(floor),
-            "the floor itself is still an expanded nav"
-        );
+        assert_eq!(nav_border_drag_width(51, "C-g", 140, false), 50);
+        assert_eq!(nav_border_drag_width(floor + 1, "C-g", 140, false), floor);
         assert_eq!(
             nav_border_drag_width(floor, "C-g", 140, false),
-            None,
-            "one cell narrower collapses"
+            floor,
+            "one cell narrower clamps at the floor"
         );
         assert_eq!(
             nav_border_drag_width(500, "C-g", 140, false),
-            Some(NAV_WIDTH_MAX),
+            NAV_WIDTH_MAX,
             "too far right caps at max"
         );
     }
@@ -1013,22 +1001,23 @@ mod tests {
         // On the right/bottom the drag measures from the FAR edge: the dragged 1-based
         // column/row is where the border lands, so the size is the window minus it.
         // Dragging the right border (0-based col 91 at a 48 width) to SGR 100 gives 40.
-        assert_eq!(nav_border_drag_width(91, "C-g", 140, true), Some(49));
-        assert_eq!(nav_border_drag_width(100, "C-g", 140, true), Some(40));
+        let floor = crate::app::model::nav_width_min("C-g");
+        assert_eq!(nav_border_drag_width(91, "C-g", 140, true), 49);
+        assert_eq!(nav_border_drag_width(100, "C-g", 140, true), 40);
         assert_eq!(
             nav_border_drag_width(135, "C-g", 140, true),
-            None,
-            "dragging the right border past the floor collapses"
+            floor,
+            "dragging the right border past the floor clamps"
         );
         // Same mirror on the height: dragging the bottom border (0-based row 35 at
         // the auto 24) to SGR 30 in a 60-row window gives 30; one row from the window's
-        // bottom edge is the one-row horizontal nav, and the edge itself collapses it.
-        assert_eq!(nav_border_drag_height(30, 60, true), Some(30));
-        assert_eq!(nav_border_drag_height(59, 60, true), Some(NAV_HEIGHT_MIN));
+        // bottom edge is the one-row horizontal nav, and the edge itself clamps there.
+        assert_eq!(nav_border_drag_height(30, 60, true), 30);
+        assert_eq!(nav_border_drag_height(59, 60, true), NAV_HEIGHT_MIN);
         assert_eq!(
             nav_border_drag_height(60, 60, true),
-            None,
-            "dragging the bottom border onto the edge collapses the band"
+            NAV_HEIGHT_MIN,
+            "dragging the bottom border onto the edge clamps at the minimum"
         );
     }
 

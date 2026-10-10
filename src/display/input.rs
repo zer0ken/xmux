@@ -156,7 +156,6 @@ impl TermInput {
                     KeyCommand::Width(d) => Some(Action::Width(d)),
                     KeyCommand::Height(d) => Some(Action::Height(d)),
                     KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
-                    KeyCommand::Collapse => Some(Action::ToggleCollapse),
                     KeyCommand::Position => Some(Action::CycleNavPosition),
                     // The nav actions (new session, both re-scans, filter, card jump)
                     // reach the nav executor as the key itself. Focus stays on the
@@ -285,7 +284,6 @@ mod tests {
             KeyCommand::Check => vec![Action::ShowCheck],
             KeyCommand::Palette => vec![Action::ShowPalette],
             KeyCommand::AutoHide => vec![Action::ToggleAutoHide],
-            KeyCommand::Collapse => vec![Action::ToggleCollapse],
             KeyCommand::Position => vec![Action::CycleNavPosition],
             KeyCommand::Width(d) => vec![Action::Width(d)],
             KeyCommand::Height(d) => vec![Action::Height(d)],

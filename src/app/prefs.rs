@@ -33,9 +33,6 @@ const AUTO_HIDE_NAV_FILE: &str = "auto_hide_nav";
 /// `nav-position` config default).
 const NAV_POSITION_FILE: &str = "nav_position";
 
-/// The file under the xmux dir holding whether the nav is collapsed ("1"/"0").
-const NAV_COLLAPSED_FILE: &str = "nav_collapsed";
-
 /// The file under the xmux dir holding, one machine per line, the SSH login the
 /// shared connection last opened to it authenticated with (`publickey` or `password`),
 /// that connection's identity, and the machine, parted by spaces.
@@ -85,23 +82,6 @@ pub fn save_ssh_logins(xmux_dir: &Path, logins: &HashMap<String, RecordedLogin>)
         .collect();
     lines.sort();
     let _ = std::fs::write(xmux_dir.join(SSH_LOGINS_FILE), lines.concat());
-}
-
-/// A marker written after the first interactive key has introduced the prefix.
-/// Reads the persisted collapsed state. Missing or unrecognised values mean expanded.
-pub fn load_nav_collapsed(xmux_dir: &Path) -> bool {
-    std::fs::read_to_string(xmux_dir.join(NAV_COLLAPSED_FILE))
-        .ok()
-        .is_some_and(|raw| raw.trim() == "1")
-}
-
-/// Persists the collapsed state. Best-effort: a write failure only loses the next
-/// launch's restore.
-pub fn save_nav_collapsed(xmux_dir: &Path, collapsed: bool) {
-    let _ = std::fs::write(
-        xmux_dir.join(NAV_COLLAPSED_FILE),
-        if collapsed { "1" } else { "0" },
-    );
 }
 
 /// Reads the persisted auto-hide-nav mode. `None` when the file is absent or
@@ -307,25 +287,6 @@ mod tests {
         assert_eq!(load_nav_position(&dir), None, "absent file");
         std::fs::write(dir.join(NAV_POSITION_FILE), "diagonal").unwrap();
         assert_eq!(load_nav_position(&dir), None, "unrecognised value");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn nav_collapsed_save_then_load_round_trips() {
-        let dir = temp_dir("nc-roundtrip");
-        save_nav_collapsed(&dir, true);
-        assert!(load_nav_collapsed(&dir));
-        save_nav_collapsed(&dir, false);
-        assert!(!load_nav_collapsed(&dir));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn nav_collapsed_load_missing_or_garbage_is_false() {
-        let dir = temp_dir("nc-garbage");
-        assert!(!load_nav_collapsed(&dir), "absent file");
-        std::fs::write(dir.join(NAV_COLLAPSED_FILE), "yes").unwrap();
-        assert!(!load_nav_collapsed(&dir), "unrecognised value");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
