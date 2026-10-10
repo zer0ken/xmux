@@ -8,14 +8,14 @@ use crate::state::PaletteChoice;
 use crate::ui::palette;
 
 /// The prefix hint chip inside its row: aligned toward the nav border (a vertical nav's
-/// terminal-side edge) or to the row's left (a horizontal nav's nav border row). A
-/// collapsed vertical nav's column is exactly as wide as the prefix, so the chip fills
-/// the row.
+/// terminal-side edge) or to the row's left (a horizontal nav's nav border row).
 pub(super) fn prefix_hint_chip(row: Rect, position: NavPosition, prefix_w: u16) -> Rect {
     let w = prefix_w.min(row.width);
     let x = match position {
         NavPosition::Left => row.right().saturating_sub(w),
-        NavPosition::Right | NavPosition::Top | NavPosition::Bottom => row.x,
+        NavPosition::Right | NavPosition::Top | NavPosition::Bottom | NavPosition::Floating => {
+            row.x
+        }
     };
     Rect { x, width: w, ..row }
 }
@@ -193,17 +193,14 @@ pub struct RenderPlan {
     pub(crate) scan_box: Option<(Rect, crate::ui::keylist::KeyList)>,
     /// The one line the nav body says when it lists no card at all, and where.
     pub(crate) nav_guidance: Option<(Rect, String)>,
-    /// The cells a click on a collapsed nav expands it from: the whole collapsed column
-    /// with its seam, or a collapsed band's seam row. Empty while the nav is expanded.
-    /// A collapsed nav expands from the prefix or from a click anywhere on it, and a view
-    /// border drag past the minimum collapses it, so the collapsed shape is the prefix
-    /// indicator alone and the whole of it is one hit target.
-    pub expand_area: Rect,
+    /// The floating nav's drop-hold freeze, as the share of the 10s still ahead (1 down
+    /// to 0), while a dropped drag holds the box in place. `None` when the box is free to
+    /// relocate. The floating box's bottom border draws it as the toast does its life.
+    pub(crate) floating_freeze: Option<u16>,
     overflow_marks: Vec<OverflowMark>,
     nav_rule: Option<NavRule>,
     pub(super) border_thumb: Rect,
     pub nav_hidden: bool,
-    pub nav_collapsed: bool,
 }
 
 impl Default for RenderPlan {
@@ -228,12 +225,11 @@ impl Default for RenderPlan {
             key_list: None,
             scan_box: None,
             nav_guidance: None,
-            expand_area: Rect::default(),
+            floating_freeze: None,
             overflow_marks: Vec::new(),
             nav_rule: None,
             border_thumb: Rect::default(),
             nav_hidden: true,
-            nav_collapsed: false,
         }
     }
 }
@@ -269,6 +265,18 @@ impl Switcher {
         previous: &RenderPlan,
     ) -> RenderPlan {
         let band = nav.position.layout() == ViewLayout::Horizontal;
+        // The floating nav's box rides its drag offset: the auto-placed rect the runtime
+        // keeps plus the offset a drag holds, clamped inside the window like any popup.
+        let nav = if nav.position == NavPosition::Floating {
+            NavSize {
+                floating: nav
+                    .floating
+                    .map(|r| self.settle(r, area, modal::PopupSurface::FloatingNav)),
+                ..nav
+            }
+        } else {
+            nav
+        };
         let regions = compute_regions(area, nav);
         let prefix_w = prefix_chip_width(&state.chrome.ui_prefix);
         // A live prefix opens its key list from the prefix hint toward the terminal view,
@@ -295,20 +303,6 @@ impl Switcher {
             None
         };
         let seam = regions.nav_border;
-        // A collapsed vertical nav's border lies inside its column, so the column alone is
-        // the whole target.
-        let expand_area = if nav.collapsed && nav.width > 0 {
-            match nav.position {
-                NavPosition::Left | NavPosition::Right => Rect {
-                    x: regions.prefix_hint.x,
-                    width: regions.prefix_hint.width,
-                    ..area
-                },
-                NavPosition::Top | NavPosition::Bottom => seam,
-            }
-        } else {
-            Rect::default()
-        };
         let popup_rect = self.modal_popup_rect(area, state, &regions);
         let view_screen = self.current_view_screen(state);
         // The scan progress box: the advice that host probes are in flight, anchored
@@ -349,7 +343,7 @@ impl Switcher {
             layout: regions.layout,
             nav_position: nav.position,
             regions,
-            nav_inner: if nav.width == 0 || nav.collapsed {
+            nav_inner: if nav.width == 0 {
                 Rect::default()
             } else {
                 regions.nav
@@ -371,9 +365,7 @@ impl Switcher {
             ),
             key_list,
             scan_box,
-            expand_area,
             nav_hidden: nav.width == 0,
-            nav_collapsed: nav.collapsed,
             ..RenderPlan::default()
         };
         if !plan.nav_inner.is_empty() {
@@ -960,6 +952,12 @@ impl Switcher {
             self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
             return;
         }
+        // The floating nav: the terminal owns the whole area and the nav floats over it
+        // as a rounded box, so it renders after the terminal, unlike the split placements.
+        if plan.nav_position == NavPosition::Floating {
+            self.render_floating(frame, area, grid, terminal_focused, state, plan, &palette);
+            return;
+        }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
         // sizing and mouse hit-testing so they never diverge: the navigation view /
         // terminal view split side by side (a vertical nav) or stacked (a horizontal nav),
@@ -985,7 +983,7 @@ impl Switcher {
         };
         // The prefix hint paints after the two views, so the chip reads over whatever it
         // shares its row with. It is the prefix as a chip on its own background, aligned
-        // toward the nav border; a collapsed vertical nav's column paints it unpadded.
+        // toward the nav border.
         for mark in &plan.overflow_marks {
             Self::render_overflow_mark(frame, *mark, state.chrome.colors.active);
         }
@@ -1015,6 +1013,113 @@ impl Switcher {
         }
         self.place_field_cursor(frame, state, plan, view_caret);
         self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
+    }
+
+    /// The floating nav: the terminal owns the whole area and the nav renders as a
+    /// rounded box over it, with the prefix hint on its top border. Its cards render
+    /// exactly as a right nav's, focus-independent, so the box always shows the full
+    /// nav content.
+    #[allow(clippy::too_many_arguments)] // mirrors the main render's surface, all needed
+    fn render_floating(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        grid: Option<&crate::display::grid::Grid>,
+        terminal_focused: bool,
+        state: &crate::state::State,
+        plan: &RenderPlan,
+        palette: &palette::Palette,
+    ) {
+        let view_caret = if let Some(kind) = plan.view_screen {
+            self.render_view_screen(frame, area, state, kind, terminal_focused)
+        } else {
+            self.render_terminal_view(frame, area, grid);
+            None
+        };
+        if terminal_focused && plan.view_screen.is_none() {
+            if let Some(g) = grid {
+                if !g.hide_cursor() {
+                    frame.set_cursor_position(terminal_cursor_pos(area, g.cursor()));
+                }
+            }
+        }
+        self.render_floating_box(frame, state, plan, palette);
+        self.place_field_cursor(frame, state, plan, view_caret);
+        self.render_key_list(frame, state, plan, palette);
+        self.render_scan_box(frame, plan, palette);
+        self.render_toasts(frame, state, plan, palette);
+        self.render_modal_popup(frame, area, state, plan.popup_rect, palette);
+    }
+
+    /// The floating nav's rounded, content-fit border drawn around the nav, whose cards
+    /// and prefix hint render exactly as a right nav's.
+    fn render_floating_box(
+        &self,
+        frame: &mut Frame,
+        state: &crate::state::State,
+        plan: &RenderPlan,
+        palette: &palette::Palette,
+    ) {
+        let box_rect = plan.regions.nav_border;
+        if box_rect.is_empty() {
+            return;
+        }
+        let block = ratatui::widgets::Block::bordered()
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(palette.primary))
+            .style(Style::reset());
+        frame.render_widget(ratatui::widgets::Clear, box_rect);
+        frame.render_widget(block, box_rect);
+        // A wide char whose right half the box covers would keep painting its left
+        // half over the box's border: blank the orphan half.
+        if box_rect.x > 0 {
+            let buf = frame.buffer_mut();
+            for y in box_rect.y..box_rect.bottom() {
+                let cell = &mut buf[(box_rect.x - 1, y)];
+                if UnicodeWidthStr::width(cell.symbol()) > 1 {
+                    cell.set_symbol(" ");
+                }
+            }
+        }
+        // The card content, identical to a right nav.
+        self.render_nav(frame, plan, palette);
+        // The prefix hint rests on the box's top border, like a title.
+        let prefix_row = plan.regions.prefix_hint;
+        if !prefix_row.is_empty() && !state.chrome.ui_prefix.is_empty() {
+            let chip = prefix_hint_chip(
+                prefix_row,
+                NavPosition::Floating,
+                prefix_chip_width(&state.chrome.ui_prefix),
+            );
+            let padded = prefix_row.width >= prefix_chip_width(&state.chrome.ui_prefix);
+            state.chrome.paint_prefix_hint(frame, chip, padded, palette);
+        }
+        // A drop of the box's drag holds the auto-relocation for a span; the box's
+        // bottom border shows what is left of that span the way a toast shows its
+        // remaining life, a bar of accent cells shrinking toward the right.
+        if let Some(freeze) = plan.floating_freeze {
+            let inner = box_rect.width.saturating_sub(2);
+            if inner > 0 {
+                let cells = (freeze as f32 / 1000.0 * inner as f32)
+                    .clamp(0.0, inner as f32)
+                    .ceil() as u16;
+                let buf = frame.buffer_mut();
+                for i in 0..inner {
+                    let cell = &mut buf[(box_rect.x + 1 + i, box_rect.bottom() - 1)];
+                    if i < cells {
+                        cell.set_symbol("\u{2501}");
+                        cell.set_style(
+                            Style::default()
+                                .fg(palette.accent)
+                                .add_modifier(Modifier::BOLD),
+                        );
+                    } else {
+                        cell.set_symbol("\u{2500}");
+                        cell.set_style(Style::default().fg(palette.primary));
+                    }
+                }
+            }
+        }
     }
 
     /// Whether the cursor a frame shows is the session grid's, the one a focused terminal

@@ -61,7 +61,6 @@ removes the collision.
 | `prefix h` | open the table of machine problems |
 | `prefix :` | open the command palette |
 | `prefix t` | toggle auto-hide-nav |
-| `prefix z` | collapse or expand the nav |
 | `prefix Ctrl-←` / `prefix Ctrl-→` | move a side nav's nav border, then bare `Ctrl-←` / `Ctrl-→` keep resizing until another key |
 | `prefix Ctrl-↑` / `prefix Ctrl-↓` | move a horizontal nav's nav border, then bare `Ctrl-↑` / `Ctrl-↓` keep resizing until another key |
 | the prefix arrow pair facing the terminal | focus the terminal view |
@@ -81,10 +80,25 @@ Shift+Enter, when the terminal running xmux has the protocol too.
 ## Nav Placement
 
 The nav rides on one of four sides of the terminal view: a left or right column, or a
-top or bottom horizontal nav. `[ui] nav-position` (`left`, `top`, `right`, or `bottom`; an unknown
+top or bottom horizontal nav, or floats as a box over the terminal's empty space.
+`[ui] nav-position` (`left`, `top`, `right`, `bottom`, or `floating`; an unknown
 word falls back to `left`) names the default, and `prefix p` pins the next side
-clockwise in `~/.xmux/nav_position` until the key cycles back to the default. The nav
-never moves on its own.
+clockwise in `~/.xmux/nav_position`. The cycle unpins at `floating`, the last position:
+the default applies again, and the next step re-pins from it. The nav never moves on
+its own.
+
+The floating nav is a box over the full-screen terminal: as wide as the nav width the
+user set, as tall as the card list it shows plus its border, with the prefix hint on
+its top border's left. It moves in real time to the topmost area the box fits whole,
+its right border never more than five cells from the window's right wall; when no area
+fits the box it sits at the top of the widest blank area. Dragging it from anywhere on
+the box moves it anywhere in the window, the way the prefix key list and a modal popup
+drag. A drop holds the position for ten seconds, then the position is forgotten and the
+scan resumes. While the nav view holds the focus or the prefix is armed the box docks:
+it behaves exactly as a right nav does, the terminal view keeping the remainder, and
+the focus's return to the terminal view or the chord's end undocks it. A click
+on the box routes as a nav click: a click on a card selects and executes it at once,
+whatever the focus, and a click on the box's empty area focuses the nav, which docks it.
 
 The layout inside the nav is identical at every side: a right column is the same list
 as a left one, and a bottom horizontal nav is the same down-then-right flow as a top one, a whole
@@ -98,13 +112,6 @@ right or below. The resize keys move the nav border the way they point, so the n
 on a left or top nav and shrinks on a right or bottom one. An expanded side nav is never
 narrower than a card's indent, a two-digit number, and eight cells of name; a horizontal nav is at
 least one row.
-
-`prefix z` collapses the nav to its prefix hint: a side nav keeps a column as wide
-as the prefix, with the nav border running down its edge, and a horizontal nav keeps only its
-nav border row. Dragging the nav border past the minimum collapses the nav too, and
-dragging back out in the same drag expands it. A click anywhere on the collapsed nav, or
-focusing the nav by keyboard, expands it. Auto-hide takes the whole nav away and returns
-it in the state it left.
 
 A nav that would leave the terminal view smaller than 24 columns by 4 rows, the size xmux
 draws in at all, hides the way auto-hide hides it whenever the terminal view holds the
@@ -277,10 +284,9 @@ nobody asked about, such as a machine that stops answering, goes to the history 
 | left-click a screen link | open the screen it names, or run the action it names as its key does |
 | point at or left-click a landing card | mark it, or open it as `Enter` does, from either focus |
 | left-click a view | focus that view |
-| left-click a collapsed nav | expand the nav |
 | left-click `‹ 5` or `7 ›` | select the nearest card scrolled off that side |
 | wheel over the nav | move the selection |
-| drag the nav border | resize the nav, collapsing it past the minimum |
+| drag the nav border | resize the nav, clamping it at its minimum |
 | drag the key list or a popup | move it |
 | left-click a popup item | execute it, as `Enter` would |
 | left-click a toast | dismiss it |

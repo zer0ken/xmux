@@ -54,9 +54,6 @@ impl Runtime {
                 Some(Action::Height(d)) => height_delta = d,
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
                 Some(Action::CycleNavPosition) => cycle_position = true,
-                Some(Action::ToggleCollapse) => {
-                    effects.extend(update(&mut self.model, Msg::ToggleNavCollapsed));
-                }
                 Some(Action::ShowHelp) => {
                     effects.extend(update(&mut self.model, Msg::ToggleHelp));
                 }
@@ -171,6 +168,23 @@ impl Runtime {
             dirty = true;
         }
         let in_mux = to_grid_local(self.model.render_plan.regions.terminal, ev.col, ev.row);
+        // A pointer over the floating nav's box is over the nav, not the mux: the wheel
+        // scrolls the box's card list in the nav's focus and is inert in the terminal's,
+        // like the side nav. The box's press and release are the popup drag's, handled
+        // below.
+        let in_mux = if self.model.render_plan.nav_position
+            == crate::ui::switcher::NavPosition::Floating
+            && self
+                .model
+                .render_plan
+                .regions
+                .nav_border
+                .contains(ratatui::layout::Position { x: at.x, y: at.y })
+        {
+            None
+        } else {
+            in_mux
+        };
         // A LEFT-button press in the UNFOCUSED view switches focus to that
         // view: focus only, the click is not delivered. Within the focused
         // terminal view, the click forwards.
@@ -190,7 +204,7 @@ impl Runtime {
         let full = self.model.render_plan.screen_area;
         let regions = self.model.render_plan.regions;
         let on_nav_border = !self.model.render_plan.nav_hidden
-            && !self.model.render_plan.nav_collapsed
+            && self.model.render_plan.nav_position != crate::ui::switcher::NavPosition::Floating
             && regions
                 .nav_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
@@ -210,9 +224,8 @@ impl Runtime {
                 // The DRAG measures from the near edge: a horizontal nav drags the height (from the
                 // top edge, or the bottom edge when pinned there), a column the width (from
                 // the left edge, or the right one) - the same per-side math the resize keys
-                // follow (their direction is the border's movement). A drag past the
-                // minimum collapses the nav, and coming back out within the same drag
-                // expands it at the width or height the pointer reached.
+                // follow (their direction is the border's movement). A drag clamps at the
+                // nav's minimum, so it can never leave the nav with no room.
                 let position = self.model.render_plan.nav_position;
                 let target = if top_layout {
                     nav_border_drag_height(
@@ -228,23 +241,15 @@ impl Runtime {
                         position == crate::ui::switcher::NavPosition::Right,
                     )
                 };
-                if target.is_none() != self.model.nav_collapsed {
-                    let effects = update(&mut self.model, Msg::SetNavCollapsed(target.is_none()));
-                    let _ = self.execute_effects(effects);
+                if top_layout && target != self.model.nav_height {
+                    let effects = update(&mut self.model, Msg::SetNavHeight(target));
+                    debug_assert!(effects.is_empty());
                     dirty = true;
                 }
-                match target {
-                    Some(target) if top_layout && target != self.model.nav_height => {
-                        let effects = update(&mut self.model, Msg::SetNavHeight(target));
-                        debug_assert!(effects.is_empty());
-                        dirty = true;
-                    }
-                    Some(target) if !top_layout && target != self.model.nav_width_natural => {
-                        let effects = update(&mut self.model, Msg::SetNavNaturalWidth(target));
-                        debug_assert!(effects.is_empty());
-                        dirty = true;
-                    }
-                    _ => {}
+                if !top_layout && target != self.model.nav_width_natural {
+                    let effects = update(&mut self.model, Msg::SetNavNaturalWidth(target));
+                    debug_assert!(effects.is_empty());
+                    dirty = true;
                 }
             }
             return dirty;
@@ -277,10 +282,22 @@ impl Runtime {
         // the popup item under it as Enter would.
         if self.model.switcher.popup_drag_active() {
             if !ev.pressed {
+                // A dropped drag of the floating nav's box holds its position for 10
+                // seconds from the release, then the forget hands it back to the scan.
+                let floating_dropped =
+                    self.model
+                        .switcher
+                        .popup_drag_of()
+                        .is_some_and(|(surface, moved)| {
+                            surface == crate::ui::modal::PopupSurface::FloatingNav && moved
+                        });
                 let effects = update(&mut self.model, Msg::EndPopupDrag);
                 let (q, w, _) = self.execute_effects(effects);
                 *quit |= q;
                 *width_changed |= w;
+                if floating_dropped {
+                    self.floating_frozen_at = Some(std::time::Instant::now());
+                }
             } else if !is_wheel {
                 let effects = update(
                     &mut self.model,
@@ -328,17 +345,6 @@ impl Runtime {
             }
             return dirty;
         }
-        // A collapsed nav is one target: a click anywhere on it, its nav border included,
-        // expands it, and is neither a focus move nor a drag.
-        let at = ratatui::layout::Position { x: col0, y: row0 };
-        if is_left_press
-            && self.model.render_plan.nav_collapsed
-            && self.model.render_plan.expand_area.contains(at)
-        {
-            let effects = update(&mut self.model, Msg::SetNavCollapsed(false));
-            let _ = self.execute_effects(effects);
-            return true;
-        }
         // A toast is taken down by a click on it, and the click goes no further: the
         // toast covered whatever is beneath it.
         if is_left_press {
@@ -385,6 +391,18 @@ impl Runtime {
             let over_nav_border = on_nav_border;
             if over_nav_border != self.model.mouse_state.hovered_nav_border {
                 let effects = update(&mut self.model, Msg::SetMouseHovered(over_nav_border));
+                debug_assert!(effects.is_empty());
+                dirty = true;
+            }
+            // The floating nav's box holds its position while the pointer rests on it, so
+            // a relocation never yanks the box out from under the cursor.
+            let over_floating = self.model.render_plan.nav_position
+                == crate::ui::switcher::NavPosition::Floating
+                && regions
+                    .nav_border
+                    .contains(ratatui::layout::Position { x: col0, y: row0 });
+            if over_floating != self.model.mouse_state.hovering_floating_nav {
+                let effects = update(&mut self.model, Msg::SetMouseOverFloating(over_floating));
                 debug_assert!(effects.is_empty());
                 dirty = true;
             }
@@ -456,7 +474,7 @@ impl Runtime {
             }
             // The unfocused view was clicked → switch focus to it (no content
             // delivered); toggle flips Focus::Nav⇄Focus::Terminal either direction.
-            ChainAction::FocusTerminal | ChainAction::FocusNav => {
+            ChainAction::FocusTerminal => {
                 model_msg = Some(Msg::Action(crate::model::Action::FocusToggle));
                 *mouse_focus_toggle = true;
             }
@@ -881,11 +899,6 @@ impl Runtime {
                     }
                     Action::CycleNavPosition => {
                         let effects = update(&mut self.model, Msg::CycleNavPosition);
-                        let _ = self.execute_effects(effects);
-                        *dirty = true;
-                    }
-                    Action::ToggleCollapse => {
-                        let effects = update(&mut self.model, Msg::ToggleNavCollapsed);
                         let _ = self.execute_effects(effects);
                         *dirty = true;
                     }

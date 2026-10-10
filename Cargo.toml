@@ -1,6 +1,6 @@
 [package]
 name = "xmux"
-version = "0.18.4"
+version = "0.20.0"
 edition = "2021"
 description = "A cross-machine, cross-mux session switcher"
 license = "MIT"

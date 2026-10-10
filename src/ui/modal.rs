@@ -13,13 +13,14 @@ pub(crate) use crate::state::{feed_reader, Input, InputMode, Modal};
 use crate::state::{is_popup_open, modal_kind};
 use crate::ui::palette;
 
-/// A box that moves on its own when dragged: the prefix key list, or the open modal's
-/// popup. Both can be on screen at once (a prefix pressed over an open popup), so each
+/// A box that moves on its own when dragged: the prefix key list, the open modal's
+/// popup, or the floating nav's box. All three can be on screen at once, so each
 /// keeps its own offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PopupSurface {
     KeyList,
     Modal,
+    FloatingNav,
 }
 
 /// An active drag of a popup: the box grabbed, the grabbed screen cell, the box's offset
@@ -44,7 +45,12 @@ pub(crate) struct PopupGeometry {
     /// Drag offset (cells) applied to the modal popup's anchored position, kept while
     /// that popup is open.
     modal: (i16, i16),
-    /// Active drag of the key list or a modal popup. `None` means not dragging.
+    /// Drag offset (cells) applied to the floating nav's auto-placed box, kept while
+    /// the nav floats. A drag holds the box where the user left it; the reset is the
+    /// forget that hands the position back to the empty-space scan.
+    floating: (i16, i16),
+    /// Active drag of the key list, a modal popup, or the floating nav. `None` means
+    /// not dragging.
     drag: Option<PopupDrag>,
 }
 
@@ -54,12 +60,18 @@ impl PopupGeometry {
         match surface {
             PopupSurface::KeyList => self.key_list,
             PopupSurface::Modal => self.modal,
+            PopupSurface::FloatingNav => self.floating,
         }
     }
 
     /// True while the key list or a modal popup is being dragged.
     pub(crate) fn drag_active(&self) -> bool {
         self.drag.is_some()
+    }
+
+    /// The surface being dragged and whether the pointer has left the grabbed cell.
+    pub(crate) fn drag_of(&self) -> Option<(PopupSurface, bool)> {
+        self.drag.map(|d| (d.surface, d.moved))
     }
 
     /// A left press anywhere on a box begins a move-drag of that box, so the whole box is
@@ -106,14 +118,19 @@ impl PopupGeometry {
             match d.surface {
                 PopupSurface::KeyList => self.key_list = offset,
                 PopupSurface::Modal => self.modal = offset,
+                PopupSurface::FloatingNav => self.floating = offset,
             }
         }
     }
 
-    /// Ends a drag. Returns the grabbed cell when the pointer never left it: that press
-    /// and release are a click on the cell.
-    pub(crate) fn end_drag(&mut self) -> Option<(u16, u16)> {
-        self.drag.take().filter(|d| !d.moved).map(|d| d.grab)
+    /// Ends a drag. Returns the dragged surface and the grabbed cell when the pointer
+    /// never left it: that press and release are a click on the cell. `None` means the
+    /// drag moved the box.
+    pub(crate) fn end_drag(&mut self) -> Option<(PopupSurface, u16, u16)> {
+        self.drag
+            .take()
+            .filter(|d| !d.moved)
+            .map(|d| (d.surface, d.grab.0, d.grab.1))
     }
 
     /// Places a popup that is opening at its anchor. A popup can replace another one
@@ -124,7 +141,7 @@ impl PopupGeometry {
 
     /// Returns each box that is not on screen to its anchored position, unless a drag of
     /// it is in flight.
-    pub(crate) fn settle(&mut self, key_list_open: bool, modal_open: bool) {
+    pub(crate) fn settle(&mut self, key_list_open: bool, modal_open: bool, floating_open: bool) {
         let dragging = self.drag.map(|d| d.surface);
         if !key_list_open && dragging != Some(PopupSurface::KeyList) {
             self.key_list = (0, 0);
@@ -132,6 +149,15 @@ impl PopupGeometry {
         if !modal_open && dragging != Some(PopupSurface::Modal) {
             self.modal = (0, 0);
         }
+        if !floating_open && dragging != Some(PopupSurface::FloatingNav) {
+            self.floating = (0, 0);
+        }
+    }
+
+    /// Drops the floating nav's drag offset, the forget that hands its position back
+    /// to the empty-space scan.
+    pub(crate) fn reset_floating(&mut self) {
+        self.floating = (0, 0);
     }
 }
 

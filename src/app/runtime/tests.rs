@@ -440,56 +440,28 @@ fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
 #[test]
 fn reconciled_nav_width_hides_only_when_focused_and_enabled_and_no_prefix() {
     // Tree focused (terminal_focused = false): always the natural width.
-    assert_eq!(
-        reconciled_nav_width(false, true, false, false, 48, false, "C-g"),
-        48
-    );
-    assert_eq!(
-        reconciled_nav_width(false, false, false, true, 48, false, "C-g"),
-        48
-    );
+    assert_eq!(reconciled_nav_width(false, true, false, false, 48), 48);
+    assert_eq!(reconciled_nav_width(false, false, false, true, 48), 48);
     // Terminal view focused + setting on + no prefix interaction: hidden (0).
-    assert_eq!(
-        reconciled_nav_width(true, true, false, false, 48, false, "C-g"),
-        0
-    );
+    assert_eq!(reconciled_nav_width(true, true, false, false, 48), 0);
     // Terminal view focused + setting on + prefix active: shown.
-    assert_eq!(
-        reconciled_nav_width(true, true, false, true, 48, false, "C-g"),
-        48
-    );
+    assert_eq!(reconciled_nav_width(true, true, false, true, 48), 48);
     // Terminal view focused + setting off: stays shown regardless.
-    assert_eq!(
-        reconciled_nav_width(true, false, false, false, 48, false, "C-g"),
-        48
-    );
-    assert_eq!(
-        reconciled_nav_width(true, false, false, true, 48, false, "C-g"),
-        48
-    );
-    assert_eq!(
-        reconciled_nav_width(false, false, false, false, 48, true, "C-g"),
-        3,
-        "collapsed is exactly the prefix wide"
-    );
-    assert_eq!(
-        reconciled_nav_width(true, true, false, false, 48, true, "C-g"),
-        0,
-        "auto-hide wins over collapse"
-    );
+    assert_eq!(reconciled_nav_width(true, false, false, false, 48), 48);
+    assert_eq!(reconciled_nav_width(true, false, false, true, 48), 48);
     // A nav that crowds the terminal view hides like auto-hide, and only on its terms.
     assert_eq!(
-        reconciled_nav_width(true, false, true, false, 48, false, "C-g"),
+        reconciled_nav_width(true, false, true, false, 48),
         0,
         "a crowding nav hides while the terminal view holds the focus"
     );
     assert_eq!(
-        reconciled_nav_width(true, false, true, true, 48, false, "C-g"),
+        reconciled_nav_width(true, false, true, true, 48),
         48,
         "a prefix interaction brings a crowding nav back"
     );
     assert_eq!(
-        reconciled_nav_width(false, false, true, false, 48, false, "C-g"),
+        reconciled_nav_width(false, false, true, false, 48),
         48,
         "a focused nav keeps its width however small the window"
     );
@@ -2409,14 +2381,13 @@ fn test_rt(env: Env) -> Runtime {
         state,
         nav_width: crate::ui::switcher::NAV_WIDTH,
         nav_width_natural: crate::ui::switcher::NAV_WIDTH,
-        nav_collapsed: false,
         nav_height: 0,
         nav_position: crate::ui::switcher::NavPosition::Left,
         nav_position_pinned: None,
         nav_default: crate::ui::switcher::NavPosition::Left,
         max_fps: crate::provision::config::DEFAULT_MAX_FPS,
+        floating_rect: None,
         applied_nav_height: u16::MAX,
-        applied_nav_collapsed: true,
         auto_hide_nav: false,
         nav_was_focused: true,
         mouse_state: MouseState::default(),
@@ -2451,6 +2422,7 @@ fn test_rt(env: Env) -> Runtime {
         term_input: crate::display::input::TermInput::new(prefix),
         nav_decoder: crate::display::decode::KeyDecoder::new(),
         paste: Default::default(),
+        floating_frozen_at: None,
         window_focused: true,
         child_focus: None,
         keyboard_pushed: false,
@@ -4480,8 +4452,9 @@ fn prefix_p_cycles_the_nav_position_and_persists_it() {
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
     // `prefix p` moves the pin one step clockwise from the CURRENT effective position
     // and saves it at once, the same moment `prefix t` saves the auto-hide toggle. The
-    // fifth step unpins (back to following the [ui] nav-position default), which stores
-    // "auto".
+    // cycle unpins at floating, the last position: a pinned side cycles forward, the
+    // unpin hands the position back to the config default, and a step after it re-pins
+    // from the effective position.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_machines(&["local"]));
@@ -4501,15 +4474,501 @@ fn prefix_p_cycles_the_nav_position_and_persists_it() {
     let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
     assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Bottom));
     let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(rt.model.nav_position_pinned, None, "the fifth step unpins");
+    assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Floating));
     assert!(
         std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
             .unwrap()
-            .contains("auto"),
-        "unpinning stores \"auto\""
+            .contains("floating"),
+        "the fifth step pins floating"
+    );
+    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(
+        rt.model.nav_position_pinned, None,
+        "the sixth step unpins at floating, the last position"
+    );
+    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
+    assert_eq!(
+        rt.model.nav_position_pinned,
+        Some(NavPosition::Top),
+        "a step after the unpin re-pins from the effective position"
     );
     // The cycle itself does not claim the focus flags the outcome carries.
     assert!(!out.focus_terminal && !out.focus_nav && !out.quit);
+}
+
+#[test]
+fn a_click_on_the_floating_box_docks_the_nav() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The floating nav, the terminal view focused: a click on the box (a press and a
+    // release on the same cell, no drag) routes as a nav click, so the focus switches
+    // into the nav and the nav docks as a right nav for the span of the interaction.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    sync_test_render_plan(&mut rt);
+    let box_rect = rt.model.render_plan.regions.nav_border;
+    assert!(
+        box_rect.width >= 3 && box_rect.height >= 3,
+        "the floating box is placed"
+    );
+    let (col, row) = (box_rect.x + 2, box_rect.y + 2);
+    let press = rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}M").as_bytes(),
+        &Selection::default(),
+    );
+    assert!(!press.quit, "a press alone runs nothing");
+    let _ = rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}m").as_bytes(),
+        &Selection::default(),
+    );
+    assert!(
+        rt.model.state.focus.view_is_nav(),
+        "the click docks the nav: the focus switched into it"
+    );
+}
+
+#[test]
+fn a_click_on_a_floating_card_selects_and_executes_it() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The floating nav's general mouse rule: with the terminal view focused, a click on
+    // a card interacts with it at once (selects and executes) instead of only docking.
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![crate::model::Group {
+            host: "local".into(),
+            err: None,
+            sessions: vec![
+                crate::session::Session {
+                    host: "local".into(),
+                    name: "api".into(),
+                    windows: 1,
+                    ..Default::default()
+                },
+                crate::session::Session {
+                    host: "local".into(),
+                    name: "db".into(),
+                    windows: 1,
+                    ..Default::default()
+                },
+            ],
+        }],
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    sync_test_render_plan(&mut rt);
+    assert!(rt.model.state.focus.is_terminal_focused());
+    // Click the db card inside the floating box (press and release, no drag).
+    let db = rt.model.switcher.session_row("local", "db").unwrap();
+    let rect = rt
+        .model
+        .render_plan
+        .nav_cells
+        .iter()
+        .find(|(i, _)| *i == db)
+        .map(|(_, r)| *r)
+        .unwrap();
+    let (col, row) = (rect.x + 1, rect.y + 1);
+    let press = rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}M").as_bytes(),
+        &Selection::default(),
+    );
+    assert!(!press.quit, "a press alone runs nothing");
+    let _ = rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}m").as_bytes(),
+        &Selection::default(),
+    );
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        Some(crate::model::Node::Session(crate::session::Address::new(
+            "local", "db"
+        ))),
+        "the clicked card is selected at once"
+    );
+    assert!(
+        rt.model.state.focus.is_terminal_focused(),
+        "a card click executes: the terminal view keeps the focus"
+    );
+}
+
+#[test]
+fn a_floating_box_keeps_its_spot_while_it_still_fits() {
+    use crate::display::grid::Grid;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // A grid that scrolls must not make the box hop frame to frame: it keeps its spot
+    // while the spot stays blank and re-places only when the spot is covered.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let mut top = Grid::new(24, 80);
+    top.feed(&b"top text\n".repeat(10));
+    let nav = rt.place_floating_nav(area, Some(&top), rt.model.nav_size());
+    let first = rt.model.floating_rect.unwrap();
+    // The top content grew, but the box's spot is still blank: the box stays put.
+    let mut top2 = Grid::new(24, 80);
+    top2.feed(&b"top text\n".repeat(20));
+    let _ = rt.place_floating_nav(area, Some(&top2), nav);
+    assert_eq!(
+        rt.model.floating_rect,
+        Some(first),
+        "the box keeps a spot that still fits"
+    );
+    // The content now covers the box's spot: the box re-places.
+    let mut covered = Grid::new(24, 80);
+    covered.feed(&b"X".repeat(80));
+    covered.feed(b"\n");
+    let _ = rt.place_floating_nav(area, Some(&covered), nav);
+    assert_ne!(
+        rt.model.floating_rect,
+        Some(first),
+        "a covered spot re-places the box"
+    );
+}
+
+#[test]
+fn a_floating_box_holds_its_spot_while_the_pointer_rests_on_it() {
+    use crate::display::grid::Grid;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // While the pointer rests on the floating box, nothing may move it - not even a
+    // grid that covers its spot, which would otherwise relocate the box. It holds where
+    // it is until the pointer leaves.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let mut top = Grid::new(24, 80);
+    top.feed(&b"top text\n".repeat(10));
+    let nav = rt.place_floating_nav(area, Some(&top), rt.model.nav_size());
+    let first = rt.model.floating_rect.unwrap();
+
+    // The pointer rests on the box: a covered spot would relocate it, but the box holds.
+    rt.model.mouse_state.hovering_floating_nav = true;
+    let mut covered = Grid::new(24, 80);
+    covered.feed(&b"X".repeat(80));
+    covered.feed(b"\n");
+    let _ = rt.place_floating_nav(area, Some(&covered), nav);
+    assert_eq!(
+        rt.model.floating_rect,
+        Some(first),
+        "while the pointer rests on the box, a covered spot does not move it"
+    );
+
+    // The pointer leaves the box: the relocation resumes and the covered spot re-places it.
+    rt.model.mouse_state.hovering_floating_nav = false;
+    let _ = rt.place_floating_nav(area, Some(&covered), nav);
+    assert_ne!(
+        rt.model.floating_rect,
+        Some(first),
+        "once the pointer leaves, a covered spot re-places the box"
+    );
+}
+
+#[test]
+fn a_dropped_floating_drag_draws_the_remaining_hold_on_the_bottom_border() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // A drop of the box's drag holds the auto-relocation for 10 seconds; the box's
+    // bottom border shows what is left of that hold as a bar of accent cells, the way a
+    // toast draws its remaining life, and reads as a plain border once the hold is over.
+    let group = |host: &str, names: &[&str]| crate::model::Group {
+        host: host.into(),
+        err: None,
+        sessions: names
+            .iter()
+            .map(|name| crate::session::Session {
+                host: host.into(),
+                mux: String::new(),
+                id: String::new(),
+                name: (*name).into(),
+                windows: 1,
+                ..Default::default()
+            })
+            .collect(),
+    };
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![group("local", &["emem", "test", "xmux"])],
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    rt.prepare_and_draw(&mut term);
+    let box_rect = rt.model.render_plan.regions.nav_border;
+    assert!(
+        box_rect.width > 2 && box_rect.height > 2,
+        "the floating box is placed"
+    );
+    let inner = box_rect.width.saturating_sub(2);
+    let border_symbols = |term: &Terminal<TestBackend>| {
+        let buf = term.backend().buffer();
+        (0..inner)
+            .map(|i| {
+                buf[(box_rect.x + 1 + i, box_rect.bottom() - 1)]
+                    .symbol()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+    };
+    // A drop just happened: the whole 10s remain, so the border is all accent bars.
+    rt.floating_frozen_at = Some(std::time::Instant::now());
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    rt.dirty = true;
+    rt.prepare_and_draw(&mut term);
+    let held = border_symbols(&term);
+    assert!(
+        held.iter().all(|s| s == "\u{2501}"),
+        "the held border is all accent bars: {held:?}"
+    );
+    // The hold has long ended: the box is free to relocate and the border is plain.
+    rt.floating_frozen_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11));
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    rt.dirty = true;
+    rt.prepare_and_draw(&mut term);
+    let free = border_symbols(&term);
+    assert!(
+        free.iter().all(|s| s == "\u{2500}"),
+        "the free border is a plain line: {free:?}"
+    );
+}
+
+#[test]
+fn a_dropped_floating_drag_holds_the_box_then_the_scan_resumes() {
+    use crate::display::grid::Grid;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // A drop of the floating nav's box holds its position for 10 seconds: a grid whose
+    // empty strip moves does not move the box. After the freeze the forget hands the
+    // position back to the scan, so the box re-places over the new empty strip.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let mut top_text = Grid::new(24, 80);
+    top_text.feed(&b"top half text\n".repeat(10));
+    let mut bottom_bytes = b"\n\n\n\n\n\n\n\n\n\n".to_vec();
+    bottom_bytes.extend(b"bottom text\n".repeat(10));
+    let mut bottom_text = Grid::new(24, 80);
+    bottom_text.feed(&bottom_bytes);
+    let nav = rt.place_floating_nav(area, Some(&top_text), rt.model.nav_size());
+    let first = rt.model.floating_rect.unwrap();
+    rt.floating_frozen_at = Some(std::time::Instant::now());
+    let _ = rt.place_floating_nav(area, Some(&bottom_text), nav);
+    assert_eq!(
+        rt.model.floating_rect,
+        Some(first),
+        "the freeze holds the box where the drop left it"
+    );
+    rt.floating_frozen_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11));
+    let _ = rt.place_floating_nav(area, Some(&bottom_text), nav);
+    assert_ne!(
+        rt.model.floating_rect,
+        Some(first),
+        "the expired forget re-places the box over the new empty strip"
+    );
+}
+
+#[test]
+fn floating_box_width_equals_the_nav_width() {
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The box's width is the nav width the user set, not a content measure.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let nav = rt.place_floating_nav(area, None, rt.model.nav_size());
+    let rect = rt.model.floating_rect.unwrap();
+    assert_eq!(rect.width, nav.natural, "the box's width is the nav width");
+}
+
+#[test]
+fn a_drag_in_flight_keeps_the_floating_box_following() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The empty-space scan skips while a drag is in flight: the re-place used to reset
+    // the drag offset every frame, so the box never followed the pointer. The drop then
+    // holds the box where it was dragged.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    sync_test_render_plan(&mut rt);
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let nav = rt.place_floating_nav(area, None, rt.model.nav_size());
+    let base = rt.model.floating_rect.unwrap();
+    let (col, row) = (base.x + 2, base.y + 2);
+    rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}M").as_bytes(),
+        &Selection::default(),
+    );
+    assert!(
+        rt.model.switcher.popup_drag_active(),
+        "the press grabs the box"
+    );
+    // The scan must not fight the in-flight drag.
+    let _ = rt.place_floating_nav(area, None, nav);
+    assert_eq!(
+        rt.model.floating_rect,
+        Some(base),
+        "the scan skips while a drag is in flight"
+    );
+    // The motion carries the box through the drag offset.
+    rt.handle_stdin_bytes(
+        format!("\x1b[<32;{};{}M", col + 4, row + 2).as_bytes(),
+        &Selection::default(),
+    );
+    sync_test_render_plan(&mut rt);
+    let dragged = rt.model.render_plan.regions.nav_border;
+    assert_ne!(dragged, base, "the box follows the pointer");
+    // The drop holds the spot.
+    rt.handle_stdin_bytes(
+        format!("\x1b[<0;{};{}m", col + 4, row + 2).as_bytes(),
+        &Selection::default(),
+    );
+    sync_test_render_plan(&mut rt);
+    assert_eq!(
+        rt.model.render_plan.regions.nav_border, dragged,
+        "the dropped box stays where it was dragged"
+    );
+}
+
+#[test]
+fn prefix_ready_docks_the_floating_nav() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The floating nav docks as a right nav while the prefix is armed (prefix ready),
+    // the same way the nav focus docks it.
+    let sess = |host: &str, name: &str| crate::session::Session {
+        host: host.into(),
+        name: name.into(),
+        mux: String::new(),
+        id: String::new(),
+        windows: 1,
+        clients: 0,
+        stopped: false,
+    };
+    let scan = Scan {
+        groups: vec![crate::model::Group {
+            host: "local".into(),
+            err: None,
+            sessions: vec![sess("local", "emem"), sess("local", "xmux")],
+        }],
+    };
+    let mut state = crate::state::State::from_scan(scan);
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    rt.cols = 80;
+    rt.body_rows = 23;
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let _ = rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(rt.prefix_active(), "the prefix arms");
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    assert_eq!(
+        rt.model.nav_position,
+        NavPosition::Right,
+        "the armed prefix docks the floating nav"
+    );
+}
+
+#[test]
+fn floating_box_height_wraps_every_painted_row() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The box's height counts the rows the paint actually draws: the painted cards and
+    // the band rule rows between them, so the box has room for every card and the row
+    // right above the bottom border is a card or a rule, never blank.
+    let sess = |host: &str, name: &str| crate::session::Session {
+        host: host.into(),
+        name: name.into(),
+        mux: String::new(),
+        id: String::new(),
+        windows: 1,
+        clients: 0,
+        stopped: false,
+    };
+    let scan = Scan {
+        groups: vec![
+            crate::model::Group {
+                host: "local".into(),
+                err: None,
+                sessions: vec![sess("local", "emem"), sess("local", "xmux")],
+            },
+            crate::model::Group {
+                host: "db-2".into(),
+                err: Some("unreachable".into()),
+                sessions: vec![],
+            },
+        ],
+    };
+    let mut state = crate::state::State::from_scan(scan);
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    rt.cols = 80;
+    rt.body_rows = 23;
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let _ = rt.place_floating_nav(area, None, rt.model.nav_size());
+    let rect = rt.model.floating_rect.unwrap();
+    assert_eq!(
+        rect.height as usize,
+        rt.model.switcher.nav_content_rows() as usize + 2,
+        "the box wraps the painted rows"
+    );
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    // The draw re-places the box with the frame's size; read the rect it settled on.
+    let rect = rt.model.floating_rect.unwrap();
+    let buf = term.backend().buffer();
+    let last_row: String = (rect.x + 1..rect.right().saturating_sub(1))
+        .map(|x| buf[(x, rect.bottom() - 2)].symbol().to_string())
+        .collect();
+    assert!(
+        !last_row.trim().is_empty(),
+        "the row above the bottom border is painted, not blank"
+    );
 }
 
 #[test]
@@ -4907,66 +5366,6 @@ fn handle_mouse_event_nav_border_grab_sets_dragging() {
         rt.model.mouse_state.dragging_nav_border,
         "left-press on the nav border column grabs it"
     );
-}
-
-#[test]
-fn focusing_the_nav_expands_a_collapsed_nav() {
-    use crate::ui::switcher::{Scan, Switcher};
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-
-    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
-    state
-        .focus
-        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_machines(&["local"]));
-    rt.model.state = state;
-    rt.model.switcher = switcher;
-    rt.model.nav_collapsed = true;
-    rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
-    rt.model.applied_nav_collapsed = true;
-    rt.model.nav_was_focused = false;
-
-    let out = rt.handle_stdin_bytes(b"\x07\x1b[D", &Selection::default());
-    assert!(out.focus_nav, "the prefix-left path requests nav focus");
-    let mut term = Terminal::new(TestBackend::new(80, 25)).unwrap();
-    rt.prepare_and_draw(&mut term);
-    assert!(!rt.model.nav_collapsed, "entering nav focus expands it");
-    assert_eq!(rt.model.nav_width, rt.model.nav_width_natural);
-}
-
-#[test]
-fn a_collapsed_nav_border_cannot_start_a_resize_drag() {
-    use crate::ui::switcher::{compute_regions, Scan, Switcher};
-
-    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
-    let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_machines(&["local"]));
-    rt.model.state = state;
-    rt.model.switcher = switcher;
-    rt.cols = 140;
-    rt.body_rows = 29;
-    rt.model.nav_collapsed = true;
-    rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
-    sync_test_render_plan(&mut rt);
-    let regions = compute_regions(ratatui::layout::Rect::new(0, 0, 140, 30), rt.nav_size());
-    assert_eq!(rt.model.render_plan.regions.nav_border, regions.nav_border);
-    let press = crate::display::mouse::MouseEvent {
-        cb: 0,
-        col: regions.nav_border.x + 1,
-        row: regions.nav_border.y + 1,
-        pressed: true,
-    };
-    rt.handle_mouse_event(
-        &press,
-        &Selection::default(),
-        &mut false,
-        &mut false,
-        &mut false,
-        &mut false,
-    );
-    assert!(!rt.model.mouse_state.dragging_nav_border);
 }
 
 #[test]
@@ -6866,7 +7265,7 @@ fn clear_screen_wipes_the_screen_and_repaints_every_cell() {
     term.backend().assert_buffer_lines(["y   ", "    "]);
 }
 
-fn collapse_rt(position: crate::ui::switcher::NavPosition) -> Runtime {
+fn positioned_rt(position: crate::ui::switcher::NavPosition) -> Runtime {
     use crate::ui::switcher::{Scan, Switcher};
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
@@ -6880,14 +7279,6 @@ fn collapse_rt(position: crate::ui::switcher::NavPosition) -> Runtime {
     sync_test_render_plan(&mut rt);
     rt
 }
-
-const EVERY_POSITION: [crate::ui::switcher::NavPosition; 4] = [
-    crate::ui::switcher::NavPosition::Left,
-    crate::ui::switcher::NavPosition::Right,
-    crate::ui::switcher::NavPosition::Top,
-    crate::ui::switcher::NavPosition::Bottom,
-];
-
 fn mouse(cb: u16, col: u16, row: u16, pressed: bool) -> crate::display::mouse::MouseEvent {
     crate::display::mouse::MouseEvent {
         cb,
@@ -6898,28 +7289,9 @@ fn mouse(cb: u16, col: u16, row: u16, pressed: bool) -> crate::display::mouse::M
 }
 
 #[test]
-fn prefix_z_toggles_the_collapse_from_either_view() {
-    let mut rt = collapse_rt(crate::ui::switcher::NavPosition::Left);
-    rt.handle_stdin_bytes(b"\x07z", &Selection::default());
-    assert!(rt.model.nav_collapsed, "prefix z collapses from nav focus");
-    rt.handle_stdin_bytes(b"\x07z", &Selection::default());
-    assert!(!rt.model.nav_collapsed, "a second prefix z expands");
-    rt.model
-        .state
-        .focus
-        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    let out = rt.handle_stdin_bytes(b"\x07z", &Selection::default());
-    assert!(
-        rt.model.nav_collapsed,
-        "prefix z collapses from terminal focus"
-    );
-    assert!(!out.focus_nav, "the terminal keeps the focus");
-}
-
-#[test]
 fn a_popup_takes_hover_and_a_click_on_its_entry_runs_it_as_enter_does() {
     let sel = Selection::default();
-    let mut rt = collapse_rt(crate::ui::switcher::NavPosition::Left);
+    let mut rt = positioned_rt(crate::ui::switcher::NavPosition::Left);
     let effects = update(&mut rt.model, Msg::TogglePalette);
     assert!(effects.is_empty());
     rt.handle_stdin_bytes(b"quit xmux", &sel);
@@ -6959,7 +7331,7 @@ fn a_popup_takes_hover_and_a_click_on_its_entry_runs_it_as_enter_does() {
 #[test]
 fn a_popup_drag_drops_the_hover_it_started_on() {
     let sel = Selection::default();
-    let mut rt = collapse_rt(crate::ui::switcher::NavPosition::Left);
+    let mut rt = positioned_rt(crate::ui::switcher::NavPosition::Left);
     let effects = update(&mut rt.model, Msg::TogglePalette);
     assert!(effects.is_empty());
     rt.handle_stdin_bytes(b"quit xmux", &sel);
@@ -6976,218 +7348,6 @@ fn a_popup_drag_drops_the_hover_it_started_on() {
     event(&mut rt, mouse(0, col.saturating_sub(3), row + 2, false));
     assert!(rt.model.state.modal.is_some(), "a drag executes nothing");
     assert_eq!(rt.model.state.modal_hover(), None);
-}
-
-#[test]
-fn dragging_the_nav_border_past_the_minimum_collapses_the_nav_at_every_position() {
-    use crate::ui::switcher::NavPosition;
-    let sel = Selection::default();
-    for position in EVERY_POSITION {
-        let mut rt = collapse_rt(position);
-        let nav_border = rt.model.render_plan.regions.nav_border;
-        rt.handle_mouse_event(
-            &mouse(0, nav_border.x + 1, nav_border.y + 1, true),
-            &sel,
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            rt.model.mouse_state.dragging_nav_border,
-            "{position:?}: the press grabs the nav border"
-        );
-        let (col, row) = match position {
-            NavPosition::Left => (1, nav_border.y + 1),
-            NavPosition::Right => (140, nav_border.y + 1),
-            NavPosition::Top => (nav_border.x + 1, 1),
-            NavPosition::Bottom => (nav_border.x + 1, 30),
-        };
-        rt.handle_mouse_event(
-            &mouse(0x20, col, row, true),
-            &sel,
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            rt.model.nav_collapsed,
-            "{position:?}: dragging past the minimum collapses the nav"
-        );
-        let (col, row) = match position {
-            NavPosition::Left => (61, nav_border.y + 1),
-            NavPosition::Right => (80, nav_border.y + 1),
-            NavPosition::Top => (nav_border.x + 1, 11),
-            NavPosition::Bottom => (nav_border.x + 1, 20),
-        };
-        rt.handle_mouse_event(
-            &mouse(0x20, col, row, true),
-            &sel,
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            !rt.model.nav_collapsed,
-            "{position:?}: dragging back out expands it within the same drag"
-        );
-        rt.handle_mouse_event(
-            &mouse(0, col, row, false),
-            &sel,
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(!rt.model.mouse_state.dragging_nav_border);
-    }
-}
-
-#[test]
-fn a_click_anywhere_on_a_collapsed_nav_expands_it_at_every_position() {
-    use crate::ui::switcher::NavPosition;
-    for position in EVERY_POSITION {
-        let mut rt = collapse_rt(position);
-        rt.model.nav_collapsed = true;
-        rt.model.applied_nav_collapsed = true;
-        rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
-        sync_test_render_plan(&mut rt);
-        let (col, row) = match position {
-            NavPosition::Left | NavPosition::Top => (1, 1),
-            NavPosition::Right => (140, 1),
-            NavPosition::Bottom => (1, 30),
-        };
-        let focus_before = rt.model.state.focus;
-        let mut focus_toggle = false;
-        rt.handle_mouse_event(
-            &mouse(0, col, row, true),
-            &Selection::default(),
-            &mut focus_toggle,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(!rt.model.nav_collapsed, "{position:?}: the click expands");
-        assert_eq!(rt.model.state.focus, focus_before, "{position:?}");
-        assert!(!focus_toggle, "{position:?}: the click is not a focus move");
-        assert!(
-            !rt.model.mouse_state.dragging_nav_border,
-            "{position:?}: the click is not a drag"
-        );
-    }
-}
-
-/// A collapsed side column is exactly the prefix wide and its border lies inside it, so
-/// the expand target is those three columns on every row, border cells and prefix row
-/// included, and the next column over already belongs to the terminal view. Once the
-/// click expands the nav, the border stands in its own column again and only that
-/// column grabs a resize drag.
-#[test]
-fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
-    use crate::ui::switcher::NavPosition;
-    let collapsed_rt = |position| {
-        let mut rt = collapse_rt(position);
-        rt.model.nav_collapsed = true;
-        rt.model.applied_nav_collapsed = true;
-        rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
-        sync_test_render_plan(&mut rt);
-        rt
-    };
-    for position in [NavPosition::Left, NavPosition::Right] {
-        // 1-based SGR columns of the three prefix cells and the first terminal column.
-        let (inside, outside) = match position {
-            NavPosition::Left => ([1, 2, 3], 4),
-            _ => ([138, 139, 140], 137),
-        };
-        let border = collapsed_rt(position).model.render_plan.regions.nav_border;
-        assert_eq!(
-            border.x + 1,
-            inside[if position == NavPosition::Left { 2 } else { 0 }]
-        );
-        for col in inside {
-            for row in [1, 15, 30] {
-                let mut rt = collapsed_rt(position);
-                rt.handle_mouse_event(
-                    &mouse(0, col, row, true),
-                    &Selection::default(),
-                    &mut false,
-                    &mut false,
-                    &mut false,
-                    &mut false,
-                );
-                assert!(
-                    !rt.model.nav_collapsed,
-                    "{position:?}: a click at ({col}, {row}) expands"
-                );
-                assert!(!rt.model.mouse_state.dragging_nav_border);
-            }
-        }
-        let mut rt = collapsed_rt(position);
-        rt.handle_mouse_event(
-            &mouse(0, outside, 1, true),
-            &Selection::default(),
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            rt.model.nav_collapsed,
-            "{position:?}: the column beside it is the terminal view"
-        );
-
-        let mut rt = collapsed_rt(position);
-        rt.handle_mouse_event(
-            &mouse(0, inside[0], 1, true),
-            &Selection::default(),
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        rt.handle_mouse_event(
-            &mouse(0, inside[0], 1, false),
-            &Selection::default(),
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        rt.model.nav_width = rt.model.nav_width_natural;
-        sync_test_render_plan(&mut rt);
-        let border = rt.model.render_plan.regions.nav_border;
-        let beside = if position == NavPosition::Left {
-            border.x
-        } else {
-            border.x + 2
-        };
-        rt.handle_mouse_event(
-            &mouse(0, beside, 1, true),
-            &Selection::default(),
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            !rt.model.mouse_state.dragging_nav_border,
-            "{position:?}: the cell beside the expanded border does not grab it"
-        );
-        rt.handle_mouse_event(
-            &mouse(0, border.x + 1, 1, true),
-            &Selection::default(),
-            &mut false,
-            &mut false,
-            &mut false,
-            &mut false,
-        );
-        assert!(
-            rt.model.mouse_state.dragging_nav_border,
-            "{position:?}: the expanded border grabs a resize drag"
-        );
-    }
 }
 
 #[test]
@@ -7811,6 +7971,49 @@ fn a_click_off_the_landing_links_executes_nothing() {
 }
 
 #[test]
+fn a_click_on_the_navs_empty_area_brings_the_nav_the_focus() {
+    let mut rt = hierarchy_rt();
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.model.switcher.sync_view_focus(true);
+    sync_test_render_plan(&mut rt);
+    assert!(rt.model.state.focus.is_terminal_focused());
+    // A cell inside the nav that sits on no card and no half: the empty area of the nav.
+    let nav = rt.model.render_plan.nav_inner;
+    let occupied = |x: u16, y: u16| {
+        let at = ratatui::layout::Position { x, y };
+        rt.model
+            .render_plan
+            .nav_cells
+            .iter()
+            .any(|(_, r)| r.contains(at))
+            || rt
+                .model
+                .render_plan
+                .nav_parts
+                .iter()
+                .any(|(_, _, r)| r.contains(at))
+    };
+    let empty = (nav.x..nav.right())
+        .flat_map(|x| (nav.y..nav.bottom()).map(move |y| (x, y)))
+        .find(|&(x, y)| !occupied(x, y))
+        .expect("the nav has a blank cell to click");
+    let before = rt.model.switcher.selected_node();
+    click(&mut rt, 0, empty.0, empty.1);
+    assert!(
+        rt.model.state.focus.is_nav_focused(),
+        "a click on the nav's empty area brings the nav the focus"
+    );
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        before,
+        "the empty click selects nothing"
+    );
+}
+
+#[test]
 fn enter_in_the_nav_executes_the_landing_selection() {
     let mut rt = landing_rt();
     rt.handle_stdin_bytes(b"\x1b[B", &Selection::default());
@@ -8177,12 +8380,8 @@ fn palette_outcome(rt: &Runtime, out: &StdinOutcome) -> String {
         },
     };
     format!(
-        "quit={} focus={:?} modal={modal} collapsed={} auto_hide={} position={:?}",
-        out.quit,
-        rt.model.state.focus,
-        rt.model.nav_collapsed,
-        rt.model.auto_hide_nav,
-        rt.model.nav_position,
+        "quit={} focus={:?} modal={modal} auto_hide={} position={:?}",
+        out.quit, rt.model.state.focus, rt.model.auto_hide_nav, rt.model.nav_position,
     )
 }
 

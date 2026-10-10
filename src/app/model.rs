@@ -11,15 +11,14 @@ pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
 /// The narrowest expanded side nav: a card's indent, a two-digit number with the cells
 /// around it, and eight cells of name. Always wider than the padded prefix hint, so
-/// a wide configured prefix raises it. A nav border dragged narrower than this collapses the nav.
+/// a wide configured prefix raises it. A nav border drag clamps at this floor.
 pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
     const CARD_FLOOR: u16 = 14;
     CARD_FLOOR.max(crate::ui::switcher::prefix_chip_width(ui_prefix) + 1)
 }
 
 /// The horizontal-nav layout nav height drag range. A horizontal nav one row tall still lists its cards
-/// along that row, so the min is one row, and a nav border dragged past it collapses the
-/// horizontal nav;
+/// along that row, so the min is one row, and a nav border drag clamps at it;
 /// compute_regions clamps the max down to the body so the terminal always keeps room.
 pub(crate) const NAV_HEIGHT_MIN: u16 = 1;
 pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
@@ -34,16 +33,17 @@ pub(crate) struct AppModel {
     pub(crate) render_plan: RenderPlan,
     pub(crate) nav_width: u16,
     pub(crate) nav_width_natural: u16,
-    pub(crate) nav_collapsed: bool,
     pub(crate) nav_height: u16,
     pub(crate) nav_position: NavPosition,
     pub(crate) nav_position_pinned: Option<NavPosition>,
     pub(crate) nav_default: NavPosition,
     pub(crate) max_fps: u16,
     pub(crate) applied_nav_height: u16,
-    pub(crate) applied_nav_collapsed: bool,
     pub(crate) auto_hide_nav: bool,
     pub(crate) nav_was_focused: bool,
+    /// The floating nav's current box (auto-placed or dragged), recomputed by the runtime
+    /// from the terminal's empty space when `nav_position` is [`NavPosition::Floating`].
+    pub(crate) floating_rect: Option<ratatui::layout::Rect>,
     pub(crate) mouse_state: MouseState,
     pub(crate) connected: HashSet<String>,
     pub(crate) detecting: HashSet<String>,
@@ -141,16 +141,15 @@ impl AppModel {
             render_plan: RenderPlan::default(),
             nav_width: crate::ui::switcher::NAV_WIDTH,
             nav_width_natural: crate::ui::switcher::NAV_WIDTH,
-            nav_collapsed: false,
             nav_height: 0,
             nav_position: NavPosition::Left,
             nav_position_pinned: None,
             nav_default: NavPosition::Left,
             max_fps: crate::provision::config::DEFAULT_MAX_FPS,
             applied_nav_height: u16::MAX,
-            applied_nav_collapsed: true,
             auto_hide_nav: false,
             nav_was_focused: true,
+            floating_rect: None,
             mouse_state: MouseState::default(),
             connected: HashSet::new(),
             detecting: HashSet::new(),
@@ -170,7 +169,7 @@ impl AppModel {
             width: self.nav_width,
             height: self.nav_height,
             position: self.nav_position,
-            collapsed: self.nav_collapsed,
+            floating: self.floating_rect,
         }
     }
 
@@ -325,6 +324,9 @@ pub(crate) enum Msg {
         horizontal: bool,
     },
     SetMouseHovered(bool),
+    /// Whether the pointer rests on the floating nav's box: while it does, the box holds
+    /// its position and no relocation moves it out from under the cursor.
+    SetMouseOverFloating(bool),
     SetResizing(bool),
     /// The button-up that ends a popup drag: a release on the grabbed cell is a click.
     EndPopupDrag,
@@ -343,8 +345,6 @@ pub(crate) enum Msg {
         col: u16,
         row: u16,
     },
-    ToggleNavCollapsed,
-    SetNavCollapsed(bool),
     SetNavNaturalWidth(u16),
     SetNavHeight(u16),
     ResizeNav {
@@ -427,7 +427,6 @@ pub(crate) enum Effect {
     },
     PersistNavWidth(u16),
     PersistNavHeight(u16),
-    PersistNavCollapsed(bool),
     PersistNavPosition(Option<NavPosition>),
     PersistSshLogins(HashMap<String, crate::model::RecordedLogin>),
     ReattachDisplay(Selection),
@@ -487,10 +486,6 @@ impl std::fmt::Debug for Effect {
             Self::PersistNavHeight(height) => {
                 f.debug_tuple("PersistNavHeight").field(height).finish()
             }
-            Self::PersistNavCollapsed(collapsed) => f
-                .debug_tuple("PersistNavCollapsed")
-                .field(collapsed)
-                .finish(),
             Self::PersistNavPosition(position) => {
                 f.debug_tuple("PersistNavPosition").field(position).finish()
             }
@@ -1603,7 +1598,6 @@ fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice)
             }
             KeyCommand::FocusNav => update(model, Msg::Focus(crate::model::FocusTarget::Nav)),
             KeyCommand::Check => update(model, Msg::ToggleCheck),
-            KeyCommand::Collapse => update(model, Msg::ToggleNavCollapsed),
             KeyCommand::AutoHide => update(model, Msg::Action(Action::ToggleAutoHide)),
             KeyCommand::Position => update(model, Msg::CycleNavPosition),
             KeyCommand::History => update(model, Msg::ToggleHistory),
@@ -1668,6 +1662,10 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             let hit = model.switcher.mouse_select(&model.render_plan, col, row);
             if hit && execute {
                 update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
+            } else if !hit && execute {
+                // A click on the nav that lands on no target is a click ON the nav and
+                // nothing else: it brings the nav the focus without selecting anything.
+                update(model, Msg::Focus(crate::model::FocusTarget::Nav))
             } else {
                 Vec::new()
             }
@@ -2136,15 +2134,39 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.mouse_state.hovered_nav_border = hovered;
             Vec::new()
         }
+        Msg::SetMouseOverFloating(over) => {
+            model.mouse_state.hovering_floating_nav = over;
+            Vec::new()
+        }
         Msg::SetResizing(resizing) => {
             model.mouse_state.resizing = resizing;
             Vec::new()
         }
         Msg::EndPopupDrag => {
-            model
+            // A click on the floating nav's box routes as a nav click: the terminal
+            // view's focus switches into the nav (docking), the nav's focus selects and
+            // executes the card under it. A click on the key list or a modal popup
+            // executes its list choice as before.
+            match model
                 .switcher
-                .end_popup_drag_in_plan(&model.render_plan, &mut model.state);
-            execute_list_choice(model)
+                .end_popup_drag_in_plan(&model.render_plan, &mut model.state)
+            {
+                Some((crate::ui::modal::PopupSurface::FloatingNav, col, row)) => {
+                    // The nav's general mouse rule applies to the floating box too: a
+                    // click on a card interacts with it (selects and executes) whether or
+                    // not the nav holds the focus, and a click on the box's empty area
+                    // focuses the nav.
+                    update(
+                        model,
+                        Msg::MouseSelect {
+                            col,
+                            row,
+                            execute: true,
+                        },
+                    )
+                }
+                _ => execute_list_choice(model),
+            }
         }
         Msg::AbandonPopupDrag => {
             model.switcher.end_popup_drag();
@@ -2165,18 +2187,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .switcher
                 .begin_popup_drag_in_plan(&model.render_plan, col, row, &model.state);
             Vec::new()
-        }
-        Msg::ToggleNavCollapsed => {
-            model.nav_collapsed = !model.nav_collapsed;
-            model.mouse_state.hovered_nav_border = false;
-            vec![Effect::PersistNavCollapsed(model.nav_collapsed)]
-        }
-        Msg::SetNavCollapsed(collapsed) => {
-            if model.nav_collapsed == collapsed {
-                Vec::new()
-            } else {
-                update(model, Msg::ToggleNavCollapsed)
-            }
         }
         Msg::SetNavNaturalWidth(width) => {
             model.nav_width_natural = width;
@@ -2272,10 +2282,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             let nav_focused = model.state.focus.view_is_nav();
             model.switcher.sync_view_focus(!nav_focused);
             let mut effects = Vec::new();
-            if nav_focused && !model.nav_was_focused && model.nav_collapsed {
-                model.nav_collapsed = false;
-                effects.push(Effect::PersistNavCollapsed(false));
-            }
             model.nav_was_focused = nav_focused;
             model.state.chrome.set_auto_hide(model.auto_hide_nav);
             if model.state.recorded_logins != model.saved_logins {
@@ -2288,7 +2294,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.nav_position = position;
             model.nav_width = width;
             model.applied_nav_height = model.nav_height;
-            model.applied_nav_collapsed = model.nav_collapsed;
             model.state.chrome.set_nav_position(position);
             Vec::new()
         }

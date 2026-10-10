@@ -64,8 +64,14 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   routing.
 - **split view** - the whole two-region layout.
 - **navigation view (nav)** - the region holding the cards, attached as a vertical nav
-  (a left or right column) or a horizontal nav (a top or bottom row). Never the
+  (a left or right column) or a horizontal nav (a top or bottom row), or floating as a
+  content-fit box over the terminal view. Never the
   "sidebar" or the "tree".
+- **floating nav** - the nav floating as a box over the full-screen terminal view, as
+  wide as the nav width and as tall as its card list, placed over the topmost text-free
+  area that fits it (or the top of the widest blank area), draggable, docked as a right
+  nav while the nav view holds focus or the prefix is armed. The attachment position
+  `floating`.
 - **terminal view** - the other region: the selected session's grid or a view screen.
 - **`ViewFocus`** - which region holds focus, the nav or the terminal view.
 - **nav border** - the line between the nav and the terminal view. Its colour states
@@ -79,9 +85,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **chrome** - the furniture around the two views: the nav border, the prefix hint, and
   the view screens. Never a "status surface".
 - **nav size** - the nav's live geometry as one value: the set width, the on-screen
-  width, the horizontal nav height, the attached side, and the collapsed state.
-- **collapsed nav** - the nav reduced to its prefix hint, keeping its natural size
-  for when it expands.
+  width, the horizontal nav height, and the attached side.
 - **column flow** - how a horizontal nav lays out its rows: down a column, then right,
   a whole section per column.
 - **grid** - xmux's in-memory cell mirror of the attached session's screen, drawn in the

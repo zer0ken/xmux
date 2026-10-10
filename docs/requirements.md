@@ -78,8 +78,8 @@ against, naming no source file, function, or test.
   and the other pair focuses the nav, while bare arrows move between cards.
 - **FR-B15** - The nav's side is a placement pinned at runtime by `prefix p` when one
   exists, else the `[ui] nav-position` default, and the nav never moves on its own.
-- **FR-B16** - The nav's width, horizontal nav height, side, and collapsed state are live and
-  persisted, set by resize keys, nav border drag, `prefix z`, and auto-hide.
+- **FR-B16** - The nav's width, horizontal nav height, and side are live and
+  persisted, set by resize keys, nav border drag, and auto-hide.
 - **FR-B17** - The prefix hint is a chip naming the prefix, and the active filter paints
   its match cell by cell; a result of an action is a toast, never advice.
 - **FR-B18** - A prefix interaction lasts until the function it starts ends, and the key
@@ -101,8 +101,17 @@ against, naming no source file, function, or test.
   unreachable, and inventory failure, where Enter or a click selects the machine and
   opens its login pane.
 - **FR-B25** - The nav attaches on the left, top, right, or bottom of the terminal view,
-  with `prefix p` cycling the side clockwise and the layout inside the nav identical at
-  every side.
+  or floats as a box over the terminal's empty space, with `prefix p` cycling the side
+  clockwise and unpinning at `floating`, the last position, and the layout inside the
+  nav identical at every side. The floating box is as wide as the nav width the user
+  set and as tall as the card list it shows plus its border, with the prefix hint on
+  its top border's left, and moves in real time to the topmost text-free area the box
+  fits whole, its right border never more than five cells from the window's right wall;
+  when no area fits the box it sits at the top of the widest text-free area. Dragging it
+  from anywhere on the box moves it anywhere in the window; a drop holds the position
+  for ten seconds, then the position is forgotten and the scan resumes. While the nav
+  view holds the focus or the prefix is armed the box docks and behaves exactly as a
+  right nav does; the focus's return to the terminal view or the chord's end undocks it.
 - **FR-B26** - A machine ssh refuses for a reason a login can fix is blocked: it shows `?`
   and the login pane, with the failing input field marked `✗`.
 - **FR-B27** - The login pane takes the address, port, username, and an optional masked

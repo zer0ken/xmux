@@ -82,7 +82,6 @@ impl Switcher {
             RescanMachine,
             Logout,
             Check,
-            Collapse,
             AutoHide,
             Position,
             History,
@@ -161,16 +160,33 @@ impl Switcher {
     }
 
     /// Returns the key list or the popup to its anchored position once it is off screen,
-    /// so the next one opens where the key list opens.
+    /// so the next one opens where the key list opens. The floating nav's offset is kept
+    /// while the nav floats: a drag holds the box where the user left it, and the reset
+    /// is the forget that hands the position back to the empty-space scan.
     pub fn settle_popup_position(&mut self, state: &crate::state::State) {
-        self.popup_geo
-            .settle(key_list_open(state), state.is_modal_popup_open());
+        self.popup_geo.settle(
+            key_list_open(state),
+            state.is_modal_popup_open(),
+            state.chrome.nav_position == crate::model::NavPosition::Floating,
+        );
     }
 
-    /// True while the key list or a modal popup is being dragged; the app routes every
-    /// mouse event here until release, like the nav border drag / menu hold.
+    /// True while the key list, a modal popup, or the floating nav is being dragged; the
+    /// app routes every mouse event here until release, like the nav border drag / menu
+    /// hold. The bool says whether the pointer has left the grabbed cell.
     pub fn popup_drag_active(&self) -> bool {
         self.popup_geo.drag_active()
+    }
+
+    /// The surface being dragged and whether it has moved, while a drag is in flight.
+    pub(crate) fn popup_drag_of(&self) -> Option<(modal::PopupSurface, bool)> {
+        self.popup_geo.drag_of()
+    }
+
+    /// Drops the floating nav's drag offset: the forget that hands its position back to
+    /// the empty-space scan.
+    pub fn reset_floating_offset(&mut self) {
+        self.popup_geo.reset_floating();
     }
 
     /// Updates the grabbed box's offset from the pointer while a drag is active.

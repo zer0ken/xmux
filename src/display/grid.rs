@@ -314,6 +314,16 @@ impl Grid {
             .all(|l| l.is_empty() || ignored(l))
     }
 
+    /// Whether the cell at `(row, col)` carries no visible glyph. The floating nav scans
+    /// these to sit over the terminal's empty space.
+    /// Whether a cell carries no glyph. A wide char's right half counts as taken, so a
+    /// box edge never lands on half a glyph.
+    pub fn cell_blank(&self, row: u16, col: u16) -> bool {
+        self.visible()
+            .cell(row, col)
+            .is_none_or(|c| !c.has_contents() && !c.is_wide_continuation())
+    }
+
     /// A cheap, stable hash of the visible cell contents. Changes if and only if the
     /// rendered text changes - used to detect whether a display transition actually
     /// produced a different screen, so a `display_show decision=switch` not followed
@@ -1200,5 +1210,20 @@ Connection to host closed.
         g.feed(b"session-b output");
         let fp_b = g.fingerprint();
         assert_ne!(fp_a, fp_b, "different content yields different fingerprint");
+    }
+
+    #[test]
+    fn cell_blank_counts_a_wide_continuation_as_taken() {
+        // A wide char's right half is part of the glyph, so the empty-space scan never
+        // lands a box edge on half a glyph.
+        let mut g = Grid::new(1, 4);
+        g.feed("한a".as_bytes()); // 한 = wide, occupies cols 0-1; a = col 2; col 3 blank
+        assert!(!g.cell_blank(0, 0), "the wide char's left half is taken");
+        assert!(
+            !g.cell_blank(0, 1),
+            "the wide char's right half is taken, not blank"
+        );
+        assert!(!g.cell_blank(0, 2), "a narrow char is taken");
+        assert!(g.cell_blank(0, 3), "a truly blank cell is blank");
     }
 }

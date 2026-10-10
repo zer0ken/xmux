@@ -65,8 +65,8 @@ impl Runtime {
         } = self;
         let (cols, rows) = (*cols, *rows);
         // The nav's live size as one value, read once for this effect: the width the user
-        // set, the width on screen, the horizontal nav height, the attachment side, and whether it
-        // is collapsed. Every geometry below is cut from it, so none re-derives a part.
+        // set, the width on screen, the horizontal nav height, and the attachment side.
+        // Every geometry below is cut from it, so none re-derives a part.
         let mut followups = Vec::new();
         match effect {
             EventEffect::MarkConnected { .. }
@@ -687,12 +687,7 @@ impl Runtime {
             0,
             &env.ui_prefix,
         );
-        let nav_collapsed = crate::app::prefs::load_nav_collapsed(&env.xmux_dir);
-        let nav_width = if nav_collapsed {
-            crate::ui::switcher::collapsed_nav_width(&env.ui_prefix)
-        } else {
-            nav_width_natural
-        };
+        let nav_width = nav_width_natural;
         // Restore the horizontal nav-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::app::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
@@ -816,16 +811,15 @@ impl Runtime {
             state,
             nav_width,
             nav_width_natural,
-            nav_collapsed,
             nav_height,
             nav_position,
             nav_position_pinned,
             nav_default,
             max_fps,
             applied_nav_height: u16::MAX,
-            applied_nav_collapsed: !nav_collapsed,
             auto_hide_nav,
             nav_was_focused: true,
+            floating_rect: None,
             mouse_state: MouseState::default(),
             connected: HashSet::new(),
             detecting: HashSet::new(),
@@ -863,6 +857,7 @@ impl Runtime {
             term_input,
             nav_decoder,
             paste: Default::default(),
+            floating_frozen_at: None,
             window_focused: true,
             child_focus: None,
             keyboard_pushed: false,
@@ -907,12 +902,108 @@ impl Runtime {
     /// width persist, then draw the gated frame. `term` is the loop-local ratatui
     /// terminal.
     /// The nav's live size, in one place: the width the user set, the width on screen
-    /// (0 while auto-hide has taken it), the horizontal nav height the user set, the side the nav is
-    /// attached to, and the collapsed state. Every geometry the loop computes reads this instead of picking
+    /// (0 while auto-hide has taken it), the horizontal nav height the user set, and the side the nav is
+    /// attached to. Every geometry the loop computes reads this instead of picking
     /// fields out of `self`, so a resize while xmux runs cannot reach one consumer and
     /// miss another.
     pub(super) fn nav_size(&self) -> crate::ui::switcher::NavSize {
         self.model.nav_size()
+    }
+
+    /// Recomputes and stores the floating nav's box each frame: a content-fit box sized
+    /// to the nav's card content, placed over the terminal's widest empty strip near the
+    /// right wall. A drop of the box's drag holds the position for 10 seconds from the
+    /// release, then the position is forgotten (the drag offset dropped) and the scan
+    /// resumes. Returns the nav size the frame should use.
+    pub(super) fn place_floating_nav(
+        &mut self,
+        area: ratatui::layout::Rect,
+        grid: Option<&crate::display::grid::Grid>,
+        nav: crate::ui::switcher::NavSize,
+    ) -> crate::ui::switcher::NavSize {
+        use crate::ui::switcher::{floating_nav_box, NavPosition};
+        if nav.position != NavPosition::Floating {
+            self.model.floating_rect = None;
+            return nav;
+        }
+        let frozen = self
+            .floating_frozen_at
+            .is_some_and(|t| t.elapsed() < Self::FLOATING_FREEZE);
+        // A drag in flight owns the box's position and a drop holds it for the freeze
+        // span; the empty-space scan only relocates outside those. While the pointer
+        // rests on the box, nothing moves it: no matter what the grid or the content
+        // does, the box holds where it is until the pointer leaves.
+        if !frozen
+            && !self.model.mouse_state.hovering_floating_nav
+            && !self.model.switcher.popup_drag_active()
+        {
+            // A freeze that just ended is a forget: the dropped position is abandoned
+            // and the box re-places. Otherwise the box keeps its spot while it still
+            // fits there whole, so a scrolling grid never makes it hop frame to frame.
+            let expired = self.floating_frozen_at.take().is_some();
+            let w = self.floating_box_width(area, nav);
+            let h = self.floating_box_height(area).max(1);
+            let stays = !expired
+                && self.model.floating_rect.is_some_and(|held| {
+                    held.x + w <= area.right()
+                        && held.y + h <= area.bottom()
+                        && grid.is_none_or(|g| {
+                            (held.y..held.y + h)
+                                .all(|y| (held.x..held.x + w).all(|x| g.cell_blank(y, x)))
+                        })
+                });
+            if stays {
+                if let Some(held) = &mut self.model.floating_rect {
+                    held.width = w;
+                    held.height = h;
+                }
+            } else {
+                self.model.switcher.reset_floating_offset();
+                let rect = match grid {
+                    Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
+                    None => {
+                        ratatui::layout::Rect::new(area.right().saturating_sub(w), area.y, w, h)
+                    }
+                };
+                self.model.floating_rect = Some(rect);
+            }
+        }
+        self.model.nav_size()
+    }
+
+    /// How long a drop of the floating nav's box holds the auto-relocation, from the
+    /// release to the forget.
+    const FLOATING_FREEZE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// The share of the drop-hold freeze still ahead, as 0 to 1000, while a dropped drag
+    /// holds the floating nav in place. `None` when the box is free to relocate. The
+    /// floating box's bottom border draws it the way a toast draws its remaining life.
+    fn floating_freeze_fraction(&self) -> Option<u16> {
+        let elapsed = self.floating_frozen_at?.elapsed();
+        (elapsed < Self::FLOATING_FREEZE).then(|| {
+            let frac = 1.0 - elapsed.as_secs_f32() / Self::FLOATING_FREEZE.as_secs_f32();
+            (frac * 1000.0).round().clamp(0.0, 1000.0) as u16
+        })
+    }
+
+    /// The floating nav's box width: the nav width the user set, the same value a
+    /// right nav's column is wide, capped by the screen.
+    fn floating_box_width(
+        &self,
+        area: ratatui::layout::Rect,
+        nav: crate::ui::switcher::NavSize,
+    ) -> u16 {
+        nav.natural.min(area.width)
+    }
+
+    /// The floating nav's box height: the nav's card content height from the previous
+    /// frame plus its two border rows, so the box wraps the content (content-fit).
+    fn floating_box_height(&self, area: ratatui::layout::Rect) -> u16 {
+        // Content-fit: the box is as tall as the nav's card content plus its two border
+        // rows. Sized from the actual content (the painted row count), never from a
+        // previous frame's laid-out cells, so the box always has room for every card.
+        let content = self.model.switcher.nav_content_rows();
+        content.saturating_add(2).min(area.height).max(3)
     }
 
     /// Generic over the backend so the headless tests drive the same loop-top reconcile
@@ -930,7 +1021,6 @@ impl Runtime {
         if self.model.state.chrome.armed != prefix_active {
             self.dirty = true;
         }
-        let collapsed_before = self.model.nav_collapsed;
         let effects = update(
             &mut self.model,
             Msg::SyncFrame {
@@ -941,18 +1031,13 @@ impl Runtime {
             },
         );
         let _ = self.execute_effects(effects);
-        if collapsed_before != self.model.nav_collapsed {
-            self.dirty = true;
-        }
         // The single owner of the effective nav width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
-        // mux reflows, and mark dirty.
+        // mux reflows, and mark dirty. The crowd check always uses the nav's natural
+        // width (never the already-hidden width), so a hidden nav cannot look uncrowded
+        // on the next frame and come back.
         let shown = crate::ui::switcher::NavSize {
-            width: if self.model.nav_collapsed {
-                crate::ui::switcher::collapsed_nav_width(&self.env.ui_prefix)
-            } else {
-                self.model.nav_width_natural
-            },
+            width: self.model.nav_width_natural,
             ..self.model.nav_size()
         };
         let crowds = crate::ui::switcher::nav_crowds_terminal(
@@ -965,22 +1050,30 @@ impl Runtime {
             crowds,
             prefix_active,
             self.model.nav_width_natural,
-            self.model.nav_collapsed,
-            &self.env.ui_prefix,
         );
         // The nav's attachment side is resolved here too, every frame: a pinned side
         // wins, else the [ui] default. The nav never moves on its own.
-        let want_position = self
+        let mut want_position = self
             .model
             .nav_position_pinned
             .unwrap_or(self.model.nav_default);
+        // The floating nav docks for the span of the interaction: while the nav view
+        // holds the focus or the prefix is armed (prefix ready) it behaves exactly as a
+        // right nav does (the column takes its region, the terminal view keeps the
+        // remainder, every right-nav key and drag works), and the focus's return to the
+        // terminal view or the chord's end undocks it. The flip is a position change, so
+        // the reconcile below resizes the PTYs and forces a repaint.
+        if want_position == crate::ui::switcher::NavPosition::Floating
+            && (self.model.state.focus.view_is_nav() || prefix_active)
+        {
+            want_position = crate::ui::switcher::NavPosition::Right;
+        }
         // Resize when ANY dimension of the split moved: the width (focus / hide / prefix
         // Ctrl-←/→ in a column), the horizontal nav height (border drag / resize keys), or the side the
         // nav is attached to. All change the mux terminal region, so all must resize the
         // PTYs or the grid mismatches the draw.
         if want_nav_width != self.model.nav_width
             || self.model.nav_height != self.model.applied_nav_height
-            || self.model.nav_collapsed != self.model.applied_nav_collapsed
             || want_position != self.model.nav_position
         {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char
@@ -1107,9 +1200,11 @@ impl Runtime {
                     // of `self` (the fingerprint block's borrows have ended above).
                     let drawn = term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        let plan = self
-                            .model
-                            .prepare_render_plan(f.area(), nav, &previous_plan);
+                        let nav = self.place_floating_nav(f.area(), guard.as_deref(), nav);
+                        let mut plan =
+                            self.model
+                                .prepare_render_plan(f.area(), nav, &previous_plan);
+                        plan.floating_freeze = self.floating_freeze_fraction();
                         let switcher = &self.model.switcher;
                         let state = &self.model.state;
                         switcher.render(f, guard.as_deref(), terminal_focused, state, &plan);
@@ -1125,9 +1220,11 @@ impl Runtime {
                     Self::sync_kitty_images(&mut self.kitty_images, None);
                     let drawn = term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        let plan = self
-                            .model
-                            .prepare_render_plan(f.area(), nav, &previous_plan);
+                        let nav = self.place_floating_nav(f.area(), None, nav);
+                        let mut plan =
+                            self.model
+                                .prepare_render_plan(f.area(), nav, &previous_plan);
+                        plan.floating_freeze = self.floating_freeze_fraction();
                         let switcher = &self.model.switcher;
                         let state = &self.model.state;
                         switcher.render(f, None, terminal_focused, state, &plan);

@@ -13,9 +13,8 @@ use crate::app::model::{nav_width_min, NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH
 use crate::display::dispatch::Action;
 use crate::model::keys::{prefix_command, Chord, KeyCommand};
 
-/// The nav width a nav border drag to 1-based screen column `col` sets, capped at the
-/// max, or `None` when the drag is narrower than the expanded nav's minimum, which
-/// collapses the nav. With the nav on the left the dragged column becomes the border
+/// The nav width a nav border drag to 1-based screen column `col` sets, clamped to the
+/// min..max range. With the nav on the left the dragged column becomes the border
 /// position (= the nav width); with the nav on the right the mirror applies and the size
 /// is the window minus the dragged column.
 pub(crate) fn nav_border_drag_width(
@@ -23,32 +22,27 @@ pub(crate) fn nav_border_drag_width(
     ui_prefix: &str,
     window_cols: u16,
     nav_on_right: bool,
-) -> Option<u16> {
+) -> u16 {
     let w = if nav_on_right {
         window_cols.saturating_sub(col)
     } else {
         col.saturating_sub(1)
     };
-    (w >= nav_width_min(ui_prefix)).then(|| w.min(NAV_WIDTH_MAX))
+    w.clamp(nav_width_min(ui_prefix), NAV_WIDTH_MAX)
 }
 
 /// The horizontal-nav layout nav height a horizontal nav border drag to 1-based screen row `row`
-/// sets, capped at the max, or `None` when the drag leaves the horizontal nav less than its minimum,
-/// which collapses the horizontal nav. With the nav on top the dragged row becomes the border
+/// sets, clamped to the min..max range. With the nav on top the dragged row becomes the border
 /// position (0-based), which is the nav height; with the nav on the bottom the mirror
 /// applies and the size is the window minus the dragged row. compute_regions clamps
 /// further to the live body height.
-pub(crate) fn nav_border_drag_height(
-    row: u16,
-    window_rows: u16,
-    nav_on_bottom: bool,
-) -> Option<u16> {
+pub(crate) fn nav_border_drag_height(row: u16, window_rows: u16, nav_on_bottom: bool) -> u16 {
     let h = if nav_on_bottom {
         window_rows.saturating_sub(row)
     } else {
         row.saturating_sub(1)
     };
-    (h >= NAV_HEIGHT_MIN).then(|| h.min(NAV_HEIGHT_MAX))
+    h.clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX)
 }
 /// If `bytes` STARTS with a Ctrl-arrow, legacy (`ESC [ 1 ; 5 A/B/C/D`) or in the kitty
 /// keyboard protocol's form, returns `(horizontal, delta, len)`: the axis (true = ←/→
@@ -117,39 +111,31 @@ fn is_focus_in(code: KeyCode) -> bool {
     matches!(code, KeyCode::Enter)
 }
 
-/// Whether a wheel event should drive the NAV (a scroll: the flat list has no levels).
-/// Only when the nav is focused AND the pointer is over the nav: mouse input acts on
-/// the view under the selection, and only when that view is focused - the same rule clicks
-/// and motion already follow. A wheel over the terminal view while the nav is focused is not
-/// a nav scroll.
-fn wheel_targets_nav(nav_focused: bool, over_mux: bool) -> bool {
-    nav_focused && !over_mux
-}
-
 /// What a mouse event resolves to once the modal/gesture gates (menu, nav border drag,
 /// idle-nav border-hover, menu-open) have declined it - the focus×position routing core.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ChainAction {
-    /// Scroll the nav by one row (wheel, nav focus, over nav). `down` = scroll down.
+    /// Scroll the nav by one row (wheel, over nav). `down` = scroll down.
     /// Ctrl held changes nothing: the nav is a flat list, so there is no level to
     /// change and a wheel is a wheel.
     ScrollNav(bool),
     /// Toggle focus to the terminal view (left-click the terminal view while the nav is focused).
     FocusTerminal,
-    /// Select the clicked nav row (left-click a nav row while the nav is focused).
+    /// Select the clicked nav row (left-click a nav row, whatever the focus).
     SelectRow,
-    /// Toggle focus to the nav (left-click the nav while the terminal view is focused).
-    FocusNav,
     /// Forward the event to the focused mux child (terminal focus, over the terminal view).
     ForwardToMux,
     /// Nothing - the event is dropped.
     Nothing,
 }
 
-/// Pure focus×position routing for a mouse event that fell through every gate. The one
-/// rule: input acts on the view under the selection, and only when that view is focused.
-/// A wheel over the terminal view while the nav is focused, or over the nav while the terminal view is
-/// focused, resolves to Nothing - it never crosses to the unfocused view.
+/// Pure focus×position routing for a mouse event that fell through every gate. The nav
+/// takes its own actions wherever the pointer is over it - a wheel scrolls it, a click
+/// selects the row under it - whether or not it holds the focus. Over the terminal view
+/// the event follows focus instead: it forwards to the mux child when the terminal view
+/// is focused, and switches focus to the terminal view when the nav holds it. A wheel over
+/// the terminal view while the nav is focused resolves to Nothing - it never crosses to
+/// the unfocused view.
 pub(crate) fn resolve_mouse_chain(
     is_wheel: bool,
     down: bool,
@@ -157,17 +143,16 @@ pub(crate) fn resolve_mouse_chain(
     nav_focused: bool,
     over_mux: bool,
 ) -> ChainAction {
-    if is_wheel && wheel_targets_nav(nav_focused, over_mux) {
+    // Over the nav, position alone decides: the nav owns its wheel and clicks.
+    if is_wheel && !over_mux {
         return ChainAction::ScrollNav(down);
     }
-    if is_left_press && nav_focused && over_mux {
-        return ChainAction::FocusTerminal;
-    }
-    if is_left_press && nav_focused && !over_mux {
+    if is_left_press && !over_mux {
         return ChainAction::SelectRow;
     }
-    if is_left_press && !nav_focused && !over_mux {
-        return ChainAction::FocusNav;
+    // Over the terminal view, focus decides which of it and the nav gets the event.
+    if is_left_press && nav_focused {
+        return ChainAction::FocusTerminal;
     }
     if !nav_focused && over_mux {
         return ChainAction::ForwardToMux;
@@ -243,7 +228,6 @@ fn nav_action(command: KeyCommand, key: ratatui::crossterm::event::KeyEvent) -> 
         KeyCommand::Check => Some(Action::ShowCheck),
         KeyCommand::Palette => Some(Action::ShowPalette),
         KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
-        KeyCommand::Collapse => Some(Action::ToggleCollapse),
         KeyCommand::Position => Some(Action::CycleNavPosition),
         KeyCommand::Width(d) => Some(Action::Width(d)),
         KeyCommand::Height(d) => Some(Action::Height(d)),
@@ -271,6 +255,10 @@ pub(crate) struct MouseState {
     pub(crate) dragging_nav_border: bool,
     /// True while the mouse hovers the nav border rule (no button) - the drag-resize cue.
     pub(crate) hovered_nav_border: bool,
+    /// True while the pointer rests on the floating nav's box (no button) - the box holds
+    /// its position for as long as it, so a relocation never yanks it out from under the
+    /// cursor.
+    pub(crate) hovering_floating_nav: bool,
     /// The resize mode a prefix resize starts: bare Ctrl+arrows keep resizing until
     /// another key ends it.
     pub(crate) resizing: bool,
@@ -450,7 +438,6 @@ mod tests {
             KeyCommand::Check => Some(Action::ShowCheck),
             KeyCommand::Palette => Some(Action::ShowPalette),
             KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
-            KeyCommand::Collapse => Some(Action::ToggleCollapse),
             KeyCommand::Position => Some(Action::CycleNavPosition),
             KeyCommand::Width(d) => Some(Action::Width(d)),
             KeyCommand::Height(d) => Some(Action::Height(d)),
@@ -709,29 +696,9 @@ mod tests {
 
     // --- mouse focus/position rules ----------------------------------------
     #[test]
-    fn wheel_targets_nav_only_when_nav_focused_and_over_nav() {
-        assert!(
-            wheel_targets_nav(true, false),
-            "nav focus + over nav → drive the nav"
-        );
-        assert!(
-            !wheel_targets_nav(true, true),
-            "nav focus + over the MUX pane → NOT the nav"
-        );
-        assert!(
-            !wheel_targets_nav(false, false),
-            "terminal-view focus + over nav → not the nav"
-        );
-        assert!(
-            !wheel_targets_nav(false, true),
-            "terminal-view focus + over the terminal view → the mux child, not the nav"
-        );
-    }
-
-    #[test]
     fn resolve_mouse_chain_routes_by_focus_and_position() {
         use ChainAction::*;
-        // wheel: only drives the nav when nav-focused AND over the nav.
+        // wheel: over the nav it always scrolls, whatever the focus holds.
         assert_eq!(
             resolve_mouse_chain(true, true, false, true, false),
             ScrollNav(true),
@@ -743,6 +710,11 @@ mod tests {
             "Ctrl+wheel is just a wheel: a flat list has no level to change"
         );
         assert_eq!(
+            resolve_mouse_chain(true, true, false, false, false),
+            ScrollNav(true),
+            "wheel, terminal-view focus, over nav → still scrolls the nav"
+        );
+        assert_eq!(
             resolve_mouse_chain(true, true, false, true, true),
             Nothing,
             "wheel, nav focus, over MUX → nothing (never crosses panes)"
@@ -752,16 +724,11 @@ mod tests {
             ForwardToMux,
             "wheel, terminal-view focus, over the terminal view → forward to child"
         );
+        // left press: over the nav a click always selects, over the terminal view it follows focus.
         assert_eq!(
-            resolve_mouse_chain(true, true, false, false, false),
-            Nothing,
-            "wheel, terminal-view focus, over nav → nothing"
-        );
-        // left press: focus-switch on the unfocused view, act on the focused one.
-        assert_eq!(
-            resolve_mouse_chain(false, false, true, true, true),
-            FocusTerminal,
-            "left, nav focus, over terminal → focus terminal"
+            resolve_mouse_chain(false, false, true, false, false),
+            SelectRow,
+            "left, terminal-view focus, over nav → select the row"
         );
         assert_eq!(
             resolve_mouse_chain(false, false, true, true, false),
@@ -769,9 +736,9 @@ mod tests {
             "left, nav focus, over nav → select row"
         );
         assert_eq!(
-            resolve_mouse_chain(false, false, true, false, false),
-            FocusNav,
-            "left, terminal-view focus, over nav → focus nav"
+            resolve_mouse_chain(false, false, true, true, true),
+            FocusTerminal,
+            "left, nav focus, over terminal → focus terminal"
         );
         assert_eq!(
             resolve_mouse_chain(false, false, true, false, true),
@@ -986,24 +953,20 @@ mod tests {
     }
 
     #[test]
-    fn nav_border_drag_width_caps_and_collapses_past_the_floor() {
+    fn nav_border_drag_width_caps_and_clamps_at_the_floor() {
         // The dragged 1-based column becomes the 0-based nav width, capped at the max.
-        // Narrower than the expanded floor is a collapse, not a clamp.
+        // Narrower than the expanded floor clamps at it.
         let floor = crate::app::model::nav_width_min("C-g");
-        assert_eq!(nav_border_drag_width(51, "C-g", 140, false), Some(50));
-        assert_eq!(
-            nav_border_drag_width(floor + 1, "C-g", 140, false),
-            Some(floor),
-            "the floor itself is still an expanded nav"
-        );
+        assert_eq!(nav_border_drag_width(51, "C-g", 140, false), 50);
+        assert_eq!(nav_border_drag_width(floor + 1, "C-g", 140, false), floor);
         assert_eq!(
             nav_border_drag_width(floor, "C-g", 140, false),
-            None,
-            "one cell narrower collapses"
+            floor,
+            "one cell narrower clamps at the floor"
         );
         assert_eq!(
             nav_border_drag_width(500, "C-g", 140, false),
-            Some(NAV_WIDTH_MAX),
+            NAV_WIDTH_MAX,
             "too far right caps at max"
         );
     }
@@ -1013,22 +976,23 @@ mod tests {
         // On the right/bottom the drag measures from the FAR edge: the dragged 1-based
         // column/row is where the border lands, so the size is the window minus it.
         // Dragging the right border (0-based col 91 at a 48 width) to SGR 100 gives 40.
-        assert_eq!(nav_border_drag_width(91, "C-g", 140, true), Some(49));
-        assert_eq!(nav_border_drag_width(100, "C-g", 140, true), Some(40));
+        let floor = crate::app::model::nav_width_min("C-g");
+        assert_eq!(nav_border_drag_width(91, "C-g", 140, true), 49);
+        assert_eq!(nav_border_drag_width(100, "C-g", 140, true), 40);
         assert_eq!(
             nav_border_drag_width(135, "C-g", 140, true),
-            None,
-            "dragging the right border past the floor collapses"
+            floor,
+            "dragging the right border past the floor clamps"
         );
         // Same mirror on the height: dragging the bottom border (0-based row 35 at
         // the auto 24) to SGR 30 in a 60-row window gives 30; one row from the window's
-        // bottom edge is the one-row horizontal nav, and the edge itself collapses it.
-        assert_eq!(nav_border_drag_height(30, 60, true), Some(30));
-        assert_eq!(nav_border_drag_height(59, 60, true), Some(NAV_HEIGHT_MIN));
+        // bottom edge is the one-row horizontal nav, and the edge itself clamps there.
+        assert_eq!(nav_border_drag_height(30, 60, true), 30);
+        assert_eq!(nav_border_drag_height(59, 60, true), NAV_HEIGHT_MIN);
         assert_eq!(
             nav_border_drag_height(60, 60, true),
-            None,
-            "dragging the bottom border onto the edge collapses the band"
+            NAV_HEIGHT_MIN,
+            "dragging the bottom border onto the edge clamps at the minimum"
         );
     }
 
