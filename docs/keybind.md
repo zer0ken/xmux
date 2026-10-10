@@ -97,8 +97,8 @@ drag. A drop holds the position for ten seconds, then the position is forgotten 
 scan resumes. While the nav view holds the focus or the prefix is armed the box docks:
 it behaves exactly as a right nav does, the terminal view keeping the remainder, and
 the focus's return to the terminal view or the chord's end undocks it. A click
-on the box routes as a nav click: with the terminal view focused it docks the nav, with
-the nav focused it selects and executes the card under it.
+on the box routes as a nav click: a click on a card selects and executes it at once,
+whatever the focus, and a click on the box's empty area focuses the nav, which docks it.
 
 The layout inside the nav is identical at every side: a right column is the same list
 as a left one, and a bottom horizontal nav is the same down-then-right flow as a top one, a whole
