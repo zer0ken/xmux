@@ -394,6 +394,18 @@ impl Runtime {
                 debug_assert!(effects.is_empty());
                 dirty = true;
             }
+            // The floating nav's box holds its position while the pointer rests on it, so
+            // a relocation never yanks the box out from under the cursor.
+            let over_floating = self.model.render_plan.nav_position
+                == crate::ui::switcher::NavPosition::Floating
+                && regions
+                    .nav_border
+                    .contains(ratatui::layout::Position { x: col0, y: row0 });
+            if over_floating != self.model.mouse_state.hovering_floating_nav {
+                let effects = update(&mut self.model, Msg::SetMouseOverFloating(over_floating));
+                debug_assert!(effects.is_empty());
+                dirty = true;
+            }
             // The hover follows the pointer: a nav target while the nav holds
             // the focus, a screen link while the terminal view does.
             let before = self.model.switcher.hover_targets();
