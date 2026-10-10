@@ -7862,6 +7862,49 @@ fn a_click_off_the_landing_links_executes_nothing() {
 }
 
 #[test]
+fn a_click_on_the_navs_empty_area_brings_the_nav_the_focus() {
+    let mut rt = hierarchy_rt();
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.model.switcher.sync_view_focus(true);
+    sync_test_render_plan(&mut rt);
+    assert!(rt.model.state.focus.is_terminal_focused());
+    // A cell inside the nav that sits on no card and no half: the empty area of the nav.
+    let nav = rt.model.render_plan.nav_inner;
+    let occupied = |x: u16, y: u16| {
+        let at = ratatui::layout::Position { x, y };
+        rt.model
+            .render_plan
+            .nav_cells
+            .iter()
+            .any(|(_, r)| r.contains(at))
+            || rt
+                .model
+                .render_plan
+                .nav_parts
+                .iter()
+                .any(|(_, _, r)| r.contains(at))
+    };
+    let empty = (nav.x..nav.right())
+        .flat_map(|x| (nav.y..nav.bottom()).map(move |y| (x, y)))
+        .find(|&(x, y)| !occupied(x, y))
+        .expect("the nav has a blank cell to click");
+    let before = rt.model.switcher.selected_node();
+    click(&mut rt, 0, empty.0, empty.1);
+    assert!(
+        rt.model.state.focus.is_nav_focused(),
+        "a click on the nav's empty area brings the nav the focus"
+    );
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        before,
+        "the empty click selects nothing"
+    );
+}
+
+#[test]
 fn enter_in_the_nav_executes_the_landing_selection() {
     let mut rt = landing_rt();
     rt.handle_stdin_bytes(b"\x1b[B", &Selection::default());

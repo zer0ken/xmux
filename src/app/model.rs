@@ -1659,6 +1659,10 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             let hit = model.switcher.mouse_select(&model.render_plan, col, row);
             if hit && execute {
                 update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
+            } else if !hit && execute {
+                // A click on the nav that lands on no target is a click ON the nav and
+                // nothing else: it brings the nav the focus without selecting anything.
+                update(model, Msg::Focus(crate::model::FocusTarget::Nav))
             } else {
                 Vec::new()
             }
