@@ -9419,3 +9419,16 @@ async fn the_landing_list_says_attached_only_for_a_client_other_than_xmuxs_own()
         "{facts:?}"
     );
 }
+#[test]
+fn floating_nav_box_scans_rows_before_columns() {
+    // Rows outer, columns inner: the box lands on the topmost row it fits whole, and on
+    // that row the wall-most column, so the height beats the wall side.
+    let area = Rect::new(0, 0, 80, 24);
+    // Rows 0..9 hold full-width content; rows 10..23 are blank.
+    let blank = |_: u16, y: u16| !(y < 10);
+    assert_eq!(
+        floating_nav_box(area, 24, 8, blank),
+        Rect::new(56, 10, 24, 8),
+        "the box sits on the topmost blank row, wall-most column"
+    );
+}
