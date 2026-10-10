@@ -575,12 +575,12 @@ impl Switcher {
     /// move from the nav into the terminal view decides whether the host band is hidden
     /// (see `host_band_hidden`); the move back into the nav shows it again.
     pub fn sync_view_focus(&mut self, terminal: bool) {
-        // Each surface's hover lives only while that surface holds the focus.
+        // The nav's hover follows the pointer whether or not the nav holds the focus, so
+        // it survives a terminal focus. The link hover belongs to the terminal view, so
+        // it is dropped when the nav takes the focus (the landing screen excepted, which
+        // the nav's focus can still pick).
         let hovered = self.hover.is_some() || self.link_hover.is_some();
-        if terminal {
-            self.hover = None;
-        } else if !self.landing {
-            // The landing screen is pickable from the nav's focus, so its pointer stays.
+        if !terminal && !self.landing {
             self.link_hover = None;
         }
         let entered = terminal && !self.terminal_view;

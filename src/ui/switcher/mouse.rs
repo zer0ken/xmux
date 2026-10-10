@@ -214,18 +214,16 @@ impl Switcher {
         true
     }
 
-    /// The pointer resting at `(col, row)` while the nav holds the focus: the nav target
-    /// under it becomes the hover, whose screen the terminal view shows. Off any
+    /// The pointer resting at `(col, row)`: the nav target under it becomes the hover,
+    /// whose screen the terminal view shows. The nav takes the hover whether or not it
+    /// holds the focus - only the pointer's position over a nav target matters. Off any
     /// target the hover ends and the selection's screen shows again.
     /// Returns whether the hover changed.
     pub fn mouse_hover(&mut self, plan: &RenderPlan, col: u16, row: u16) -> bool {
-        let hover = if self.terminal_view {
-            None
-        } else {
-            self.target_at(plan, col, row)
-                .filter(|_| plan.overflow_target(col, row).is_none())
-                .map(|(i, part)| (self.rows[i].reference.clone(), part))
-        };
+        let hover = self
+            .target_at(plan, col, row)
+            .filter(|_| plan.overflow_target(col, row).is_none())
+            .map(|(i, part)| (self.rows[i].reference.clone(), part));
         let same = match (&self.hover, &hover) {
             (Some((a, p)), Some((b, q))) => p == q && same_node(a, b),
             (None, None) => true,

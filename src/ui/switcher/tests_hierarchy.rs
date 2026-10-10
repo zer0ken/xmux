@@ -711,15 +711,30 @@ fn hovering_a_nav_target_shows_its_screen_without_moving_the_selection() {
 }
 
 #[test]
-fn the_nav_takes_no_hover_while_the_terminal_view_holds_the_focus() {
+fn the_nav_takes_the_hover_while_the_terminal_view_holds_the_focus() {
     let mut h = fleet();
     h.select("gpu", "train");
     h.terminal_focused = true;
     h.draw();
     let deploy = h.card_row(|r| matches!(r, RowRef::Session { sess } if sess.name == "deploy"));
     let rect = h.card(deploy);
-    assert!(!h.sw.mouse_hover(&h.plan.clone(), rect.x, rect.y));
-    assert_eq!(h.sw.terminal_view_target().target, "train");
+    assert!(
+        h.sw.mouse_hover(&h.plan.clone(), rect.x, rect.y),
+        "the nav takes its hover whether or not it holds the focus"
+    );
+    // The draw re-syncs the focus; the nav hover must survive a terminal focus, not be
+    // cleared by it.
+    h.draw();
+    let rect = h.card(deploy);
+    assert!(
+        h.has_hover_style(rect),
+        "the nav hover is painted even in terminal focus"
+    );
+    assert_eq!(
+        h.sw.terminal_view_target().target,
+        "deploy",
+        "the hovered card's session is shown even in terminal focus"
+    );
 }
 
 #[test]
