@@ -1942,6 +1942,13 @@ impl Switcher {
         (nav, self.link_hover)
     }
 
+    /// Whether the pointer is resting on a nav target (the nav's hover is live). The nav
+    /// must not move on its own while it is: a display-follow would yank the selection out
+    /// from under the cursor. The auto-move paths ask before they move.
+    pub(crate) fn is_hovering_nav(&self) -> bool {
+        self.hover.is_some()
+    }
+
     /// Ends pointer targets whose geometry or inventory is no longer current.
     pub(crate) fn clear_hover(&mut self, nav: bool, links: bool) {
         if nav && self.hover.take().is_some() {

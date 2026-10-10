@@ -3060,12 +3060,45 @@ async fn a_mux_side_switch_in_terminal_focus_moves_the_nav_to_that_session() {
         "selection starts on api"
     );
 
+    eprintln!(
+        "before switch: sel={} hover={} shown={}",
+        rt.model.state.selection.session,
+        rt.model.switcher.is_hovering_nav(),
+        rt.hosts
+            .get("jup")
+            .unwrap()
+            .display
+            .shows("jup")
+            .unwrap_or("")
+    );
     rt.handle_host_event(HostEvent::ClientSessionChanged {
         host: "jup".into(),
         client: "/dev/pts/3".into(),
         session: "db".into(),
     });
+    eprintln!(
+        "after switch: sel={} hover={} shown={}",
+        rt.model.state.selection.session,
+        rt.model.switcher.is_hovering_nav(),
+        rt.hosts
+            .get("jup")
+            .unwrap()
+            .display
+            .shows("jup")
+            .unwrap_or("")
+    );
     one_pass(&mut rt, t0);
+    eprintln!(
+        "after pass: sel={} hover={} shown={}",
+        rt.model.state.selection.session,
+        rt.model.switcher.is_hovering_nav(),
+        rt.hosts
+            .get("jup")
+            .unwrap()
+            .display
+            .shows("jup")
+            .unwrap_or("")
+    );
     assert_eq!(
         rt.model.switcher.terminal_view_target().target,
         "db",
@@ -3075,6 +3108,89 @@ async fn a_mux_side_switch_in_terminal_focus_moves_the_nav_to_that_session() {
         rt.hosts.get("jup").unwrap().display.shows("jup"),
         Some("db"),
         "the two regions name one session: the client is where the nav now is"
+    );
+}
+
+#[test]
+fn a_nav_hover_holds_the_selection_against_a_display_follow() {
+    // While the pointer rests on a nav target the nav must not move on its own: a
+    // display-follow would yank the selection out from under the cursor. The nav
+    // highlight (the switcher's selection) holds where it is for as long as the hover
+    // lasts, and resumes following once the hover ends.
+    let mut state = crate::state::State::from_scan(two_session_scan());
+    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
+    switcher.select_address(&crate::session::Address::new("jup", "api"));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    rt.registry.insert_fake("jup", 7);
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    settled(&mut rt);
+    sync_test_render_plan(&mut rt);
+
+    // Rest the pointer on the db card, the session the switch is about to land on.
+    let db = rt.model.switcher.session_row("jup", "db").unwrap();
+    let rect = rt
+        .model
+        .render_plan
+        .nav_cells
+        .iter()
+        .find(|(i, _)| *i == db)
+        .map(|(_, r)| *r)
+        .unwrap();
+    assert!(
+        rt.model
+            .switcher
+            .mouse_hover(&rt.model.render_plan.clone(), rect.x, rect.y),
+        "the pointer rests on the db card"
+    );
+    assert!(rt.model.switcher.is_hovering_nav());
+
+    // The mux client moves to db: the follow sees the display disagree with the
+    // selection, but the hover holds the nav where it is.
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "db".into(),
+    });
+    assert!(
+        !rt.follow_selection_to_display(),
+        "the follow declines while hovering"
+    );
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        Some(crate::model::Node::Session(crate::session::Address::new(
+            "jup", "api"
+        ))),
+        "while the pointer hovers the nav, a display-follow does not move the nav selection"
+    );
+
+    // The pointer leaves the nav: the follow resumes and carries the nav to db.
+    rt.model
+        .switcher
+        .mouse_hover(&rt.model.render_plan.clone(), 200, 10);
+    assert!(!rt.model.switcher.is_hovering_nav());
+    assert!(
+        rt.follow_selection_to_display(),
+        "the follow acts once the hover ends"
+    );
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        Some(crate::model::Node::Session(crate::session::Address::new(
+            "jup", "db"
+        ))),
+        "once the hover ends the nav follows the mux switch again"
     );
 }
 

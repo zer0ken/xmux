@@ -2165,6 +2165,12 @@ impl Runtime {
         if !self.model.state.focus.is_terminal_focused() || self.model.state.selection.is_empty() {
             return false;
         }
+        // While the pointer rests on a nav target, the nav must not move on its own: a
+        // display-follow would yank the selection out from under the cursor. The follow
+        // resumes once the hover ends (the pointer moves off the nav).
+        if self.model.switcher.is_hovering_nav() {
+            return false;
+        }
         let in_flight = selection_attach_in_flight(&self.hosts, &self.model.state.selection);
         if self.model.state.attach_pending
             || self.model.state.attach_deadline.is_some()
