@@ -30,8 +30,6 @@ pub struct NavSize {
     /// Which side of the terminal view the nav is attached to this frame. Auto-hide
     /// keeps it, so a hidden nav returns on the side it left.
     pub position: NavPosition,
-    /// Whether the nav shows only its prefix hint.
-    pub collapsed: bool,
 }
 
 impl NavSize {
@@ -42,7 +40,6 @@ impl NavSize {
             width: natural,
             height: 0,
             position: NavPosition::Left,
-            collapsed: false,
         }
     }
 
@@ -53,7 +50,6 @@ impl NavSize {
             width: 0,
             height: 0,
             position: NavPosition::Left,
-            collapsed: false,
         }
     }
 

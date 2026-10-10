@@ -1901,8 +1901,7 @@ impl Chrome {
     /// The prefix hint: the prefix as a chip on its own background (`bar_bg`), so it
     /// reads as chrome rather than content. `chip` is the rect the chip paints; the
     /// caller aligns it inside its row, toward the nav border. `padded` pads the prefix
-    /// with a cell each side; a collapsed vertical nav's column is exactly as wide as
-    /// the prefix, so it paints unpadded across the row.
+    /// with a cell each side.
     pub(crate) fn paint_prefix_hint(
         &self,
         frame: &mut Frame,

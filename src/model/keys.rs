@@ -143,8 +143,6 @@ pub enum KeyCommand {
     Check,
     /// Search and run a named command.
     Palette,
-    /// Collapse or expand the nav.
-    Collapse,
     /// Toggle auto-hide-nav.
     AutoHide,
     /// Place the nav one side clockwise.
@@ -533,15 +531,6 @@ pub static TABLE: &[KeyEntry] = &[
     },
     KeyEntry {
         section: Section::View,
-        keys: Keys::Prefix(&[(Chord::Char('z'), KeyCommand::Collapse)]),
-        label: "z",
-        help: "collapse / expand the nav",
-        long: "collapse nav",
-        short: "collapse",
-        rank: 3,
-    },
-    KeyEntry {
-        section: Section::View,
         keys: Keys::Prefix(&[(Chord::Char('t'), KeyCommand::AutoHide)]),
         label: "t",
         help: "toggle auto-hide-nav (║ nav border = on)",
@@ -657,17 +646,8 @@ pub static TABLE: &[KeyEntry] = &[
     KeyEntry {
         section: Section::Mouse,
         keys: Keys::Mouse,
-        label: "click a collapsed nav",
-        help: "expand the nav",
-        long: "expand it",
-        short: "expand",
-        rank: 0,
-    },
-    KeyEntry {
-        section: Section::Mouse,
-        keys: Keys::Mouse,
         label: "drag the nav border",
-        help: "resize the nav; past its minimum, collapse it",
+        help: "resize the nav; it clamps at its minimum",
         long: "resize the nav",
         short: "resize",
         rank: 0,

@@ -54,9 +54,6 @@ impl Runtime {
                 Some(Action::Height(d)) => height_delta = d,
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
                 Some(Action::CycleNavPosition) => cycle_position = true,
-                Some(Action::ToggleCollapse) => {
-                    effects.extend(update(&mut self.model, Msg::ToggleNavCollapsed));
-                }
                 Some(Action::ShowHelp) => {
                     effects.extend(update(&mut self.model, Msg::ToggleHelp));
                 }
@@ -190,7 +187,6 @@ impl Runtime {
         let full = self.model.render_plan.screen_area;
         let regions = self.model.render_plan.regions;
         let on_nav_border = !self.model.render_plan.nav_hidden
-            && !self.model.render_plan.nav_collapsed
             && regions
                 .nav_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
@@ -210,9 +206,8 @@ impl Runtime {
                 // The DRAG measures from the near edge: a horizontal nav drags the height (from the
                 // top edge, or the bottom edge when pinned there), a column the width (from
                 // the left edge, or the right one) - the same per-side math the resize keys
-                // follow (their direction is the border's movement). A drag past the
-                // minimum collapses the nav, and coming back out within the same drag
-                // expands it at the width or height the pointer reached.
+                // follow (their direction is the border's movement). A drag clamps at the
+                // nav's minimum, so it can never leave the nav with no room.
                 let position = self.model.render_plan.nav_position;
                 let target = if top_layout {
                     nav_border_drag_height(
@@ -228,23 +223,15 @@ impl Runtime {
                         position == crate::ui::switcher::NavPosition::Right,
                     )
                 };
-                if target.is_none() != self.model.nav_collapsed {
-                    let effects = update(&mut self.model, Msg::SetNavCollapsed(target.is_none()));
-                    let _ = self.execute_effects(effects);
+                if top_layout && target != self.model.nav_height {
+                    let effects = update(&mut self.model, Msg::SetNavHeight(target));
+                    debug_assert!(effects.is_empty());
                     dirty = true;
                 }
-                match target {
-                    Some(target) if top_layout && target != self.model.nav_height => {
-                        let effects = update(&mut self.model, Msg::SetNavHeight(target));
-                        debug_assert!(effects.is_empty());
-                        dirty = true;
-                    }
-                    Some(target) if !top_layout && target != self.model.nav_width_natural => {
-                        let effects = update(&mut self.model, Msg::SetNavNaturalWidth(target));
-                        debug_assert!(effects.is_empty());
-                        dirty = true;
-                    }
-                    _ => {}
+                if !top_layout && target != self.model.nav_width_natural {
+                    let effects = update(&mut self.model, Msg::SetNavNaturalWidth(target));
+                    debug_assert!(effects.is_empty());
+                    dirty = true;
                 }
             }
             return dirty;
@@ -327,17 +314,6 @@ impl Runtime {
                 dirty |= self.model.state.modal_hover() != before;
             }
             return dirty;
-        }
-        // A collapsed nav is one target: a click anywhere on it, its nav border included,
-        // expands it, and is neither a focus move nor a drag.
-        let at = ratatui::layout::Position { x: col0, y: row0 };
-        if is_left_press
-            && self.model.render_plan.nav_collapsed
-            && self.model.render_plan.expand_area.contains(at)
-        {
-            let effects = update(&mut self.model, Msg::SetNavCollapsed(false));
-            let _ = self.execute_effects(effects);
-            return true;
         }
         // A toast is taken down by a click on it, and the click goes no further: the
         // toast covered whatever is beneath it.
@@ -881,11 +857,6 @@ impl Runtime {
                     }
                     Action::CycleNavPosition => {
                         let effects = update(&mut self.model, Msg::CycleNavPosition);
-                        let _ = self.execute_effects(effects);
-                        *dirty = true;
-                    }
-                    Action::ToggleCollapse => {
-                        let effects = update(&mut self.model, Msg::ToggleNavCollapsed);
                         let _ = self.execute_effects(effects);
                         *dirty = true;
                     }

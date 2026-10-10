@@ -78,8 +78,8 @@ against, naming no source file, function, or test.
   and the other pair focuses the nav, while bare arrows move between cards.
 - **FR-B15** - The nav's side is a placement pinned at runtime by `prefix p` when one
   exists, else the `[ui] nav-position` default, and the nav never moves on its own.
-- **FR-B16** - The nav's width, horizontal nav height, side, and collapsed state are live and
-  persisted, set by resize keys, nav border drag, `prefix z`, and auto-hide.
+- **FR-B16** - The nav's width, horizontal nav height, and side are live and
+  persisted, set by resize keys, nav border drag, and auto-hide.
 - **FR-B17** - The prefix hint is a chip naming the prefix, and the active filter paints
   its match cell by cell; a result of an action is a toast, never advice.
 - **FR-B18** - A prefix interaction lasts until the function it starts ends, and the key

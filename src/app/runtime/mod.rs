@@ -229,9 +229,6 @@ impl Runtime {
                 Effect::PersistNavHeight(height) => {
                     crate::app::prefs::save_nav_height(&self.env.xmux_dir, height);
                 }
-                Effect::PersistNavCollapsed(collapsed) => {
-                    crate::app::prefs::save_nav_collapsed(&self.env.xmux_dir, collapsed);
-                }
                 Effect::PersistNavPosition(position) => {
                     crate::app::prefs::save_nav_position(&self.env.xmux_dir, position);
                 }
@@ -545,8 +542,8 @@ fn self_tty() -> String {
 /// The EFFECTIVE nav width to render and size the terminal view against. Hidden (0,
 /// terminal view full width) only while the terminal view is focused, no prefix
 /// interaction is active, and either auto-hide-nav mode is on or the nav `crowds` the
-/// terminal view below the smallest window xmux draws in. Otherwise it uses the compact
-/// width while collapsed and the user's natural width while expanded.
+/// terminal view below the smallest window xmux draws in. Otherwise it uses the user's
+/// natural width.
 /// A prefix press is an interaction with xmux, so the nav comes back for it even under
 /// auto-hide (the user needs the card numbers to jump, resize, or act on a card).
 /// Pure so the focus/mode interaction is unit-testable; the loop owns the natural
@@ -557,13 +554,9 @@ fn reconciled_nav_width(
     crowds: bool,
     prefix_active: bool,
     natural: u16,
-    collapsed: bool,
-    ui_prefix: &str,
 ) -> u16 {
     if terminal_focused && (auto_hide_nav || crowds) && !prefix_active {
         0
-    } else if collapsed {
-        crate::ui::switcher::collapsed_nav_width(ui_prefix)
     } else {
         natural
     }

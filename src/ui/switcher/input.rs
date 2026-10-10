@@ -82,7 +82,6 @@ impl Switcher {
             RescanMachine,
             Logout,
             Check,
-            Collapse,
             AutoHide,
             Position,
             History,

@@ -8,9 +8,7 @@ use crate::state::PaletteChoice;
 use crate::ui::palette;
 
 /// The prefix hint chip inside its row: aligned toward the nav border (a vertical nav's
-/// terminal-side edge) or to the row's left (a horizontal nav's nav border row). A
-/// collapsed vertical nav's column is exactly as wide as the prefix, so the chip fills
-/// the row.
+/// terminal-side edge) or to the row's left (a horizontal nav's nav border row).
 pub(super) fn prefix_hint_chip(row: Rect, position: NavPosition, prefix_w: u16) -> Rect {
     let w = prefix_w.min(row.width);
     let x = match position {
@@ -193,17 +191,10 @@ pub struct RenderPlan {
     pub(crate) scan_box: Option<(Rect, crate::ui::keylist::KeyList)>,
     /// The one line the nav body says when it lists no card at all, and where.
     pub(crate) nav_guidance: Option<(Rect, String)>,
-    /// The cells a click on a collapsed nav expands it from: the whole collapsed column
-    /// with its seam, or a collapsed band's seam row. Empty while the nav is expanded.
-    /// A collapsed nav expands from the prefix or from a click anywhere on it, and a view
-    /// border drag past the minimum collapses it, so the collapsed shape is the prefix
-    /// indicator alone and the whole of it is one hit target.
-    pub expand_area: Rect,
     overflow_marks: Vec<OverflowMark>,
     nav_rule: Option<NavRule>,
     pub(super) border_thumb: Rect,
     pub nav_hidden: bool,
-    pub nav_collapsed: bool,
 }
 
 impl Default for RenderPlan {
@@ -228,12 +219,10 @@ impl Default for RenderPlan {
             key_list: None,
             scan_box: None,
             nav_guidance: None,
-            expand_area: Rect::default(),
             overflow_marks: Vec::new(),
             nav_rule: None,
             border_thumb: Rect::default(),
             nav_hidden: true,
-            nav_collapsed: false,
         }
     }
 }
@@ -295,20 +284,6 @@ impl Switcher {
             None
         };
         let seam = regions.nav_border;
-        // A collapsed vertical nav's border lies inside its column, so the column alone is
-        // the whole target.
-        let expand_area = if nav.collapsed && nav.width > 0 {
-            match nav.position {
-                NavPosition::Left | NavPosition::Right => Rect {
-                    x: regions.prefix_hint.x,
-                    width: regions.prefix_hint.width,
-                    ..area
-                },
-                NavPosition::Top | NavPosition::Bottom => seam,
-            }
-        } else {
-            Rect::default()
-        };
         let popup_rect = self.modal_popup_rect(area, state, &regions);
         let view_screen = self.current_view_screen(state);
         // The scan progress box: the advice that host probes are in flight, anchored
@@ -349,7 +324,7 @@ impl Switcher {
             layout: regions.layout,
             nav_position: nav.position,
             regions,
-            nav_inner: if nav.width == 0 || nav.collapsed {
+            nav_inner: if nav.width == 0 {
                 Rect::default()
             } else {
                 regions.nav
@@ -372,9 +347,7 @@ impl Switcher {
             ),
             key_list,
             scan_box,
-            expand_area,
             nav_hidden: nav.width == 0,
-            nav_collapsed: nav.collapsed,
             ..RenderPlan::default()
         };
         if !plan.nav_inner.is_empty() {
@@ -986,7 +959,7 @@ impl Switcher {
         };
         // The prefix hint paints after the two views, so the chip reads over whatever it
         // shares its row with. It is the prefix as a chip on its own background, aligned
-        // toward the nav border; a collapsed vertical nav's column paints it unpadded.
+        // toward the nav border.
         for mark in &plan.overflow_marks {
             Self::render_overflow_mark(frame, *mark, state.chrome.colors.active);
         }
