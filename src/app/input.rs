@@ -111,39 +111,31 @@ fn is_focus_in(code: KeyCode) -> bool {
     matches!(code, KeyCode::Enter)
 }
 
-/// Whether a wheel event should drive the NAV (a scroll: the flat list has no levels).
-/// Only when the nav is focused AND the pointer is over the nav: mouse input acts on
-/// the view under the selection, and only when that view is focused - the same rule clicks
-/// and motion already follow. A wheel over the terminal view while the nav is focused is not
-/// a nav scroll.
-fn wheel_targets_nav(nav_focused: bool, over_mux: bool) -> bool {
-    nav_focused && !over_mux
-}
-
 /// What a mouse event resolves to once the modal/gesture gates (menu, nav border drag,
 /// idle-nav border-hover, menu-open) have declined it - the focus×position routing core.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ChainAction {
-    /// Scroll the nav by one row (wheel, nav focus, over nav). `down` = scroll down.
+    /// Scroll the nav by one row (wheel, over nav). `down` = scroll down.
     /// Ctrl held changes nothing: the nav is a flat list, so there is no level to
     /// change and a wheel is a wheel.
     ScrollNav(bool),
     /// Toggle focus to the terminal view (left-click the terminal view while the nav is focused).
     FocusTerminal,
-    /// Select the clicked nav row (left-click a nav row while the nav is focused).
+    /// Select the clicked nav row (left-click a nav row, whatever the focus).
     SelectRow,
-    /// Toggle focus to the nav (left-click the nav while the terminal view is focused).
-    FocusNav,
     /// Forward the event to the focused mux child (terminal focus, over the terminal view).
     ForwardToMux,
     /// Nothing - the event is dropped.
     Nothing,
 }
 
-/// Pure focus×position routing for a mouse event that fell through every gate. The one
-/// rule: input acts on the view under the selection, and only when that view is focused.
-/// A wheel over the terminal view while the nav is focused, or over the nav while the terminal view is
-/// focused, resolves to Nothing - it never crosses to the unfocused view.
+/// Pure focus×position routing for a mouse event that fell through every gate. The nav
+/// takes its own actions wherever the pointer is over it - a wheel scrolls it, a click
+/// selects the row under it - whether or not it holds the focus. Over the terminal view
+/// the event follows focus instead: it forwards to the mux child when the terminal view
+/// is focused, and switches focus to the terminal view when the nav holds it. A wheel over
+/// the terminal view while the nav is focused resolves to Nothing - it never crosses to
+/// the unfocused view.
 pub(crate) fn resolve_mouse_chain(
     is_wheel: bool,
     down: bool,
@@ -151,17 +143,16 @@ pub(crate) fn resolve_mouse_chain(
     nav_focused: bool,
     over_mux: bool,
 ) -> ChainAction {
-    if is_wheel && wheel_targets_nav(nav_focused, over_mux) {
+    // Over the nav, position alone decides: the nav owns its wheel and clicks.
+    if is_wheel && !over_mux {
         return ChainAction::ScrollNav(down);
     }
-    if is_left_press && nav_focused && over_mux {
-        return ChainAction::FocusTerminal;
-    }
-    if is_left_press && nav_focused && !over_mux {
+    if is_left_press && !over_mux {
         return ChainAction::SelectRow;
     }
-    if is_left_press && !nav_focused && !over_mux {
-        return ChainAction::FocusNav;
+    // Over the terminal view, focus decides which of it and the nav gets the event.
+    if is_left_press && nav_focused {
+        return ChainAction::FocusTerminal;
     }
     if !nav_focused && over_mux {
         return ChainAction::ForwardToMux;
@@ -701,29 +692,9 @@ mod tests {
 
     // --- mouse focus/position rules ----------------------------------------
     #[test]
-    fn wheel_targets_nav_only_when_nav_focused_and_over_nav() {
-        assert!(
-            wheel_targets_nav(true, false),
-            "nav focus + over nav → drive the nav"
-        );
-        assert!(
-            !wheel_targets_nav(true, true),
-            "nav focus + over the MUX pane → NOT the nav"
-        );
-        assert!(
-            !wheel_targets_nav(false, false),
-            "terminal-view focus + over nav → not the nav"
-        );
-        assert!(
-            !wheel_targets_nav(false, true),
-            "terminal-view focus + over the terminal view → the mux child, not the nav"
-        );
-    }
-
-    #[test]
     fn resolve_mouse_chain_routes_by_focus_and_position() {
         use ChainAction::*;
-        // wheel: only drives the nav when nav-focused AND over the nav.
+        // wheel: over the nav it always scrolls, whatever the focus holds.
         assert_eq!(
             resolve_mouse_chain(true, true, false, true, false),
             ScrollNav(true),
@@ -735,6 +706,11 @@ mod tests {
             "Ctrl+wheel is just a wheel: a flat list has no level to change"
         );
         assert_eq!(
+            resolve_mouse_chain(true, true, false, false, false),
+            ScrollNav(true),
+            "wheel, terminal-view focus, over nav → still scrolls the nav"
+        );
+        assert_eq!(
             resolve_mouse_chain(true, true, false, true, true),
             Nothing,
             "wheel, nav focus, over MUX → nothing (never crosses panes)"
@@ -744,16 +720,11 @@ mod tests {
             ForwardToMux,
             "wheel, terminal-view focus, over the terminal view → forward to child"
         );
+        // left press: over the nav a click always selects, over the terminal view it follows focus.
         assert_eq!(
-            resolve_mouse_chain(true, true, false, false, false),
-            Nothing,
-            "wheel, terminal-view focus, over nav → nothing"
-        );
-        // left press: focus-switch on the unfocused view, act on the focused one.
-        assert_eq!(
-            resolve_mouse_chain(false, false, true, true, true),
-            FocusTerminal,
-            "left, nav focus, over terminal → focus terminal"
+            resolve_mouse_chain(false, false, true, false, false),
+            SelectRow,
+            "left, terminal-view focus, over nav → select the row"
         );
         assert_eq!(
             resolve_mouse_chain(false, false, true, true, false),
@@ -761,9 +732,9 @@ mod tests {
             "left, nav focus, over nav → select row"
         );
         assert_eq!(
-            resolve_mouse_chain(false, false, true, false, false),
-            FocusNav,
-            "left, terminal-view focus, over nav → focus nav"
+            resolve_mouse_chain(false, false, true, true, true),
+            FocusTerminal,
+            "left, nav focus, over terminal → focus terminal"
         );
         assert_eq!(
             resolve_mouse_chain(false, false, true, false, true),

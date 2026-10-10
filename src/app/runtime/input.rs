@@ -432,7 +432,7 @@ impl Runtime {
             }
             // The unfocused view was clicked → switch focus to it (no content
             // delivered); toggle flips Focus::Nav⇄Focus::Terminal either direction.
-            ChainAction::FocusTerminal | ChainAction::FocusNav => {
+            ChainAction::FocusTerminal => {
                 model_msg = Some(Msg::Action(crate::model::Action::FocusToggle));
                 *mouse_focus_toggle = true;
             }
