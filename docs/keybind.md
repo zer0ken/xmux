@@ -267,16 +267,13 @@ place of the split view.
 
 ## Toasts
 
-The result of an action you took floats as a toast in the terminal view's corner nearest
-the hint, at most 40% of the window wide, up to three at once. A refused action is a
-result too: its toast is a warning titled by the action, saying why nothing happened. A
-toast of successes and facts leaves after five seconds, with the time left drawn on its
-bottom border. One that carries a warning (`▲`) or a failure (`✗`) stays until a click
-on it or opening the history takes it down, except a login result, which leaves after
-five seconds since the login pane and the history keep it, and a refusal, which leaves
-after five seconds since it changed nothing. Something nobody asked about, such as a machine
-that stops answering, goes to the history only. `[ui] notifications = false` turns
-toasts off; the history still records every result.
+The result of an action you took floats as a toast in the terminal view's top-right
+corner, at most 40% of the window wide, up to three at once, each stacked below the one
+before. A refused action is a result too: its toast is a warning titled by the action,
+saying why nothing happened. Every toast, a warning (`▲`) or a failure (`✗`) included,
+leaves after five seconds, with the time left drawn on its bottom border. Something
+nobody asked about, such as a machine that stops answering, goes to the history only.
+`[ui] notifications = false` turns toasts off; the history still records every result.
 
 ## Mouse
 

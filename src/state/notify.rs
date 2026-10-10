@@ -35,8 +35,8 @@ impl Level {
         }
     }
 
-    /// A warning or an error stays until the user dismisses it: it asks for action, and
-    /// a report that left on its own could leave before it was read.
+    /// Whether the line is a warning or an error, which the history keeps longest when
+    /// it must drop a record: a routine result gives way before a failure does.
     pub(crate) fn sticky(self) -> bool {
         matches!(self, Level::Warning | Level::Error)
     }
@@ -92,7 +92,8 @@ pub(crate) struct Entry {
     pub(crate) note: Note,
 }
 
-/// How long a toast with no warning or error stays up.
+/// How long a toast stays up; every toast takes itself down, warning and error lines
+/// included.
 pub(crate) const TOAST_TTL: Duration = Duration::from_secs(5);
 
 /// The smallest unit the history writes an age in, and so how often its open popup is
@@ -143,35 +144,22 @@ impl Default for Notifications {
 }
 
 impl Notifications {
-    /// Reports the result of work the user started: a toast, and the history.
+    /// Reports the result of work the user started: a toast, and the history. Every
+    /// toast takes itself down after [`TOAST_TTL`], warning and error lines included: a
+    /// notification is not a feature popup and leaves by itself, and the history keeps it
+    /// either way.
     pub(crate) fn toast(&mut self, title: impl Into<String>, notes: Vec<Note>) {
         self.toast_at(Instant::now(), title, notes);
-    }
-
-    /// Reports a result whose details remain on its own screen, so its toast may leave
-    /// after the normal duration even when it contains a warning or an error.
-    pub(crate) fn timed_toast(&mut self, title: impl Into<String>, notes: Vec<Note>) {
-        self.toast_at_with_policy(Instant::now(), title, notes, true);
     }
 
     /// Reports an action xmux refused and why: a warning that leaves after the normal
     /// duration, because a refusal changed nothing and asks only to be read.
     pub(crate) fn refusal(&mut self, title: impl Into<String>, reason: impl Into<String>) {
-        self.timed_toast(title, vec![Note::new(Level::Warning, reason)]);
+        self.toast(title, vec![Note::new(Level::Warning, reason)]);
     }
 
     /// [`Self::toast`] at a given instant.
     pub(crate) fn toast_at(&mut self, now: Instant, title: impl Into<String>, notes: Vec<Note>) {
-        self.toast_at_with_policy(now, title, notes, false);
-    }
-
-    fn toast_at_with_policy(
-        &mut self,
-        now: Instant,
-        title: impl Into<String>,
-        notes: Vec<Note>,
-        timed: bool,
-    ) {
         if notes.is_empty() {
             return;
         }
@@ -180,19 +168,16 @@ impl Notifications {
         if !self.toasts_enabled {
             return;
         }
-        let sticky = notes.iter().any(|n| n.level.sticky());
         self.next_id += 1;
         self.toasts.push(Toast {
             id: self.next_id,
             title,
             notes,
             shown: now,
-            until: (timed || !sticky).then(|| now + TOAST_TTL),
+            until: Some(now + TOAST_TTL),
         });
         if self.toasts.len() > TOAST_STACK {
-            let older = &self.toasts[..self.toasts.len() - 1];
-            let drop = older.iter().position(|t| t.until.is_some()).unwrap_or(0);
-            self.toasts.remove(drop);
+            self.toasts.remove(0);
         }
         self.now.get_or_insert(now);
     }
@@ -547,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn an_error_toast_stays_until_it_is_dismissed() {
+    fn an_error_toast_leaves_after_its_life_too() {
         let mut n = Notifications::default();
         let t0 = Instant::now();
         n.toast_at(
@@ -560,19 +545,16 @@ mod tests {
         );
         assert_eq!(
             n.toasts[0].remaining(t0),
-            None,
-            "a failure never counts down"
+            Some(1.0),
+            "a failure counts down too"
         );
-        assert!(!n.tick(t0 + Duration::from_secs(3600), false));
-        assert_eq!(n.toasts.len(), 1, "an hour later it is still up");
-        let id = n.toasts[0].id;
-        assert!(n.dismiss(id));
+        assert!(n.tick(t0 + TOAST_TTL, false), "a failure leaves by itself");
         assert!(n.toasts.is_empty());
         assert_eq!(n.history.len(), 2, "both lines stay in the history");
     }
 
     #[test]
-    fn a_warning_toast_stays_too() {
+    fn a_warning_toast_leaves_after_its_life_too() {
         let mut n = Notifications::default();
         let t0 = Instant::now();
         n.toast_at(
@@ -580,12 +562,12 @@ mod tests {
             "re-scan",
             vec![Note::new(Level::Warning, "web-03 unreachable")],
         );
-        n.tick(t0 + TOAST_TTL * 4, false);
-        assert_eq!(n.toasts.len(), 1);
+        assert!(n.tick(t0 + TOAST_TTL, false));
+        assert!(n.toasts.is_empty(), "a warning leaves by itself too");
     }
 
     #[test]
-    fn a_full_stack_drops_its_oldest_timed_toast_first() {
+    fn a_full_stack_drops_its_oldest_toast_first() {
         let mut n = Notifications::default();
         let t0 = Instant::now();
         n.toast_at(t0, "a", err("first failure"));
@@ -593,32 +575,8 @@ mod tests {
         n.toast_at(t0, "c", err("second failure"));
         n.toast_at(t0, "d", ok("second success"));
         let titles: Vec<&str> = n.toasts.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            ["a", "c", "d"],
-            "the timed toast left, the failures stayed"
-        );
+        assert_eq!(titles, ["b", "c", "d"], "the oldest left the stack");
         assert_eq!(n.history.len(), 4);
-    }
-
-    #[test]
-    fn a_new_toast_always_shows_when_every_older_one_waits_to_be_dismissed() {
-        let mut n = Notifications::default();
-        let t0 = Instant::now();
-        n.toast_at(t0, "a", err("first failure"));
-        n.toast_at(t0, "b", err("second failure"));
-        n.toast_at(t0, "c", err("third failure"));
-        n.toast_at(t0, "d", ok("a success"));
-        let titles: Vec<&str> = n.toasts.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            ["b", "c", "d"],
-            "the newest stays, the oldest failure leaves the stack"
-        );
-        assert!(
-            n.history.iter().any(|e| e.title == "a"),
-            "the history keeps it"
-        );
     }
 
     #[test]
@@ -651,16 +609,16 @@ mod tests {
     }
 
     #[test]
-    fn timed_failure_toast_expires_and_keeps_its_history_record() {
+    fn a_failure_toast_expires_and_keeps_its_history_record() {
         let mut n = Notifications::default();
-        n.timed_toast("pwbox", err("login failed"));
+        n.toast("pwbox", err("login failed"));
         let shown = n.toasts[0].shown;
         assert_eq!(n.toasts[0].until, Some(shown + TOAST_TTL));
         assert!(n.tick(shown + TOAST_TTL, false));
         assert!(n.toasts.is_empty());
         assert_eq!(n.history.len(), 1);
         n.toast_at(shown + TOAST_TTL, "other", err("operation failed"));
-        assert!(n.toasts[0].until.is_none());
+        assert!(n.toasts[0].until.is_some());
     }
 
     #[test]

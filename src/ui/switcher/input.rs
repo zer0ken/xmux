@@ -1061,9 +1061,7 @@ impl Switcher {
                         .registration_reports
                         .insert(machine.clone(), outcome.registration.clone());
                 }
-                state
-                    .notify
-                    .timed_toast(machine.clone(), login_notes(&outcome));
+                state.notify.toast(machine.clone(), login_notes(&outcome));
                 match outcome.connect {
                     crate::link::unlock::UnlockOutcome::Ok => Some((host, login)),
                     crate::link::unlock::UnlockOutcome::Unavailable => None,

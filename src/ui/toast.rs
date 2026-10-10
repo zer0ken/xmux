@@ -15,7 +15,6 @@ use unicode_width::UnicodeWidthStr;
 use crate::state::notify::{Level, Note, Notifications, Toast};
 use crate::ui::modal::wrap_text;
 use crate::ui::palette::Palette;
-use crate::ui::switcher::NavPosition;
 
 /// The widest a toast may be, as a share of the window: wide enough for a host name and a
 /// reason, narrow enough that the terminal it floats over stays readable.
@@ -82,14 +81,14 @@ fn toast_size(toast: &Toast, max_w: u16) -> (u16, u16) {
     (w, body as u16 + 3)
 }
 
-/// Toasts float in the terminal corner nearest the hint and stack inward. If the
-/// prefix key list or floating hint occupies that corner, they start beyond it.
-/// A toast that cannot fit stays in the history. Width is capped at 40% of the window.
+/// Toasts float in the terminal's top-right corner and stack downward, newest first,
+/// whatever position the nav or the hint is in. If the prefix key list or a popup
+/// occupies that corner, a toast starts beyond it. A toast that cannot fit stays in the
+/// history. Width is capped at 40% of the window.
 pub(crate) fn place_toasts(
     notify: &Notifications,
     terminal: Rect,
     window: Rect,
-    position: NavPosition,
     keep: Rect,
 ) -> Vec<(u64, Rect)> {
     let share = u32::from(window.width) * u32::from(TOAST_MAX_PERCENT) / 100;
@@ -97,8 +96,6 @@ pub(crate) fn place_toasts(
     if max_w < TOAST_MIN_WIDTH || terminal.height < 3 {
         return Vec::new();
     }
-    let from_bottom = position != NavPosition::Top;
-    let at_left = position == NavPosition::Left;
     let mut placed = Vec::new();
     let mut used = 0u16;
     for toast in notify.toasts.iter().rev() {
@@ -106,36 +103,17 @@ pub(crate) fn place_toasts(
         if u32::from(used) + u32::from(h) > u32::from(terminal.height) {
             continue;
         }
-        let x = if at_left {
-            terminal.x
-        } else {
-            terminal.right() - w
-        };
-        let mut y = if from_bottom {
-            terminal.bottom() - used - h
-        } else {
-            terminal.y + used
-        };
+        let x = terminal.right() - w;
+        let mut y = terminal.y + used;
         if !keep.is_empty() && Rect::new(x, y, w, h).intersects(keep) {
-            y = if from_bottom {
-                match keep.y.checked_sub(h) {
-                    Some(y) => y,
-                    None => continue,
-                }
-            } else {
-                keep.bottom()
-            };
+            y = keep.bottom();
         }
         let rect = Rect::new(x, y, w, h);
         if rect.y < terminal.y || rect.bottom() > terminal.bottom() {
             continue;
         }
         placed.push((toast.id, rect));
-        used = if from_bottom {
-            terminal.bottom() - rect.y
-        } else {
-            rect.bottom() - terminal.y
-        };
+        used = rect.bottom() - terminal.y;
     }
     placed
 }
@@ -306,74 +284,43 @@ mod tests {
         n
     }
 
-    /// The four positions, each with its terminal view, in a 100x30 window.
-    fn terminal_for(position: NavPosition) -> Rect {
-        match position {
-            NavPosition::Left => Rect::new(31, 0, 69, 30),
-            NavPosition::Right => Rect::new(0, 0, 69, 30),
-            NavPosition::Top => Rect::new(0, 11, 100, 19),
-            NavPosition::Bottom => Rect::new(0, 0, 100, 19),
-            NavPosition::Floating => Rect::new(0, 0, 100, 30),
-        }
+    /// The four terminal views the nav positions leave, in a 100x30 window.
+    fn terminals() -> [Rect; 4] {
+        [
+            Rect::new(31, 0, 69, 30),
+            Rect::new(0, 0, 69, 30),
+            Rect::new(0, 11, 100, 19),
+            Rect::new(0, 0, 100, 19),
+        ]
     }
 
     #[test]
-    fn a_toast_floats_in_the_terminal_corner_nearest_the_hint() {
+    fn a_toast_floats_in_the_top_right_corner_whatever_the_nav_position() {
         let window = Rect::new(0, 0, 100, 30);
         let n = notify_with(&["gpu-02"]);
-        for (position, corner) in [
-            (NavPosition::Left, "bottom left"),
-            (NavPosition::Right, "bottom right"),
-            (NavPosition::Bottom, "bottom right"),
-            (NavPosition::Top, "top right"),
-        ] {
-            let terminal = terminal_for(position);
-            let placed = place_toasts(&n, terminal, window, position, Rect::default());
-            assert_eq!(placed.len(), 1, "{position:?}");
+        for terminal in terminals() {
+            let placed = place_toasts(&n, terminal, window, Rect::default());
+            assert_eq!(placed.len(), 1, "{terminal:?}");
             let r = placed[0].1;
-            let left = if corner.ends_with("left") {
-                r.x == terminal.x
-            } else {
-                r.right() == terminal.right()
-            };
-            let top = if corner.starts_with("top") {
-                r.y == terminal.y
-            } else {
-                r.bottom() == terminal.bottom()
-            };
-            assert!(
-                left && top,
-                "{position:?} puts it {corner}: {r:?} in {terminal:?}"
-            );
-            assert!(
-                r.width <= 40,
-                "{position:?}: at most 40% of the window: {r:?}"
-            );
+            assert_eq!(r.right(), terminal.right(), "{terminal:?}");
+            assert_eq!(r.y, terminal.y, "{terminal:?}");
+            assert!(r.width <= 40, "at most 40% of the window: {r:?}");
         }
     }
 
     #[test]
-    fn newer_toasts_take_the_corner_and_older_ones_stack_away_from_it() {
+    fn newer_toasts_take_the_corner_and_older_ones_stack_below() {
         let window = Rect::new(0, 0, 100, 30);
         let n = notify_with(&["old", "new"]);
-        let terminal = terminal_for(NavPosition::Left);
-        let placed = place_toasts(&n, terminal, window, NavPosition::Left, Rect::default());
+        let terminal = Rect::new(31, 0, 69, 30);
+        let placed = place_toasts(&n, terminal, window, Rect::default());
         let new_id = n.toasts[1].id;
         assert_eq!(placed[0].0, new_id, "the newest is placed first");
-        assert_eq!(placed[0].1.bottom(), terminal.bottom());
-        assert_eq!(
-            placed[1].1.bottom(),
-            placed[0].1.y,
-            "the older one stacks above"
-        );
-
-        let terminal = terminal_for(NavPosition::Top);
-        let placed = place_toasts(&n, terminal, window, NavPosition::Top, Rect::default());
-        assert_eq!(placed[0].1.y, terminal.y);
+        assert_eq!(placed[0].1.y, terminal.y, "the newest takes the top");
         assert_eq!(
             placed[1].1.y,
             placed[0].1.bottom(),
-            "from the top it stacks down"
+            "the older one stacks below"
         );
     }
 
@@ -381,11 +328,12 @@ mod tests {
     fn a_toast_moves_past_the_prefix_key_list_when_there_is_room() {
         let window = Rect::new(0, 0, 100, 30);
         let n = notify_with(&["gpu-02"]);
-        let terminal = terminal_for(NavPosition::Left);
-        let keep = Rect::new(31, 24, 30, 6);
-        let placed = place_toasts(&n, terminal, window, NavPosition::Left, keep);
+        let terminal = Rect::new(31, 0, 69, 30);
+        // The key list at the top-right corner: the toast starts below it.
+        let keep = Rect::new(70, 0, 30, 6);
+        let placed = place_toasts(&n, terminal, window, keep);
         assert_eq!(placed.len(), 1);
-        assert_eq!(placed[0].1.bottom(), keep.y);
+        assert_eq!(placed[0].1.y, keep.bottom());
         assert!(!placed[0].1.intersects(keep));
     }
 
@@ -394,13 +342,7 @@ mod tests {
         let window = Rect::new(0, 0, 100, 30);
         let mut n = Notifications::default();
         n.toast("gpu-02", vec![Note::new(Level::Error, "x ".repeat(60))]);
-        let placed = place_toasts(
-            &n,
-            terminal_for(NavPosition::Left),
-            window,
-            NavPosition::Left,
-            Rect::default(),
-        );
+        let placed = place_toasts(&n, Rect::new(31, 0, 69, 30), window, Rect::default());
         let r = placed[0].1;
         assert_eq!(r.width, 40);
         assert!(r.height > 3, "the reason wraps rather than clipping: {r:?}");
@@ -411,7 +353,7 @@ mod tests {
         let n = notify_with(&["gpu-02"]);
         let window = Rect::new(0, 0, 2000, 30);
         let terminal = Rect::new(0, 0, 1990, 30);
-        let placed = place_toasts(&n, terminal, window, NavPosition::Right, Rect::default());
+        let placed = place_toasts(&n, terminal, window, Rect::default());
         assert_eq!(placed.len(), 1);
         assert!(placed[0].1.width <= 800, "{:?}", placed[0].1);
     }
@@ -427,19 +369,13 @@ mod tests {
             vec![Note::new(Level::Error, vec!["denied"; 20].join("\n"))],
         );
         let terminal = Rect::new(31, 0, 69, 10);
-        let placed = place_toasts(
-            &n,
-            terminal,
-            Rect::new(0, 0, 100, 10),
-            NavPosition::Left,
-            Rect::default(),
-        );
+        let placed = place_toasts(&n, terminal, Rect::new(0, 0, 100, 10), Rect::default());
         assert_eq!(
             placed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             [n.toasts[0].id],
             "the older toast that fits is still drawn"
         );
-        assert_eq!(placed[0].1.bottom(), terminal.bottom());
+        assert_eq!(placed[0].1.y, terminal.y);
     }
 
     #[test]
@@ -449,7 +385,6 @@ mod tests {
             &n,
             Rect::new(0, 0, 10, 10),
             Rect::new(0, 0, 100, 10),
-            NavPosition::Right,
             Rect::default(),
         );
         assert!(placed.is_empty());
@@ -482,19 +417,28 @@ mod tests {
     }
 
     #[test]
-    fn a_sticky_toast_draws_no_countdown() {
+    fn an_error_toast_renders_its_glyph_and_a_countdown() {
         let n = notify_with(&["gpu-02"]);
         let rect = Rect::new(0, 0, 30, 4);
         let mut term = Terminal::new(TestBackend::new(30, 4)).unwrap();
-        term.draw(|f| render_toast(f, rect, &n.toasts[0], n.now, "C-g", &Palette::default()))
-            .unwrap();
+        term.draw(|f| {
+            render_toast(
+                f,
+                rect,
+                &n.toasts[0],
+                Some(n.toasts[0].shown),
+                "C-g",
+                &Palette::default(),
+            )
+        })
+        .unwrap();
         let buf = term.backend().buffer().clone();
-        assert!(!(1..29).any(|x| buf[(x, 1)].modifier.contains(Modifier::UNDERLINED)));
         let row: String = (0..30).map(|x| buf[(x, 1)].symbol().to_string()).collect();
         assert!(row.contains("✗ login failed"), "{row:?}");
         let footer: String = (0..30).map(|x| buf[(x, 2)].symbol().to_string()).collect();
         assert!(footer.contains("C-g m history"), "{footer:?}");
-        assert!((1..29).all(|x| buf[(x, 3)].symbol() == "─"));
+        let filled = (1..29).filter(|&x| buf[(x, 3)].symbol() == "━").count();
+        assert!(filled > 0, "an error toast draws its countdown too");
     }
 
     #[test]

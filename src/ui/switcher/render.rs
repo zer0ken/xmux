@@ -357,7 +357,6 @@ impl Switcher {
                 &state.notify,
                 regions.terminal,
                 area,
-                nav.position,
                 match &key_list {
                     Some((rect, _)) => *rect,
                     None if !popup_rect.is_empty() => popup_rect,
