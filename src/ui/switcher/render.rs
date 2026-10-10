@@ -201,6 +201,10 @@ pub struct RenderPlan {
     /// border drag past the minimum collapses it, so the collapsed shape is the prefix
     /// indicator alone and the whole of it is one hit target.
     pub expand_area: Rect,
+    /// The floating nav's drop-hold freeze, as the share of the 10s still ahead (1 down
+    /// to 0), while a dropped drag holds the box in place. `None` when the box is free to
+    /// relocate. The floating box's bottom border draws it as the toast does its life.
+    pub(crate) floating_freeze: Option<u16>,
     overflow_marks: Vec<OverflowMark>,
     nav_rule: Option<NavRule>,
     pub(super) border_thumb: Rect,
@@ -231,6 +235,7 @@ impl Default for RenderPlan {
             scan_box: None,
             nav_guidance: None,
             expand_area: Rect::default(),
+            floating_freeze: None,
             overflow_marks: Vec::new(),
             nav_rule: None,
             border_thumb: Rect::default(),
@@ -1117,6 +1122,32 @@ impl Switcher {
             );
             let padded = prefix_row.width >= prefix_chip_width(&state.chrome.ui_prefix);
             state.chrome.paint_prefix_hint(frame, chip, padded, palette);
+        }
+        // A drop of the box's drag holds the auto-relocation for a span; the box's
+        // bottom border shows what is left of that span the way a toast shows its
+        // remaining life, a bar of accent cells shrinking toward the right.
+        if let Some(freeze) = plan.floating_freeze {
+            let inner = box_rect.width.saturating_sub(2);
+            if inner > 0 {
+                let cells = (freeze as f32 / 1000.0 * inner as f32)
+                    .clamp(0.0, inner as f32)
+                    .ceil() as u16;
+                let buf = frame.buffer_mut();
+                for i in 0..inner {
+                    let cell = &mut buf[(box_rect.x + 1 + i, box_rect.bottom() - 1)];
+                    if i < cells {
+                        cell.set_symbol("\u{2501}");
+                        cell.set_style(
+                            Style::default()
+                                .fg(palette.accent)
+                                .add_modifier(Modifier::BOLD),
+                        );
+                    } else {
+                        cell.set_symbol("\u{2500}");
+                        cell.set_style(Style::default().fg(palette.primary));
+                    }
+                }
+            }
         }
     }
 

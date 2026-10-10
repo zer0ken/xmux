@@ -4564,6 +4564,119 @@ fn a_click_on_the_floating_box_docks_the_nav() {
 }
 
 #[test]
+fn a_floating_box_keeps_its_spot_while_it_still_fits() {
+    use crate::display::grid::Grid;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // A grid that scrolls must not make the box hop frame to frame: it keeps its spot
+    // while the spot stays blank and re-places only when the spot is covered.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let mut top = Grid::new(24, 80);
+    top.feed(&b"top text\n".repeat(10));
+    let nav = rt.place_floating_nav(area, Some(&top), rt.model.nav_size());
+    let first = rt.model.floating_rect.unwrap();
+    // The top content grew, but the box's spot is still blank: the box stays put.
+    let mut top2 = Grid::new(24, 80);
+    top2.feed(&b"top text\n".repeat(20));
+    let _ = rt.place_floating_nav(area, Some(&top2), nav);
+    assert_eq!(
+        rt.model.floating_rect,
+        Some(first),
+        "the box keeps a spot that still fits"
+    );
+    // The content now covers the box's spot: the box re-places.
+    let mut covered = Grid::new(24, 80);
+    covered.feed(&b"X".repeat(80));
+    covered.feed(b"\n");
+    let _ = rt.place_floating_nav(area, Some(&covered), nav);
+    assert_ne!(
+        rt.model.floating_rect,
+        Some(first),
+        "a covered spot re-places the box"
+    );
+}
+
+#[test]
+fn a_dropped_floating_drag_draws_the_remaining_hold_on_the_bottom_border() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // A drop of the box's drag holds the auto-relocation for 10 seconds; the box's
+    // bottom border shows what is left of that hold as a bar of accent cells, the way a
+    // toast draws its remaining life, and reads as a plain border once the hold is over.
+    let group = |host: &str, names: &[&str]| crate::model::Group {
+        host: host.into(),
+        err: None,
+        sessions: names
+            .iter()
+            .map(|name| crate::session::Session {
+                host: host.into(),
+                mux: String::new(),
+                id: String::new(),
+                name: (*name).into(),
+                windows: 1,
+                ..Default::default()
+            })
+            .collect(),
+    };
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![group("local", &["emem", "test", "xmux"])],
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    rt.prepare_and_draw(&mut term);
+    let box_rect = rt.model.render_plan.regions.nav_border;
+    assert!(
+        box_rect.width > 2 && box_rect.height > 2,
+        "the floating box is placed"
+    );
+    let inner = box_rect.width.saturating_sub(2);
+    let border_symbols = |term: &Terminal<TestBackend>| {
+        let buf = term.backend().buffer();
+        (0..inner)
+            .map(|i| {
+                buf[(box_rect.x + 1 + i, box_rect.bottom() - 1)]
+                    .symbol()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+    };
+    // A drop just happened: the whole 10s remain, so the border is all accent bars.
+    rt.floating_frozen_at = Some(std::time::Instant::now());
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    rt.dirty = true;
+    rt.prepare_and_draw(&mut term);
+    let held = border_symbols(&term);
+    assert!(
+        held.iter().all(|s| s == "\u{2501}"),
+        "the held border is all accent bars: {held:?}"
+    );
+    // The hold has long ended: the box is free to relocate and the border is plain.
+    rt.floating_frozen_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11));
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    rt.dirty = true;
+    rt.prepare_and_draw(&mut term);
+    let free = border_symbols(&term);
+    assert!(
+        free.iter().all(|s| s == "\u{2500}"),
+        "the free border is a plain line: {free:?}"
+    );
+}
+
+#[test]
 fn a_dropped_floating_drag_holds_the_box_then_the_scan_resumes() {
     use crate::display::grid::Grid;
     use crate::ui::switcher::{NavPosition, Scan, Switcher};

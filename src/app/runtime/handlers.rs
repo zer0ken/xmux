@@ -930,24 +930,47 @@ impl Runtime {
     ) -> crate::ui::switcher::NavSize {
         use crate::ui::switcher::{floating_nav_box, NavPosition};
         if nav.position != NavPosition::Floating {
+            self.model.switcher.floating_overlay = false;
             self.model.floating_rect = None;
             return nav;
         }
+        self.model.switcher.floating_overlay = true;
         let frozen = self
             .floating_frozen_at
             .is_some_and(|t| t.elapsed() < Self::FLOATING_FREEZE);
         // A drag in flight owns the box's position and a drop holds it for the freeze
         // span; the empty-space scan only relocates outside those.
         if !frozen && !self.model.switcher.popup_drag_active() {
-            self.floating_frozen_at = None;
-            self.model.switcher.reset_floating_offset();
+            // A freeze that just ended is a forget: the dropped position is abandoned
+            // and the box re-places. Otherwise the box keeps its spot while it still
+            // fits there whole, so a scrolling grid never makes it hop frame to frame.
+            let expired = self.floating_frozen_at.take().is_some();
             let w = self.floating_box_width(area, nav);
             let h = self.floating_box_height(area).max(1);
-            let rect = match grid {
-                Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
-                None => ratatui::layout::Rect::new(area.right().saturating_sub(w), area.y, w, h),
-            };
-            self.model.floating_rect = Some(rect);
+            let stays = !expired
+                && self.model.floating_rect.is_some_and(|held| {
+                    held.x + w <= area.right()
+                        && held.y + h <= area.bottom()
+                        && grid.is_none_or(|g| {
+                            (held.y..held.y + h)
+                                .all(|y| (held.x..held.x + w).all(|x| g.cell_blank(y, x)))
+                        })
+                });
+            if stays {
+                if let Some(held) = &mut self.model.floating_rect {
+                    held.width = w;
+                    held.height = h;
+                }
+            } else {
+                self.model.switcher.reset_floating_offset();
+                let rect = match grid {
+                    Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
+                    None => {
+                        ratatui::layout::Rect::new(area.right().saturating_sub(w), area.y, w, h)
+                    }
+                };
+                self.model.floating_rect = Some(rect);
+            }
         }
         self.model.nav_size()
     }
@@ -955,6 +978,17 @@ impl Runtime {
     /// How long a drop of the floating nav's box holds the auto-relocation, from the
     /// release to the forget.
     const FLOATING_FREEZE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// The share of the drop-hold freeze still ahead, as 0 to 1000, while a dropped drag
+    /// holds the floating nav in place. `None` when the box is free to relocate. The
+    /// floating box's bottom border draws it the way a toast draws its remaining life.
+    fn floating_freeze_fraction(&self) -> Option<u16> {
+        let elapsed = self.floating_frozen_at?.elapsed();
+        (elapsed < Self::FLOATING_FREEZE).then(|| {
+            let frac = 1.0 - elapsed.as_secs_f32() / Self::FLOATING_FREEZE.as_secs_f32();
+            (frac * 1000.0).round().clamp(0.0, 1000.0) as u16
+        })
+    }
 
     /// The floating nav's box width: the nav width the user set, the same value a
     /// right nav's column is wide, capped by the screen.
@@ -1180,9 +1214,10 @@ impl Runtime {
                     let drawn = term.draw(|f| {
                         let t_render = std::time::Instant::now();
                         let nav = self.place_floating_nav(f.area(), guard.as_deref(), nav);
-                        let plan = self
-                            .model
-                            .prepare_render_plan(f.area(), nav, &previous_plan);
+                        let mut plan =
+                            self.model
+                                .prepare_render_plan(f.area(), nav, &previous_plan);
+                        plan.floating_freeze = self.floating_freeze_fraction();
                         let switcher = &self.model.switcher;
                         let state = &self.model.state;
                         switcher.render(f, guard.as_deref(), terminal_focused, state, &plan);
@@ -1199,9 +1234,10 @@ impl Runtime {
                     let drawn = term.draw(|f| {
                         let t_render = std::time::Instant::now();
                         let nav = self.place_floating_nav(f.area(), None, nav);
-                        let plan = self
-                            .model
-                            .prepare_render_plan(f.area(), nav, &previous_plan);
+                        let mut plan =
+                            self.model
+                                .prepare_render_plan(f.area(), nav, &previous_plan);
+                        plan.floating_freeze = self.floating_freeze_fraction();
                         let switcher = &self.model.switcher;
                         let state = &self.model.state;
                         switcher.render(f, None, terminal_focused, state, &plan);

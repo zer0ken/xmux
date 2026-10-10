@@ -538,6 +538,11 @@ pub struct Switcher {
     /// Whether the prefix is armed. An armed prefix paints the hidden host band, so the
     /// cards a chord can reach are on screen while it is typed.
     prefix_armed: bool,
+    /// Whether the nav floats as an overlay over the terminal view (the terminal owns the
+    /// whole screen, the box floats over it). The overlay always hides the host band, so
+    /// the floating box holds to the session cards and its size is stable while the user
+    /// works; the full content shows once it docks or a prefix arms.
+    pub(crate) floating_overlay: bool,
 
     /// The session whose card a full re-scan turned into its host card, held until the
     /// selection moves. While it holds, the scanning host card keeps that session's
@@ -617,6 +622,7 @@ impl Switcher {
             terminal_view: false,
             host_band_hidden: false,
             prefix_armed: false,
+            floating_overlay: false,
             rescan_collapse: None,
             create_host: None,
             popup_geo: PopupGeometry::default(),
@@ -813,6 +819,12 @@ impl Switcher {
     /// decision, so it hides again when the chord ends, and a selection on a host card
     /// paints the band, since a selected card is always painted.
     fn band_unpainted(&self) -> bool {
+        // The floating overlay always hides the host band while the terminal view owns
+        // the screen: its box holds to the session cards and stays small no matter which
+        // card holds the selection. An armed prefix paints the band (the box docks then).
+        if self.floating_overlay {
+            return !self.prefix_armed;
+        }
         self.host_band_hidden
             && !self.prefix_armed
             && !matches!(
