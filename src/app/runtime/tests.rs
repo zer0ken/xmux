@@ -4534,6 +4534,74 @@ fn a_click_on_the_floating_box_docks_the_nav() {
 }
 
 #[test]
+fn a_click_on_a_floating_card_selects_and_executes_it() {
+    use crate::model::FocusTarget;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The floating nav's general mouse rule: with the terminal view focused, a click on
+    // a card interacts with it at once (selects and executes) instead of only docking.
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![crate::model::Group {
+            host: "local".into(),
+            err: None,
+            sessions: vec![
+                crate::session::Session {
+                    host: "local".into(),
+                    name: "api".into(),
+                    windows: 1,
+                    ..Default::default()
+                },
+                crate::session::Session {
+                    host: "local".into(),
+                    name: "db".into(),
+                    windows: 1,
+                    ..Default::default()
+                },
+            ],
+        }],
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    rt.model.nav_position_pinned = Some(NavPosition::Floating);
+    let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
+    sync_test_render_plan(&mut rt);
+    assert!(rt.model.state.focus.is_terminal_focused());
+    // Click the db card inside the floating box (press and release, no drag).
+    let db = rt.model.switcher.session_row("local", "db").unwrap();
+    let rect = rt
+        .model
+        .render_plan
+        .nav_cells
+        .iter()
+        .find(|(i, _)| *i == db)
+        .map(|(_, r)| *r)
+        .unwrap();
+    let (col, row) = (rect.x + 1, rect.y + 1);
+    let press = rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}M").as_bytes(),
+        &Selection::default(),
+    );
+    assert!(!press.quit, "a press alone runs nothing");
+    let _ = rt.handle_stdin_bytes(
+        format!("\x1b[<0;{col};{row}m").as_bytes(),
+        &Selection::default(),
+    );
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        Some(crate::model::Node::Session(crate::session::Address::new(
+            "local", "db"
+        ))),
+        "the clicked card is selected at once"
+    );
+    assert!(
+        rt.model.state.focus.is_terminal_focused(),
+        "a card click executes: the terminal view keeps the focus"
+    );
+}
+
+#[test]
 fn a_floating_box_keeps_its_spot_while_it_still_fits() {
     use crate::display::grid::Grid;
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
