@@ -4877,6 +4877,42 @@ async fn the_bands_part_with_the_rows_left_over() {
     }
 }
 
+#[test]
+fn a_floating_nav_follows_the_selection_band() {
+    // The floating nav is always inside the terminal view, so its band follows the
+    // selection: a session card hides the host band, a host or machine card shows it.
+    let mut h = Harness::new(scan_with_bands(3));
+    h.sw.set_nav_position(NavPosition::Floating);
+
+    let session =
+        h.sw.rows
+            .iter()
+            .position(|r| matches!(r.reference, RowRef::Session { .. }))
+            .expect("a session card");
+    let host =
+        h.sw.rows
+            .iter()
+            .position(|r| matches!(r.reference, RowRef::Host { .. } | RowRef::Machine { .. }))
+            .expect("a host-state card");
+
+    h.sw.set_selected(session);
+    assert!(
+        h.sw.band_unpainted(),
+        "a selected session hides the host band"
+    );
+    let compact = h.sw.nav_content_rows();
+
+    h.sw.set_selected(host);
+    assert!(
+        !h.sw.band_unpainted(),
+        "a selected host or machine shows the band"
+    );
+    assert!(
+        h.sw.nav_content_rows() > compact,
+        "the box grows when the band shows"
+    );
+}
+
 #[tokio::test]
 async fn a_scrolling_list_parts_its_bands_with_a_blank_row() {
     // Too many cards to fit, but the band boundary still keeps its blank row: even when

@@ -2280,6 +2280,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             let modal_kind = model.state.modal_kind();
             model.state.focus.sync_modal(modal_kind);
             let nav_focused = model.state.focus.view_is_nav();
+            model.switcher.set_nav_position(model.nav_position);
             model.switcher.sync_view_focus(!nav_focused);
             let mut effects = Vec::new();
             model.nav_was_focused = nav_focused;
