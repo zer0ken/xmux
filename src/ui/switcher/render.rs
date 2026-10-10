@@ -129,11 +129,6 @@ fn border_thumb(track: Rect, total: usize, offset: usize, visible: usize) -> Rec
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NavRule {
-    Horizontal(Rect),
-}
-
 /// A horizontal nav's count of the cards scrolled off one side, written on the nav
 /// border row: `‹ 5` after the prefix hint and `7 ›` at the right end. `target` is the
 /// hidden card nearest the visible ones, which a click on the count selects so the nav
@@ -198,7 +193,6 @@ pub struct RenderPlan {
     /// relocate. The floating box's bottom border draws it as the toast does its life.
     pub(crate) floating_freeze: Option<u16>,
     overflow_marks: Vec<OverflowMark>,
-    nav_rule: Option<NavRule>,
     pub(super) border_thumb: Rect,
     pub nav_hidden: bool,
 }
@@ -227,7 +221,6 @@ impl Default for RenderPlan {
             nav_guidance: None,
             floating_freeze: None,
             overflow_marks: Vec::new(),
-            nav_rule: None,
             border_thumb: Rect::default(),
             nav_hidden: true,
         }
@@ -741,14 +734,6 @@ impl Switcher {
                 )
             })
             .collect();
-        plan.nav_rule = flow.rule_y.map(|y| {
-            NavRule::Horizontal(Rect {
-                x: cards.x,
-                y: cards.y + y,
-                width: cards.width,
-                height: 1,
-            })
-        });
         if flow.scrolls {
             let border = plan.regions.nav_border;
             plan.border_thumb = border_thumb(
@@ -1283,29 +1268,12 @@ impl Switcher {
                 }
             }
         }
-        match plan.nav_rule {
-            Some(NavRule::Horizontal(rect)) => Self::render_band_rule(frame, rect, palette),
-            None => {}
-        }
         if let Some((rect, text)) = &plan.nav_guidance {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(text.clone(), dim))),
                 *rect,
             );
         }
-    }
-
-    /// The rule parting the side list's two bands once they scroll as one run. A single
-    /// light horizontal line across the nav: it says the cards below it are a different
-    /// kind of thing, which is all the blank gap says while both bands fit on screen.
-    fn render_band_rule(frame: &mut Frame, rect: Rect, palette: &palette::Palette) {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                BAND_RULE.repeat(rect.width as usize),
-                Style::default().fg(palette.decoration),
-            ))),
-            rect,
-        );
     }
 
     /// Writes one overflow count on the band's seam: `‹ 5` or `7 ›`, the angle pointing

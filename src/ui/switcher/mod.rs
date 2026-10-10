@@ -33,10 +33,6 @@ pub const NAV_WIDTH: u16 = 48;
 /// between a name and the next number rather than two names running together.
 pub(super) const COL_GUTTER: u16 = 1;
 
-/// The glyph the side list's band rule is drawn from, repeated across the nav. A light
-/// box-drawing line, so it parts the bands without reading as a border around either.
-pub(super) const BAND_RULE: &str = "\u{2500}";
-
 /// The columns a session card is indented by under its section title, at every nav
 /// position. The indent and the bold title are the whole of what marks a group: no rule
 /// and no connector is painted for it. The indent lies outside the card's rect, so the
@@ -1232,7 +1228,7 @@ impl Switcher {
         }
     }
 
-    /// The rows the nav paints plus the band rule rows between the bands: the floating
+    /// The rows the nav paints plus the blank rows between the bands: the floating
     /// nav's content height, from what the paint actually draws, so its box wraps every
     /// painted row and no card drops and no blank row is left inside. Follows the band
     /// hiding: the band's hide shows fewer rows and the box shrinks with them.

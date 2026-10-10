@@ -4611,7 +4611,7 @@ async fn a_section_title_stands_alone_over_its_cards() {
     let y = side.nav_row_of("local").expect("the section title");
     let painted = nav_line(&side, y);
     assert!(
-        !painted.contains(BAND_RULE),
+        !painted.contains("\u{2500}"),
         "the side list's title stands alone:\n{painted}"
     );
 
@@ -4621,7 +4621,7 @@ async fn a_section_title_stands_alone_over_its_cards() {
     let y = row_of(top.buf(), "local", w).expect("the section title");
     let painted = band_line(&top, y);
     assert!(
-        !painted.contains(BAND_RULE),
+        !painted.contains("\u{2500}"),
         "the band's title stands alone:\n{painted}"
     );
     for name in ["build", "editor"] {
@@ -4878,27 +4878,28 @@ async fn the_bands_part_with_the_rows_left_over() {
 }
 
 #[tokio::test]
-async fn a_scrolling_list_parts_its_bands_with_a_rule() {
-    // Too many cards to fit: the gap would part what is no longer on screen together, so
-    // the list closes it up and a box-drawing rule takes the boundary's row instead.
+async fn a_scrolling_list_parts_its_bands_with_a_blank_row() {
+    // Too many cards to fit, but the band boundary still keeps its blank row: even when
+    // the list scrolls as one run, the row above the host-state band stays blank.
     let mut h = Harness::new(scan_with_bands(40));
     h.key(KeyCode::End).await; // scroll down to the boundary
     let boundary = h.sw.band_boundary().expect("the list has a host card");
     let host = card_rect(&h, boundary);
-    assert!(host.y > 0, "the rule needs a row above the host card");
+    assert!(host.y > 0, "a blank row stands above the host card");
     // Across the CARDS' width: the seam beside them carries the thumb.
-    let rule: String = (host.x..host.x + host.width)
+    let parting: String = (host.x..host.x + host.width)
         .map(|x| h.buf()[(x, host.y - 1)].symbol().to_string())
         .collect();
-    assert!(
-        rule.chars().all(|c| c.to_string() == BAND_RULE),
-        "a rule sits directly above the host-state band: {rule:?}"
+    assert_eq!(
+        parting.trim(),
+        "",
+        "the row above the host-state band is blank: {parting:?}"
     );
     let last_session = card_rect(&h, boundary - 1);
     assert_eq!(
         last_session.y + last_session.height,
         host.y - 1,
-        "the rule is the only thing between the bands"
+        "the blank row is the only thing between the bands"
     );
 }
 
@@ -4906,7 +4907,7 @@ async fn a_scrolling_list_parts_its_bands_with_a_rule() {
 async fn the_bands_never_touch_on_screen() {
     // 27 session cards plus a still-scanning host card fill this nav's rows exactly
     // (every card is one row now), so the parting has no row left to take: rather than
-    // let the bands meet, the list scrolls a row early and the rule takes the boundary's
+    // let the bands meet, the list scrolls a row early so the boundary keeps its blank
     // row. Scroll to the boundary first - the host sits below the fold at the top.
     let mut h = Harness::from_hosts(&["local", "db-2"]);
     let sessions: Vec<crate::session::Session> = (0..27)
@@ -4928,13 +4929,10 @@ async fn the_bands_never_touch_on_screen() {
         host.y - 1,
         "a row stands between the bands"
     );
-    let rule: String = (host.x..host.x + host.width)
+    let parting: String = (host.x..host.x + host.width)
         .map(|x| h.buf()[(x, host.y - 1)].symbol().to_string())
         .collect();
-    assert!(
-        rule.chars().all(|c| c.to_string() == BAND_RULE),
-        "and that row is the rule: {rule:?}"
-    );
+    assert_eq!(parting.trim(), "", "and that row is blank: {parting:?}");
     // The list scrolls a row before the cards themselves would need it, so the seam
     // carries the thumb.
     let seam_x = h.plan.regions.nav_border.x;
@@ -5023,7 +5021,7 @@ async fn a_hosts_sessions_are_each_a_single_row_under_one_section_title() {
     // Every session of one host is a single-row card (the number + the name), stacked
     // directly under the one section title that names the whole group. The side list
     // draws no connector and no per-card context line: it is one full-width run, where
-    // the title and the rule under it already draw the group.
+    // the title already draws the group.
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![

@@ -4909,8 +4909,8 @@ fn floating_box_height_wraps_every_painted_row() {
     use crate::model::FocusTarget;
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
     // The box's height counts the rows the paint actually draws: the painted cards and
-    // the band rule rows between them, so the box has room for every card and the row
-    // right above the bottom border is a card or a rule, never blank.
+    // the blank rows between them, so the box has room for every card and the row
+    // right above the bottom border is a card or blank, never cut off.
     let sess = |host: &str, name: &str| crate::session::Session {
         host: host.into(),
         name: name.into(),
