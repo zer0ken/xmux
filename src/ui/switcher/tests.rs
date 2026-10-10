@@ -9419,3 +9419,31 @@ async fn the_landing_list_says_attached_only_for_a_client_other_than_xmuxs_own()
         "{facts:?}"
     );
 }
+#[test]
+fn floating_nav_box_scans_rows_before_columns() {
+    // Rows outer, columns inner: the box lands on the topmost row it fits whole, and on
+    // that row the wall-most column, so the height beats the wall side.
+    let area = Rect::new(0, 0, 80, 24);
+    // Rows 0..9 hold full-width content; rows 10..23 are blank.
+    let blank = |_: u16, y: u16| !(y < 10);
+    assert_eq!(
+        floating_nav_box(area, 24, 8, blank),
+        Rect::new(56, 10, 24, 8),
+        "the box sits on the topmost blank row, wall-most column"
+    );
+}
+
+#[test]
+fn floating_nav_box_falls_back_to_the_first_least_glyph_spot() {
+    // No wall-margin window is empty, so the box takes the first-found spot whose
+    // window carries the fewest glyphs: a glyph in every window's shared column range
+    // (56..=74) at alternating rows keeps every window non-empty with an equal count,
+    // so the first-found topmost row wins.
+    let area = Rect::new(0, 0, 80, 24);
+    let blank = |x: u16, y: u16| !(x == 70 && y.is_multiple_of(2));
+    assert_eq!(
+        floating_nav_box(area, 24, 8, blank),
+        Rect::new(56, 0, 24, 8),
+        "the box falls back to the first-found fewest-glyph spot"
+    );
+}

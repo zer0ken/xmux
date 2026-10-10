@@ -315,13 +315,14 @@ impl Grid {
     }
 
     /// Whether the cell at `(row, col)` carries no visible glyph. The floating nav scans
-    /// these to sit over the terminal's empty space.
-    /// Whether a cell carries no glyph. A wide char's right half counts as taken, so a
-    /// box edge never lands on half a glyph.
+    /// these to sit over the terminal's empty space, so only a cell with an actual glyph
+    /// keeps the box out: a background colour alone (no glyph, or a space) reads as
+    /// blank. A wide char's right half counts as taken, so a box edge never lands on
+    /// half a glyph.
     pub fn cell_blank(&self, row: u16, col: u16) -> bool {
-        self.visible()
-            .cell(row, col)
-            .is_none_or(|c| !c.has_contents() && !c.is_wide_continuation())
+        self.visible().cell(row, col).is_none_or(|c| {
+            c.contents().chars().all(char::is_whitespace) && !c.is_wide_continuation()
+        })
     }
 
     /// A cheap, stable hash of the visible cell contents. Changes if and only if the
@@ -1226,4 +1227,17 @@ Connection to host closed.
         assert!(!g.cell_blank(0, 2), "a narrow char is taken");
         assert!(g.cell_blank(0, 3), "a truly blank cell is blank");
     }
+}
+
+#[test]
+fn cell_blank_ignores_a_background_colour_without_a_glyph() {
+    // A coloured region painted with spaces carries no glyph, so the floating box may
+    // sit over it; only an actual glyph or a wide char's continuation keeps the box out.
+    let mut g = Grid::new(5, 20);
+    g.feed(b"\x1b[41m   \x1b[0m"); // three red-background spaces
+    g.feed(b"X");
+    assert!(g.cell_blank(0, 0), "a background-coloured space is blank");
+    assert!(g.cell_blank(0, 2), "a background-coloured space is blank");
+    assert!(!g.cell_blank(0, 3), "a glyph is taken");
+    assert!(g.cell_blank(0, 4), "an empty cell is blank");
 }

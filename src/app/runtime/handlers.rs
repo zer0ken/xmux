@@ -911,10 +911,10 @@ impl Runtime {
     }
 
     /// Recomputes and stores the floating nav's box each frame: a content-fit box sized
-    /// to the nav's card content, placed over the terminal's widest empty strip near the
-    /// right wall. A drop of the box's drag holds the position for 10 seconds from the
-    /// release, then the position is forgotten (the drag offset dropped) and the scan
-    /// resumes. Returns the nav size the frame should use.
+    /// to the nav's card content, placed on the first empty window in the wall margin,
+    /// else the first least-glyph one, so the box always tracks the current best spot.
+    /// A drag in flight owns the box's position and a drop holds it for 10 seconds from
+    /// the release, then the scan resumes. Returns the nav size the frame should use.
     pub(super) fn place_floating_nav(
         &mut self,
         area: ratatui::layout::Rect,
@@ -929,44 +929,23 @@ impl Runtime {
         let frozen = self
             .floating_frozen_at
             .is_some_and(|t| t.elapsed() < Self::FLOATING_FREEZE);
-        // A drag in flight owns the box's position and a drop holds it for the freeze
-        // span; the empty-space scan only relocates outside those. While the pointer
-        // rests on the box, nothing moves it: no matter what the grid or the content
-        // does, the box holds where it is until the pointer leaves.
+        // A drag in flight owns the box's position, a drop holds it for the freeze
+        // span, and a pointer resting on the box locks it; outside those the box
+        // re-places every frame, so it always sits on the current best spot instead of
+        // holding a covered one.
         if !frozen
             && !self.model.mouse_state.hovering_floating_nav
             && !self.model.switcher.popup_drag_active()
         {
-            // A freeze that just ended is a forget: the dropped position is abandoned
-            // and the box re-places. Otherwise the box keeps its spot while it still
-            // fits there whole, so a scrolling grid never makes it hop frame to frame.
-            let expired = self.floating_frozen_at.take().is_some();
+            self.floating_frozen_at = None;
             let w = self.floating_box_width(area, nav);
             let h = self.floating_box_height(area).max(1);
-            let stays = !expired
-                && self.model.floating_rect.is_some_and(|held| {
-                    held.x + w <= area.right()
-                        && held.y + h <= area.bottom()
-                        && grid.is_none_or(|g| {
-                            (held.y..held.y + h)
-                                .all(|y| (held.x..held.x + w).all(|x| g.cell_blank(y, x)))
-                        })
-                });
-            if stays {
-                if let Some(held) = &mut self.model.floating_rect {
-                    held.width = w;
-                    held.height = h;
-                }
-            } else {
-                self.model.switcher.reset_floating_offset();
-                let rect = match grid {
-                    Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
-                    None => {
-                        ratatui::layout::Rect::new(area.right().saturating_sub(w), area.y, w, h)
-                    }
-                };
-                self.model.floating_rect = Some(rect);
-            }
+            self.model.switcher.reset_floating_offset();
+            let rect = match grid {
+                Some(g) => floating_nav_box(area, w, h, |x, y| g.cell_blank(y, x)),
+                None => ratatui::layout::Rect::new(area.right().saturating_sub(w), area.y, w, h),
+            };
+            self.model.floating_rect = Some(rect);
         }
         self.model.nav_size()
     }
