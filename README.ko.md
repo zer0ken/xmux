@@ -41,11 +41,6 @@ terminal view는 선택한 세션을 따라 바뀐다.](docs/assets/xmux-nav-swi
 ![플로팅이 기본값이며, prefix p를 누를 때마다 nav를 terminal view의 다음 변에
 배치한다. 왼쪽·위·오른쪽·아래를 한 바퀴 돌아 플로팅으로 되돌아온다.](docs/assets/xmux-nav-place.gif)
 
-**nav 플로팅**
-
-![포커스를 전환하면 플로팅 박스가 오른쪽 열 전체 높이로 고정되고, terminal view로
-돌아오면 콘텐츠 높이의 박스로 다시 떠 있다.](docs/assets/xmux-nav-floating.gif)
-
 **nav 자동 숨기기**
 
 ![자동 숨기기가 켜진 상태에서 terminal view로 포커스를 옮기면 xmux는 nav를 숨기고
