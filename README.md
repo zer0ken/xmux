@@ -43,11 +43,6 @@ it back.](docs/assets/xmux-nav-resize.gif)
 ![From the floating default, each prefix p places the nav on the next side of the
 terminal view, cycling through left, top, right, bottom, and back to floating.](docs/assets/xmux-nav-place.gif)
 
-**Float the nav**
-
-![Toggling focus docks the floating box to the right column at full height and undocks
-it to a content-fit box when the terminal returns.](docs/assets/xmux-nav-floating.gif)
-
 **Auto-hide the nav**
 
 ![With auto-hide on, focusing the terminal view hides the nav and gives the

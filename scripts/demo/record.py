@@ -247,15 +247,6 @@ def features(s):
         s.prefix(); s.type("p", KEY)
         s.hold(2.2)
 
-    s.caption("Float the nav")
-    # The nav is back on the floating side after the full cycle, so the box floats over
-    # the terminal. Toggling focus docks the box to the right column at full height and
-    # undocks it to a content-fit box when the terminal returns.
-    s.prefix(); s.key("Tab"); s.hold(1.8)
-    s.prefix(); s.key("Tab"); s.hold(1.8)
-    s.prefix(); s.key("Tab"); s.hold(1.8)
-    s.prefix(); s.key("Tab"); s.hold(1.6)
-
     s.caption("Auto-hide the nav")
     s.prefix(); s.type("t", KEY); s.hold(1.6)
     s.key("Enter"); s.hold(2.4)
