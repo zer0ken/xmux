@@ -1042,7 +1042,7 @@ impl Switcher {
         };
         let cursor = self.resolve_cursor(state, plan, grid, terminal_focused, view_caret);
         Self::place_cursor(frame, cursor);
-        self.render_floating_box(frame, state, plan, palette);
+        self.render_floating_box(frame, terminal_focused, state, plan, palette);
         self.render_key_list(frame, state, plan, palette);
         self.render_scan_box(frame, plan, palette);
         self.render_toasts(frame, state, plan, palette);
@@ -1055,6 +1055,7 @@ impl Switcher {
     fn render_floating_box(
         &self,
         frame: &mut Frame,
+        terminal_focused: bool,
         state: &crate::state::State,
         plan: &RenderPlan,
         palette: &palette::Palette,
@@ -1076,7 +1077,16 @@ impl Switcher {
         let right = box_rect.right().saturating_sub(1);
         let top = box_rect.y;
         let bottom = box_rect.bottom().saturating_sub(1);
-        let style = Style::default().fg(palette.primary);
+        // The box's border says which view holds focus, exactly as a side nav's border
+        // does: active on the nav's focus, inactive while the terminal view owns the
+        // focus. The rounded box is the floating nav's one border, so it carries the
+        // same focus grammar the split placements draw on their nav border.
+        let border_color = if terminal_focused {
+            state.chrome.colors.inactive
+        } else {
+            state.chrome.colors.active
+        };
+        let style = Style::default().fg(border_color);
         {
             let buf = frame.buffer_mut();
             for x in left..=right {
@@ -1161,7 +1171,7 @@ impl Switcher {
                         );
                     } else {
                         cell.set_symbol("\u{2500}");
-                        cell.set_style(Style::default().fg(palette.primary));
+                        cell.set_style(Style::default().fg(border_color));
                     }
                 }
             }
