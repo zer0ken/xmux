@@ -220,6 +220,26 @@ impl Harness {
         self.plan = next.expect("draw produced a render plan");
     }
 
+    /// Draws the floating nav with `terminal_focused` owning the focus, so a test can
+    /// read the box's border colour in each focus state. The floating box is the
+    /// floating nav's one border, so it must tell the user which view owns the keys,
+    /// exactly as the split placements' nav border does.
+    fn draw_floating(&mut self, terminal_focused: bool) {
+        let sw = &self.sw;
+        let state = &self.state;
+        let previous = self.plan.clone();
+        let mut next = None;
+        self.term
+            .draw(|f| {
+                let nav = NavSize::visible(NAV_WIDTH).with_position(NavPosition::Floating);
+                let plan = sw.layout(f.area(), nav, state, &previous);
+                sw.render(f, None, terminal_focused, state, &plan);
+                next = Some(plan);
+            })
+            .unwrap();
+        self.plan = next.expect("draw produced a render plan");
+    }
+
     /// The terminal-view row holding `text`, with the style of its first cell.
     fn view_cell_of(&self, text: &str) -> Option<(u16, ratatui::style::Style)> {
         let buf = self.buf();
@@ -4926,6 +4946,32 @@ fn a_floating_nav_band_follows_the_focus_like_any_nav() {
     assert!(
         h.sw.nav_content_rows() > compact,
         "the box grows when the band shows"
+    );
+}
+
+#[test]
+fn floating_box_border_says_which_view_holds_focus() {
+    // The floating box's rounded border carries the same focus grammar as a side nav's
+    // border: active while the nav holds the focus, inactive while the terminal view
+    // does. The box is the floating nav's one border, so it must tell the user which
+    // view owns the keys, exactly as the split placements' nav border does.
+    let mut h = Harness::new(scan_with_bands(3));
+    let corner = |h: &Harness| {
+        let r = h.plan.regions.nav_border;
+        h.buf()[(r.x, r.y)].style().fg
+    };
+
+    h.draw_floating(false);
+    assert_eq!(
+        corner(&h),
+        Some(h.state.chrome.colors.active),
+        "the box is active on the nav's focus"
+    );
+    h.draw_floating(true);
+    assert_eq!(
+        corner(&h),
+        Some(h.state.chrome.colors.inactive),
+        "the box is inactive while the terminal view holds the focus"
     );
 }
 
