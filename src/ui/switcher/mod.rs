@@ -148,7 +148,43 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
         };
     }
     match nav.position {
-        NavPosition::Floating => floating_regions(area, nav, nav_width),
+        NavPosition::Floating => {
+            if nav.docked_floating {
+                // A docked floating nav: a rounded box over the right side filling the
+                // column's full height, its border region the outer box and its interior
+                // the nav's content, the terminal keeping the remainder, the prefix hint
+                // on the top border. The box total comes from the SAME natural width the
+                // free box uses (interior = the user's nav width), so the box is no
+                // wider in the docked state than when it floats. Docking is a layout
+                // flag, not a position change: the nav stays Floating, so every
+                // floating-box behaviour (drag, hover hold, click routing, the band
+                // following the selection) keeps applying. The box's rect flows through
+                // the same `floating_box_rect` resolver the free box uses, so the two
+                // layouts can never disagree on the box's size or position.
+                let outer = floating_box_rect(area, nav, 0, false, false, false, |_, _| true);
+                let box_x = outer.x;
+                let inner = Rect::new(
+                    box_x.saturating_add(1),
+                    area.y.saturating_add(1),
+                    nav.natural.min(outer.width.saturating_sub(2)),
+                    area.height.saturating_sub(2),
+                );
+                Regions {
+                    layout,
+                    nav: inner,
+                    nav_border: outer,
+                    terminal: Rect::new(area.x, area.y, box_x.saturating_sub(area.x), area.height),
+                    prefix_hint: Rect::new(
+                        box_x.saturating_add(1),
+                        area.y,
+                        outer.width.saturating_sub(2),
+                        1,
+                    ),
+                }
+            } else {
+                floating_regions(area, nav, nav_width)
+            }
+        }
         NavPosition::Left => {
             let c = Layout::horizontal([
                 Constraint::Length(nav_width),
@@ -166,58 +202,22 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
             }
         }
         NavPosition::Right => {
-            if nav.docked_floating {
-                // A docked floating nav: a rounded box over the right side, its border
-                // region the outer box and its interior the nav's content (nav_width
-                // wide), the terminal keeping the remainder, the prefix hint on the top
-                // border.
-                let box_x = area
-                    .right()
-                    .saturating_sub(nav_width)
-                    .saturating_sub(2)
-                    .max(area.x);
-                let outer = Rect::new(
-                    box_x,
-                    area.y,
-                    area.right().saturating_sub(box_x),
-                    area.height,
-                );
-                let inner = Rect::new(
-                    box_x.saturating_add(1),
-                    area.y.saturating_add(1),
-                    nav_width.min(outer.width.saturating_sub(2)),
-                    area.height.saturating_sub(2),
-                );
-                Regions {
-                    layout,
-                    nav: inner,
-                    nav_border: outer,
-                    terminal: Rect::new(area.x, area.y, box_x.saturating_sub(area.x), area.height),
-                    prefix_hint: Rect::new(
-                        box_x.saturating_add(1),
-                        area.y,
-                        outer.width.saturating_sub(2),
-                        1,
-                    ),
-                }
-            } else {
-                // The left column mirrored: the terminal view keeps the remainder, the border
-                // and the navigation view follow on the right. The navigation view's in-region
-                // layout (card flow, prefix hint) is identical at both placements.
-                let c = Layout::horizontal([
-                    Constraint::Min(0),
-                    Constraint::Length(1),
-                    Constraint::Length(nav_width),
-                ])
-                .split(area);
-                let (prefix_hint, nav) = split_prefix_row(c[2]);
-                Regions {
-                    layout,
-                    nav,
-                    nav_border: c[1],
-                    terminal: c[0],
-                    prefix_hint,
-                }
+            // The left column mirrored: the terminal view keeps the remainder, the border
+            // and the navigation view follow on the right. The navigation view's in-region
+            // layout (card flow, prefix hint) is identical at both placements.
+            let c = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(nav_width),
+            ])
+            .split(area);
+            let (prefix_hint, nav) = split_prefix_row(c[2]);
+            Regions {
+                layout,
+                nav,
+                nav_border: c[1],
+                terminal: c[0],
+                prefix_hint,
             }
         }
         NavPosition::Top => {
@@ -263,6 +263,56 @@ pub(crate) fn default_floating_box(area: Rect, nav_width: u16) -> Rect {
     let w = nav_width.min(area.width);
     let h = (area.height / 2).max(3).min(area.height);
     Rect::new(area.right().saturating_sub(w), area.y, w, h)
+}
+
+/// The single owner of the floating nav box's rect: its size and its position. The
+/// docked box (full height) and the free box (content-fit) both flow through here, and
+/// so does the box a drag, a hover, or a drop's freeze holds in place, so no two callers
+/// can size or place the box differently. The drag offset is a translation the render
+/// path applies on top of the stored base, so it stays out of the box's intrinsic
+/// geometry.
+pub(crate) fn floating_box_rect(
+    area: Rect,
+    nav: NavSize,
+    content_rows: u16,
+    panel: bool,
+    scan: bool,
+    interacting: bool,
+    blank: impl Fn(u16, u16) -> bool,
+) -> Rect {
+    // The box total is the user's nav width plus its two border columns, capped by the
+    // screen, so the content is exactly the nav width the user set, the same value a
+    // right nav's column is wide.
+    let w = nav.natural.saturating_add(2).min(area.width);
+    if nav.docked_floating {
+        // A docked floating nav fills the right column's full height in a rounded box.
+        let box_x = area.right().saturating_sub(w).max(area.x);
+        return Rect::new(
+            box_x,
+            area.y,
+            area.right().saturating_sub(box_x),
+            area.height,
+        );
+    }
+    // Content-fit: the box is as tall as the nav's card content plus its two border
+    // rows, so it always has room for every card.
+    let h = content_rows.saturating_add(2).min(area.height).max(3);
+    let (x, y) = if interacting {
+        // A drag, a hover, or a drop's freeze holds the box's POSITION, not its size: it
+        // still grows or shrinks to fit its content in place.
+        nav.floating
+            .map(|r| (r.x, r.y))
+            .unwrap_or((area.right().saturating_sub(w), area.y))
+    } else if panel || !scan {
+        // A non-session screen (or no grid to scan) pins the box to the top-right corner
+        // instead of leaving it over a stale spot on the underlying grid.
+        (area.right().saturating_sub(w), area.y)
+    } else {
+        // Over a session's grid, re-place on the current best empty spot.
+        let r = floating_nav_box(area, w, h, blank);
+        (r.x, r.y)
+    };
+    Rect::new(x, y, w, h)
 }
 
 /// The regions of a floating nav: the terminal keeps the whole area and the nav floats
@@ -538,7 +588,7 @@ mod render;
 pub(crate) use render::MIDDLE_ELLIPSIS;
 mod side;
 
-pub use render::RenderPlan;
+pub use render::{Cursor, RenderPlan};
 
 pub use crate::model::{step_nav_position, NavPosition};
 

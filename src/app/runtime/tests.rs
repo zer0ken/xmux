@@ -4679,7 +4679,6 @@ fn a_floating_box_holds_its_spot_while_the_pointer_rests_on_it() {
 
 #[test]
 fn a_floating_box_grows_with_its_content_while_the_pointer_rests_on_it() {
-    use crate::display::grid::Grid;
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
     // The pointer on the box holds its POSITION, not its size: a card that reveals more
     // rows (a taller list, a shown host band) grows the box in place.
@@ -4707,7 +4706,7 @@ fn a_floating_box_grows_with_its_content_while_the_pointer_rests_on_it() {
     rt.model.switcher = switcher;
     rt.model.nav_position = NavPosition::Floating;
     let area = ratatui::layout::Rect::new(0, 0, 80, 40);
-    let grid = Grid::new(40, 80);
+    let grid = crate::display::grid::Grid::new(40, 80);
     let nav = rt.place_floating_nav(area, Some(&grid), rt.model.nav_size());
     let first = rt.model.floating_rect.unwrap();
     let (x, y) = (first.x, first.y);
@@ -4848,9 +4847,10 @@ fn a_dropped_floating_drag_holds_the_box_then_the_scan_resumes() {
 }
 
 #[test]
-fn floating_box_width_equals_the_nav_width() {
+fn floating_box_interior_equals_the_nav_width() {
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
-    // The box's width is the nav width the user set, not a content measure.
+    // The nav width the user set is the box's INTERIOR: the box total adds its two
+    // border columns, so the content is exactly the nav width, matching a docked box.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_machines(&["local"]));
@@ -4860,7 +4860,11 @@ fn floating_box_width_equals_the_nav_width() {
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
     let nav = rt.place_floating_nav(area, None, rt.model.nav_size());
     let rect = rt.model.floating_rect.unwrap();
-    assert_eq!(rect.width, nav.natural, "the box's width is the nav width");
+    assert_eq!(
+        rect.width.saturating_sub(2),
+        nav.natural,
+        "the box's interior is the nav width"
+    );
 }
 
 #[test]
@@ -4878,9 +4882,11 @@ fn a_drag_in_flight_keeps_the_floating_box_following() {
     rt.model.nav_position = NavPosition::Floating;
     rt.model.nav_position_pinned = Some(NavPosition::Floating);
     let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
-    sync_test_render_plan(&mut rt);
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
     let nav = rt.place_floating_nav(area, None, rt.model.nav_size());
+    // The plan is built after the box is placed (as the loop does), so the press is
+    // hit-tested against the box that is actually on screen.
+    sync_test_render_plan(&mut rt);
     let base = rt.model.floating_rect.unwrap();
     let (col, row) = (base.x + 2, base.y + 2);
     rt.handle_stdin_bytes(
@@ -4955,9 +4961,15 @@ fn prefix_ready_docks_the_floating_nav() {
     assert!(rt.prefix_active(), "the prefix arms");
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
     rt.prepare_and_draw(&mut term);
+    // The dock is a layout flag, not a position change: the nav stays Floating while it
+    // is docked, and `floating_docked` carries the docked state.
     assert_eq!(
         rt.model.nav_position,
-        NavPosition::Right,
+        NavPosition::Floating,
+        "a docked floating nav stays Floating"
+    );
+    assert!(
+        rt.model.floating_docked,
         "the armed prefix docks the floating nav"
     );
 }

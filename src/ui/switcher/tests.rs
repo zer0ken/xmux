@@ -5631,15 +5631,16 @@ fn compute_regions_side_top_and_hidden() {
 #[test]
 fn compute_regions_docked_floating_is_a_rounded_box() {
     use ratatui::layout::Rect;
-    // A floating nav docked for an interaction keeps the right column but wraps it in a
-    // box: the border region is the outer box (content + 2), the nav content keeps
-    // nav_width inside it, the prefix hint rests on the top border, and the terminal
-    // keeps the remainder.
+    // A floating nav docked for an interaction fills the right column's full height in
+    // a rounded box: the border region is the outer box (content + 2), the nav content
+    // keeps nav_width inside it, the prefix hint rests on the top border, and the
+    // terminal keeps the remainder. Docking is a layout flag, not a position change, so
+    // the box is a Floating layout: a right nav ignores docked_floating entirely.
     let area = Rect::new(0, 0, 100, 30);
     let r = compute_regions(
         area,
         NavSize::visible(24)
-            .with_position(NavPosition::Right)
+            .with_position(NavPosition::Floating)
             .with_docked_floating(true),
     );
     assert_eq!(r.layout, ViewLayout::Vertical);
@@ -5854,8 +5855,10 @@ fn paint_does_not_mutate_switcher_render_state() {
     let before = plan.clone();
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
 
-    term.draw(|f| sw.render(f, None, false, &state, &plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &plan);
+    })
+    .unwrap();
 
     assert_eq!(plan, before, "paint writes only the frame");
 }
@@ -5871,8 +5874,10 @@ fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
         &state,
         &RenderPlan::default(),
     );
-    term.draw(|f| sw.render(f, None, false, &state, &plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &plan);
+    })
+    .unwrap();
     let buf = term.backend().buffer();
     // The address column starts at column 0, right-aligned in one width for the whole
     // frame, on the card's single row. The SELECTED card holds the mark there instead of
@@ -6599,6 +6604,44 @@ async fn nav_border_glyph_reflects_auto_hide_mode() {
 }
 
 #[tokio::test]
+async fn a_docked_floating_boxes_inner_border_highlights_on_hover() {
+    // The docked floating box's inner (left) edge is its resize handle: hovering it
+    // draws the edge heavy in the hover colour, the same grab cue a side nav shows.
+    let w = 20u16;
+    let backend = TestBackend::new(140, 30);
+    let mut term = Terminal::new(backend).unwrap();
+    let mut state = crate::state::State::from_scan(sample());
+    let sw = Switcher::new(&mut state);
+    let left = 140 - w - 2; // the box's left border column
+    let nav = || {
+        NavSize::visible(w)
+            .with_position(NavPosition::Floating)
+            .with_docked_floating(true)
+    };
+
+    state.chrome.set_nav_border_hovered(false);
+    term.draw(|f| {
+        sw.render_test(f, None, false, nav(), &state);
+    })
+    .unwrap();
+    assert_eq!(
+        term.backend().buffer()[(left, 2)].symbol(),
+        "│",
+        "no hover → single edge"
+    );
+
+    let hover = state.chrome.colors.hover;
+    state.chrome.set_nav_border_hovered(true);
+    term.draw(|f| {
+        sw.render_test(f, None, false, nav(), &state);
+    })
+    .unwrap();
+    let cell = &term.backend().buffer()[(left, 2)];
+    assert_eq!(cell.symbol(), "┃", "hover → heavy edge");
+    assert_eq!(cell.fg, hover, "hover → the border-hover colour");
+}
+
+#[tokio::test]
 async fn every_popup_type_is_opaque_over_a_colored_grid() {
     // A grid filled with a blue background; each popup type drawn over it must leave
     // zero interior cells showing the grid's background (the shared render_popup is
@@ -6693,8 +6736,10 @@ fn popup_border_press_then_drag_moves_the_rect() {
         &state,
         &RenderPlan::default(),
     );
-    term.draw(|f| sw.render(f, None, false, &state, &before_plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &before_plan);
+    })
+    .unwrap();
     let before = before_plan.popup_rect;
     let (bx, by) = (before.x, before.y); // top-left corner is on the border
     assert!(
@@ -6708,8 +6753,10 @@ fn popup_border_press_then_drag_moves_the_rect() {
         &state,
         &before_plan,
     );
-    term.draw(|f| sw.render(f, None, false, &state, &after_plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &after_plan);
+    })
+    .unwrap();
     assert_eq!(after_plan.popup_rect.x, before.x - 5, "moved left by 5");
     assert_eq!(after_plan.popup_rect.y, before.y - 1, "moved up by 1");
     sw.end_popup_drag();
@@ -6771,8 +6818,10 @@ fn popup_renders_without_panicking_on_a_narrow_screen() {
         &state,
         &RenderPlan::default(),
     );
-    term.draw(|f| sw.render(f, None, false, &state, &plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &plan);
+    })
+    .unwrap();
     assert!(plan.popup_rect.width <= 10, "popup fits the narrow screen");
 }
 
@@ -6850,7 +6899,9 @@ impl HelpOnScreen {
         );
         let (sw, state, plan) = (&self.sw, &self.state, &self.plan);
         self.term
-            .draw(|f| sw.render(f, None, false, state, plan))
+            .draw(|f| {
+                sw.render(f, None, false, state, plan);
+            })
             .unwrap();
     }
 
@@ -7226,8 +7277,10 @@ fn popup_drag_clamps_within_screen() {
         &state,
         &plan,
     );
-    term.draw(|f| sw.render(f, None, false, &state, &next))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &next);
+    })
+    .unwrap();
     assert_eq!(next.popup_rect.x, 0, "clamped to the left screen edge");
 }
 
@@ -7669,8 +7722,10 @@ fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, RenderPlan, Terminal<TestB
         &state,
         &RenderPlan::default(),
     );
-    term.draw(|f| sw.render(f, None, false, &state, &plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &plan);
+    })
+    .unwrap();
     assert_eq!(
         plan.layout,
         ViewLayout::Horizontal,
@@ -7896,8 +7951,10 @@ fn hidden_card_counts_use_the_focused_nav_border_color() {
                 sw.move_to(-1);
             }
             let plan = sw.layout(Rect::new(0, 0, 60, 20), nav, &state, &RenderPlan::default());
-            term.draw(|f| sw.render(f, None, false, &state, &plan))
-                .unwrap();
+            term.draw(|f| {
+                sw.render(f, None, false, &state, &plan);
+            })
+            .unwrap();
             let buf = term.backend().buffer();
             let y = plan.regions.nav_border.y;
             let arrow = if last { "‹" } else { "›" };
@@ -8037,8 +8094,10 @@ fn the_side_lists_overflow_thickens_the_seam_and_spares_every_card() {
         &state,
         &RenderPlan::default(),
     );
-    term.draw(|f| sw.render(f, None, false, &state, &plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &plan);
+    })
+    .unwrap();
     assert_eq!(plan.layout, ViewLayout::Vertical);
     let buf = term.backend().buffer();
     let seam: String = (0..buf.area.height)

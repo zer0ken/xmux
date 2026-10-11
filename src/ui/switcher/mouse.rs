@@ -28,6 +28,7 @@ impl Switcher {
             .as_ref()
             .map(|(rect, _)| (modal::PopupSurface::KeyList, *rect));
         let floating = (plan.nav_position == crate::model::NavPosition::Floating
+            && !plan.docked_floating
             && !state.is_modal_popup_open())
         .then_some((modal::PopupSurface::FloatingNav, plan.regions.nav_border));
         let boxes: Vec<_> = modal.into_iter().chain(key_list).chain(floating).collect();
