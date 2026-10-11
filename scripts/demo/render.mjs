@@ -96,7 +96,7 @@ const caps = tour.captions.map(([t, c]) => [lead(t), c]);
 const FEATURES = {
   landing: "Open a session from the landing screen", "nav-switch": "Switch sessions",
   hierarchy: "Walk up to the host and the machine", "nav-resize": "Resize the nav",
-  "nav-place": "Place the nav", "nav-autohide": "Auto-hide the nav",
+  "nav-place": "Place the nav", "nav-floating": "Float the nav", "nav-autohide": "Auto-hide the nav",
 };
 for (const [name, label] of Object.entries(FEATURES)) {
   const i = caps.findIndex(([, c]) => c === label);

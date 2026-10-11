@@ -184,6 +184,11 @@ XMUX_CONFIG = """[discovery]
 neighbors = false
 wsl = false
 
+[ui]
+# The e2e screen parser reads the nav as the left column up to its view border, so
+# the suite pins a docked nav regardless of the default.
+nav-position = "left"
+
 [update]
 check = false
 """
