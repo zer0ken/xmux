@@ -298,14 +298,14 @@ fn default_braille_animation() -> bool {
 }
 
 fn default_nav_position() -> String {
-    "left".to_string()
+    "floating".to_string()
 }
 
 impl UiConfig {
     /// The default nav placement when nothing is pinned. Parsed here so the runtime
-    /// never sees a garbage value; an unknown word falls back to `left`.
+    /// never sees a garbage value; an unknown word falls back to `floating`.
     pub fn nav_position(&self) -> NavPosition {
-        NavPosition::parse(&self.nav_position).unwrap_or(NavPosition::Left)
+        NavPosition::parse(&self.nav_position).unwrap_or(NavPosition::Floating)
     }
 }
 
@@ -2460,10 +2460,10 @@ bogus = "nope"
 
     #[test]
     fn ui_nav_position() {
-        // Missing file → the default (left).
+        // Missing file → the default (floating).
         let missing = std::env::temp_dir().join("xmux-navpos-absent-xyz.toml");
         let cfg = load(&missing).unwrap();
-        assert_eq!(cfg.ui.nav_position(), NavPosition::Left);
+        assert_eq!(cfg.ui.nav_position(), NavPosition::Floating);
 
         // A configured word is parsed.
         let path = write_temp("[ui]\nnav-position = \"right\"\n", "navpos-right.toml");
@@ -2473,7 +2473,7 @@ bogus = "nope"
         // An unknown word falls back to the default.
         let path = write_temp("[ui]\nnav-position = \"diagonal\"\n", "navpos-garbage.toml");
         let cfg = load(&path).unwrap();
-        assert_eq!(cfg.ui.nav_position(), NavPosition::Left);
+        assert_eq!(cfg.ui.nav_position(), NavPosition::Floating);
     }
 
     #[test]
