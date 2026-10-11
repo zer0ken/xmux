@@ -36,6 +36,10 @@ pub struct NavSize {
     /// The floating nav's on-screen box, set by the app from the terminal's empty space
     /// when `position` is [`NavPosition::Floating`]. `None` when not floating.
     pub floating: Option<ratatui::layout::Rect>,
+    /// Whether the floating nav is docked for the span of an interaction (the nav view
+    /// holds the focus or the prefix is armed). A docked floating nav keeps the right
+    /// column, the terminal keeping the remainder, but draws a rounded box around it.
+    pub docked_floating: bool,
 }
 
 impl NavSize {
@@ -47,6 +51,7 @@ impl NavSize {
             height: 0,
             position: NavPosition::Left,
             floating: None,
+            docked_floating: false,
         }
     }
 
@@ -58,6 +63,7 @@ impl NavSize {
             height: 0,
             position: NavPosition::Left,
             floating: None,
+            docked_floating: false,
         }
     }
 
@@ -74,6 +80,14 @@ impl NavSize {
     /// The same nav with its floating box set.
     pub fn with_floating(self, floating: Option<ratatui::layout::Rect>) -> Self {
         Self { floating, ..self }
+    }
+
+    /// The same nav marked as a floating nav docked for an interaction.
+    pub fn with_docked_floating(self, docked_floating: bool) -> Self {
+        Self {
+            docked_floating,
+            ..self
+        }
     }
 }
 

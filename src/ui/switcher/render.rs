@@ -7,6 +7,19 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::state::PaletteChoice;
 use crate::ui::palette;
 
+/// The cursor a frame places, resolved once so the position (the renderer sets it) and
+/// the shape (the loop writes the DECSCUSR) can never disagree. A modal's field takes
+/// the cursor, then a view screen's link caret, then the session grid's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cursor {
+    /// The session grid's cursor at its grid position, with the shape the child set.
+    Grid { position: Position, shape: u8 },
+    /// A field caret (a modal's text field, a view screen's link) over the grid.
+    Field { position: Position },
+    /// No cursor this frame.
+    None,
+}
+
 /// The prefix hint chip inside its row: aligned toward the nav border (a vertical nav's
 /// terminal-side edge) or to the row's left (a horizontal nav's nav border row).
 pub(super) fn prefix_hint_chip(row: Rect, position: NavPosition, prefix_w: u16) -> Rect {
@@ -129,11 +142,6 @@ fn border_thumb(track: Rect, total: usize, offset: usize, visible: usize) -> Rec
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NavRule {
-    Horizontal(Rect),
-}
-
 /// A horizontal nav's count of the cards scrolled off one side, written on the nav
 /// border row: `‹ 5` after the prefix hint and `7 ›` at the right end. `target` is the
 /// hidden card nearest the visible ones, which a click on the count selects so the nav
@@ -167,6 +175,10 @@ pub struct RenderPlan {
     pub(crate) view_screen: Option<crate::model::ViewScreen>,
     pub layout: ViewLayout,
     pub nav_position: NavPosition,
+    /// Whether this frame's nav is a floating nav docked for an interaction (the nav
+    /// view holds the focus or the prefix is armed), which renders as a rounded box
+    /// instead of a side-nav separator.
+    pub docked_floating: bool,
     pub regions: Regions,
     pub nav_inner: Rect,
     pub nav_cells: Vec<(usize, Rect)>,
@@ -198,7 +210,6 @@ pub struct RenderPlan {
     /// relocate. The floating box's bottom border draws it as the toast does its life.
     pub(crate) floating_freeze: Option<u16>,
     overflow_marks: Vec<OverflowMark>,
-    nav_rule: Option<NavRule>,
     pub(super) border_thumb: Rect,
     pub nav_hidden: bool,
 }
@@ -211,6 +222,7 @@ impl Default for RenderPlan {
             view_screen: None,
             layout: ViewLayout::Vertical,
             nav_position: NavPosition::Left,
+            docked_floating: false,
             regions: Regions::default(),
             nav_inner: Rect::default(),
             nav_cells: Vec::new(),
@@ -227,7 +239,6 @@ impl Default for RenderPlan {
             nav_guidance: None,
             floating_freeze: None,
             overflow_marks: Vec::new(),
-            nav_rule: None,
             border_thumb: Rect::default(),
             nav_hidden: true,
         }
@@ -342,6 +353,7 @@ impl Switcher {
             view_screen,
             layout: regions.layout,
             nav_position: nav.position,
+            docked_floating: nav.docked_floating,
             regions,
             nav_inner: if nav.width == 0 {
                 Rect::default()
@@ -741,14 +753,6 @@ impl Switcher {
                 )
             })
             .collect();
-        plan.nav_rule = flow.rule_y.map(|y| {
-            NavRule::Horizontal(Rect {
-                x: cards.x,
-                y: cards.y + y,
-                width: cards.width,
-                height: 1,
-            })
-        });
         if flow.scrolls {
             let border = plan.regions.nav_border;
             plan.border_thumb = border_thumb(
@@ -906,7 +910,7 @@ impl Switcher {
         terminal_focused: bool,
         state: &crate::state::State,
         plan: &RenderPlan,
-    ) {
+    ) -> Cursor {
         let area = plan.screen_area;
         let palette = self.palette;
         // Reset the buffer before painting. The widgets below do not all fill every cell
@@ -926,7 +930,7 @@ impl Switcher {
                 ]),
                 area,
             );
-            return;
+            return Cursor::None;
         }
         // nav_width == 0 is the "nav hidden" sentinel (terminal view focused + auto-hide):
         // the terminal view owns the whole area - no nav list, no nav border, and no
@@ -939,24 +943,30 @@ impl Switcher {
                     None
                 }
             };
-            if let Some(g) = grid.filter(|_| plan.view_screen.is_none()) {
-                if !g.hide_cursor() {
-                    frame.set_cursor_position(terminal_cursor_pos(area, g.cursor()));
-                }
-            }
-            self.place_field_cursor(frame, state, plan, view_caret);
+            let cursor = self.resolve_cursor(state, plan, grid, terminal_focused, view_caret);
+            Self::place_cursor(frame, cursor);
             self.render_key_list(frame, state, plan, &palette);
             self.render_scan_box(frame, plan, &palette);
             self.render_toasts(frame, state, plan, &palette);
             // The modal stacks above the bar: a popup is a stronger claim on the screen.
             self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
-            return;
+            return cursor;
         }
         // The floating nav: the terminal owns the whole area and the nav floats over it
         // as a rounded box, so it renders after the terminal, unlike the split placements.
+        // A docked floating nav keeps the right column (the terminal keeps the remainder)
+        // but still renders as the same rounded box; pass the terminal region as the view
+        // area so the live grid and cursor stay inside it.
         if plan.nav_position == NavPosition::Floating {
-            self.render_floating(frame, area, grid, terminal_focused, state, plan, &palette);
-            return;
+            return self.render_floating(
+                frame,
+                plan.regions.terminal,
+                grid,
+                terminal_focused,
+                state,
+                plan,
+                &palette,
+            );
         }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
         // sizing and mouse hit-testing so they never diverge: the navigation view /
@@ -1002,17 +1012,10 @@ impl Switcher {
         self.render_key_list(frame, state, plan, &palette);
         self.render_scan_box(frame, plan, &palette);
         self.render_toasts(frame, state, plan, &palette);
-        // In the terminal view, place the real cursor at the grid's cursor so typing in the
-        // mux is visible and tracks. Skipped when the child hid its cursor.
-        if terminal_focused && plan.view_screen.is_none() {
-            if let Some(g) = grid {
-                if !g.hide_cursor() {
-                    frame.set_cursor_position(terminal_cursor_pos(term_area, g.cursor()));
-                }
-            }
-        }
-        self.place_field_cursor(frame, state, plan, view_caret);
+        let cursor = self.resolve_cursor(state, plan, grid, terminal_focused, view_caret);
+        Self::place_cursor(frame, cursor);
         self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
+        cursor
     }
 
     /// The floating nav: the terminal owns the whole area and the nav renders as a
@@ -1029,26 +1032,21 @@ impl Switcher {
         state: &crate::state::State,
         plan: &RenderPlan,
         palette: &palette::Palette,
-    ) {
+    ) -> Cursor {
         let view_caret = if let Some(kind) = plan.view_screen {
             self.render_view_screen(frame, area, state, kind, terminal_focused)
         } else {
             self.render_terminal_view(frame, area, grid);
             None
         };
-        if terminal_focused && plan.view_screen.is_none() {
-            if let Some(g) = grid {
-                if !g.hide_cursor() {
-                    frame.set_cursor_position(terminal_cursor_pos(area, g.cursor()));
-                }
-            }
-        }
+        let cursor = self.resolve_cursor(state, plan, grid, terminal_focused, view_caret);
+        Self::place_cursor(frame, cursor);
         self.render_floating_box(frame, state, plan, palette);
-        self.place_field_cursor(frame, state, plan, view_caret);
         self.render_key_list(frame, state, plan, palette);
         self.render_scan_box(frame, plan, palette);
         self.render_toasts(frame, state, plan, palette);
         self.render_modal_popup(frame, area, state, plan.popup_rect, palette);
+        cursor
     }
 
     /// The floating nav's rounded, content-fit border drawn around the nav, whose cards
@@ -1064,12 +1062,59 @@ impl Switcher {
         if box_rect.is_empty() {
             return;
         }
-        let block = ratatui::widgets::Block::bordered()
-            .border_type(ratatui::widgets::BorderType::Rounded)
-            .border_style(Style::default().fg(palette.primary))
-            .style(Style::reset());
         frame.render_widget(ratatui::widgets::Clear, box_rect);
-        frame.render_widget(block, box_rect);
+        // The box's rounded border, painted by hand so the straight edges can turn dashed
+        // while the nav is set to auto-hide, the same transient cue the side-nav border
+        // shows; the rounded corners stay rounded either way.
+        let (h_edge, v_edge) = if state.chrome.auto_hide {
+            ("\u{254c}", "\u{254e}") // ╌, ╎
+        } else {
+            ("\u{2500}", "\u{2502}") // ─, │
+        };
+        let left = box_rect.x;
+        let right = box_rect.right().saturating_sub(1);
+        let top = box_rect.y;
+        let bottom = box_rect.bottom().saturating_sub(1);
+        let style = Style::default().fg(palette.primary);
+        {
+            let buf = frame.buffer_mut();
+            for x in left..=right {
+                let c = &mut buf[(x, top)];
+                c.set_style(style);
+                c.set_symbol(if x == left {
+                    "\u{256d}" // ╭
+                } else if x == right {
+                    "\u{256e}" // ╮
+                } else {
+                    h_edge
+                });
+                let c = &mut buf[(x, bottom)];
+                c.set_style(style);
+                c.set_symbol(if x == left {
+                    "\u{2570}" // ╰
+                } else if x == right {
+                    "\u{256f}" // ╯
+                } else {
+                    h_edge
+                });
+            }
+            for y in (top + 1)..bottom {
+                // A docked floating box's inner (left) edge is its resize handle: while the
+                // pointer hovers it, the edge draws heavy in the hover colour, the same grab
+                // cue a side nav's border shows, so it reads as draggable.
+                let c = &mut buf[(left, y)];
+                if state.chrome.nav_border_hovered {
+                    c.set_style(Style::default().fg(state.chrome.colors.hover));
+                    c.set_symbol("\u{2503}"); // ┃ heavy vertical
+                } else {
+                    c.set_style(style);
+                    c.set_symbol(v_edge);
+                }
+                let c = &mut buf[(right, y)];
+                c.set_style(style);
+                c.set_symbol(v_edge);
+            }
+        }
         // A wide char whose right half the box covers would keep painting its left
         // half over the box's border: blank the orphan half.
         if box_rect.x > 0 {
@@ -1122,36 +1167,52 @@ impl Switcher {
         }
     }
 
-    /// Whether the cursor a frame shows is the session grid's, the one a focused terminal
-    /// view places for the session's client. A modal or a view screen owns the keys and
-    /// its own caret instead.
-    pub fn shows_grid_cursor(
+    /// The single source of the cursor a frame shows: a modal's text field takes it,
+    /// then a view screen's link caret, then the session grid's (when the terminal view
+    /// owns the keys or the nav is hidden and the child shows a cursor). Position and
+    /// shape come from the same decision, so the renderer's cursor and the loop's
+    /// DECSCUSR cannot drift apart.
+    fn resolve_cursor(
         &self,
-        terminal_focused: bool,
         state: &crate::state::State,
         plan: &RenderPlan,
-    ) -> bool {
-        (terminal_focused || plan.nav_hidden) && plan.view_screen.is_none() && state.modal.is_none()
+        grid: Option<&crate::display::grid::Grid>,
+        terminal_focused: bool,
+        view_caret: Option<Position>,
+    ) -> Cursor {
+        // A modal owns the keys: its text field's caret takes the cursor.
+        if let Some(caret) = self.modal_caret(state, plan) {
+            return Cursor::Field { position: caret };
+        }
+        // A view screen (machine / host / login) shows its own link caret over the grid.
+        if plan.view_screen.is_some() {
+            return match view_caret {
+                Some(at) => Cursor::Field { position: at },
+                None => Cursor::None,
+            };
+        }
+        // The session grid's cursor, when the terminal view owns the keys (or the nav is
+        // hidden) and the child shows a cursor.
+        if terminal_focused || plan.nav_hidden {
+            if let Some(g) = grid {
+                if !g.hide_cursor() {
+                    return Cursor::Grid {
+                        position: terminal_cursor_pos(plan.regions.terminal, g.cursor()),
+                        shape: g.cursor_shape(),
+                    };
+                }
+            }
+        }
+        Cursor::None
     }
 
-    /// Puts the terminal's own cursor on the caret of the text field taking keys, over the
-    /// session grid's cursor. A terminal's input method draws what it is composing at that
-    /// cursor, so a syllable being composed shows in the field it is typed into. A modal's
-    /// field takes the keys while it is open; otherwise a login pane field does.
-    fn place_field_cursor(
-        &self,
-        frame: &mut Frame,
-        state: &crate::state::State,
-        plan: &RenderPlan,
-        view_caret: Option<Position>,
-    ) {
-        let caret = if state.modal.is_some() {
-            self.modal_caret(state, plan)
-        } else {
-            view_caret
-        };
-        if let Some(at) = caret {
-            frame.set_cursor_position(at);
+    /// Puts the frame's cursor where the resolved cursor says, or none.
+    fn place_cursor(frame: &mut Frame, cursor: Cursor) {
+        match cursor {
+            Cursor::Grid { position, .. } | Cursor::Field { position } => {
+                frame.set_cursor_position(position)
+            }
+            Cursor::None => {}
         }
     }
 
@@ -1283,29 +1344,12 @@ impl Switcher {
                 }
             }
         }
-        match plan.nav_rule {
-            Some(NavRule::Horizontal(rect)) => Self::render_band_rule(frame, rect, palette),
-            None => {}
-        }
         if let Some((rect, text)) = &plan.nav_guidance {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(text.clone(), dim))),
                 *rect,
             );
         }
-    }
-
-    /// The rule parting the side list's two bands once they scroll as one run. A single
-    /// light horizontal line across the nav: it says the cards below it are a different
-    /// kind of thing, which is all the blank gap says while both bands fit on screen.
-    fn render_band_rule(frame: &mut Frame, rect: Rect, palette: &palette::Palette) {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                BAND_RULE.repeat(rect.width as usize),
-                Style::default().fg(palette.decoration),
-            ))),
-            rect,
-        );
     }
 
     /// Writes one overflow count on the band's seam: `‹ 5` or `7 ›`, the angle pointing

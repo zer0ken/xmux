@@ -203,11 +203,19 @@ impl Runtime {
         // drag then resizes the nav WIDTH (column, by column) or HEIGHT (horizontal nav, by row).
         let full = self.model.render_plan.screen_area;
         let regions = self.model.render_plan.regions;
+        // The draggable nav border: the single rule of a side nav, or, for a docked
+        // floating box, its inner (left) edge, the column where the box's border meets
+        // the terminal. The rest of the box is nav content, so only that column resizes.
         let on_nav_border = !self.model.render_plan.nav_hidden
-            && self.model.render_plan.nav_position != crate::ui::switcher::NavPosition::Floating
-            && regions
-                .nav_border
-                .contains(ratatui::layout::Position { x: col0, y: row0 });
+            && if self.model.render_plan.docked_floating {
+                let b = regions.nav_border;
+                col0 == b.x && row0 >= b.y && row0 < b.bottom()
+            } else {
+                self.model.render_plan.nav_position != crate::ui::switcher::NavPosition::Floating
+                    && regions
+                        .nav_border
+                        .contains(ratatui::layout::Position { x: col0, y: row0 })
+            };
         let top_layout = regions.layout == crate::ui::switcher::ViewLayout::Horizontal;
         if self.model.mouse_state.dragging_nav_border {
             if !ev.pressed {
@@ -227,6 +235,10 @@ impl Runtime {
                 // follow (their direction is the border's movement). A drag clamps at the
                 // nav's minimum, so it can never leave the nav with no room.
                 let position = self.model.render_plan.nav_position;
+                // A docked floating box sits on the right, so its inner-edge drag measures
+                // from the right edge exactly like a right nav's border drag does.
+                let nav_on_right = position == crate::ui::switcher::NavPosition::Right
+                    || self.model.render_plan.docked_floating;
                 let target = if top_layout {
                     nav_border_drag_height(
                         ev.row,
@@ -234,12 +246,7 @@ impl Runtime {
                         position == crate::ui::switcher::NavPosition::Bottom,
                     )
                 } else {
-                    nav_border_drag_width(
-                        ev.col,
-                        &self.env.ui_prefix,
-                        full.width,
-                        position == crate::ui::switcher::NavPosition::Right,
-                    )
+                    nav_border_drag_width(ev.col, &self.env.ui_prefix, full.width, nav_on_right)
                 };
                 if top_layout && target != self.model.nav_height {
                     let effects = update(&mut self.model, Msg::SetNavHeight(target));

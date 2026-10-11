@@ -4611,7 +4611,7 @@ async fn a_section_title_stands_alone_over_its_cards() {
     let y = side.nav_row_of("local").expect("the section title");
     let painted = nav_line(&side, y);
     assert!(
-        !painted.contains(BAND_RULE),
+        !painted.contains("\u{2500}"),
         "the side list's title stands alone:\n{painted}"
     );
 
@@ -4621,7 +4621,7 @@ async fn a_section_title_stands_alone_over_its_cards() {
     let y = row_of(top.buf(), "local", w).expect("the section title");
     let painted = band_line(&top, y);
     assert!(
-        !painted.contains(BAND_RULE),
+        !painted.contains("\u{2500}"),
         "the band's title stands alone:\n{painted}"
     );
     for name in ["build", "editor"] {
@@ -4877,28 +4877,65 @@ async fn the_bands_part_with_the_rows_left_over() {
     }
 }
 
+#[test]
+fn a_floating_nav_follows_the_selection_band() {
+    // The floating nav is always inside the terminal view, so its band follows the
+    // selection: a session card hides the host band, a host or machine card shows it.
+    let mut h = Harness::new(scan_with_bands(3));
+    h.sw.set_nav_position(NavPosition::Floating);
+
+    let session =
+        h.sw.rows
+            .iter()
+            .position(|r| matches!(r.reference, RowRef::Session { .. }))
+            .expect("a session card");
+    let host =
+        h.sw.rows
+            .iter()
+            .position(|r| matches!(r.reference, RowRef::Host { .. } | RowRef::Machine { .. }))
+            .expect("a host-state card");
+
+    h.sw.set_selected(session);
+    assert!(
+        h.sw.band_unpainted(),
+        "a selected session hides the host band"
+    );
+    let compact = h.sw.nav_content_rows();
+
+    h.sw.set_selected(host);
+    assert!(
+        !h.sw.band_unpainted(),
+        "a selected host or machine shows the band"
+    );
+    assert!(
+        h.sw.nav_content_rows() > compact,
+        "the box grows when the band shows"
+    );
+}
+
 #[tokio::test]
-async fn a_scrolling_list_parts_its_bands_with_a_rule() {
-    // Too many cards to fit: the gap would part what is no longer on screen together, so
-    // the list closes it up and a box-drawing rule takes the boundary's row instead.
+async fn a_scrolling_list_parts_its_bands_with_a_blank_row() {
+    // Too many cards to fit, but the band boundary still keeps its blank row: even when
+    // the list scrolls as one run, the row above the host-state band stays blank.
     let mut h = Harness::new(scan_with_bands(40));
     h.key(KeyCode::End).await; // scroll down to the boundary
     let boundary = h.sw.band_boundary().expect("the list has a host card");
     let host = card_rect(&h, boundary);
-    assert!(host.y > 0, "the rule needs a row above the host card");
+    assert!(host.y > 0, "a blank row stands above the host card");
     // Across the CARDS' width: the seam beside them carries the thumb.
-    let rule: String = (host.x..host.x + host.width)
+    let parting: String = (host.x..host.x + host.width)
         .map(|x| h.buf()[(x, host.y - 1)].symbol().to_string())
         .collect();
-    assert!(
-        rule.chars().all(|c| c.to_string() == BAND_RULE),
-        "a rule sits directly above the host-state band: {rule:?}"
+    assert_eq!(
+        parting.trim(),
+        "",
+        "the row above the host-state band is blank: {parting:?}"
     );
     let last_session = card_rect(&h, boundary - 1);
     assert_eq!(
         last_session.y + last_session.height,
         host.y - 1,
-        "the rule is the only thing between the bands"
+        "the blank row is the only thing between the bands"
     );
 }
 
@@ -4906,7 +4943,7 @@ async fn a_scrolling_list_parts_its_bands_with_a_rule() {
 async fn the_bands_never_touch_on_screen() {
     // 27 session cards plus a still-scanning host card fill this nav's rows exactly
     // (every card is one row now), so the parting has no row left to take: rather than
-    // let the bands meet, the list scrolls a row early and the rule takes the boundary's
+    // let the bands meet, the list scrolls a row early so the boundary keeps its blank
     // row. Scroll to the boundary first - the host sits below the fold at the top.
     let mut h = Harness::from_hosts(&["local", "db-2"]);
     let sessions: Vec<crate::session::Session> = (0..27)
@@ -4928,13 +4965,10 @@ async fn the_bands_never_touch_on_screen() {
         host.y - 1,
         "a row stands between the bands"
     );
-    let rule: String = (host.x..host.x + host.width)
+    let parting: String = (host.x..host.x + host.width)
         .map(|x| h.buf()[(x, host.y - 1)].symbol().to_string())
         .collect();
-    assert!(
-        rule.chars().all(|c| c.to_string() == BAND_RULE),
-        "and that row is the rule: {rule:?}"
-    );
+    assert_eq!(parting.trim(), "", "and that row is blank: {parting:?}");
     // The list scrolls a row before the cards themselves would need it, so the seam
     // carries the thumb.
     let seam_x = h.plan.regions.nav_border.x;
@@ -5023,7 +5057,7 @@ async fn a_hosts_sessions_are_each_a_single_row_under_one_section_title() {
     // Every session of one host is a single-row card (the number + the name), stacked
     // directly under the one section title that names the whole group. The side list
     // draws no connector and no per-card context line: it is one full-width run, where
-    // the title and the rule under it already draw the group.
+    // the title already draws the group.
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
@@ -5595,6 +5629,45 @@ fn compute_regions_side_top_and_hidden() {
 }
 
 #[test]
+fn compute_regions_docked_floating_is_a_rounded_box() {
+    use ratatui::layout::Rect;
+    // A floating nav docked for an interaction fills the right column's full height in
+    // a rounded box: the border region is the outer box (content + 2), the nav content
+    // keeps nav_width inside it, the prefix hint rests on the top border, and the
+    // terminal keeps the remainder. Docking is a layout flag, not a position change, so
+    // the box is a Floating layout: a right nav ignores docked_floating entirely.
+    let area = Rect::new(0, 0, 100, 30);
+    let r = compute_regions(
+        area,
+        NavSize::visible(24)
+            .with_position(NavPosition::Floating)
+            .with_docked_floating(true),
+    );
+    assert_eq!(r.layout, ViewLayout::Vertical);
+    assert_eq!(
+        r.nav_border.width, 26,
+        "the box is content plus two borders"
+    );
+    assert_eq!(r.nav_border.right(), area.right(), "the box is flush right");
+    assert_eq!(r.nav.width, 24, "the content keeps nav_width");
+    assert_eq!(
+        r.nav.x,
+        r.nav_border.x + 1,
+        "the content is inset from the left border"
+    );
+    assert_eq!(r.nav.y, 1, "the content is inset from the top border");
+    assert_eq!(
+        r.terminal.right(),
+        r.nav_border.x,
+        "the terminal keeps the remainder"
+    );
+    assert_eq!(
+        r.prefix_hint.y, 0,
+        "the prefix hint rests on the box's top border"
+    );
+}
+
+#[test]
 fn compute_regions_right_column() {
     use ratatui::layout::Rect;
     // Pinned right: terminal left, 1-col border, nav right. The nav region's inner
@@ -5782,8 +5855,10 @@ fn paint_does_not_mutate_switcher_render_state() {
     let before = plan.clone();
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
 
-    term.draw(|f| sw.render(f, None, false, &state, &plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &plan);
+    })
+    .unwrap();
 
     assert_eq!(plan, before, "paint writes only the frame");
 }
@@ -5799,8 +5874,10 @@ fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
         &state,
         &RenderPlan::default(),
     );
-    term.draw(|f| sw.render(f, None, false, &state, &plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &plan);
+    })
+    .unwrap();
     let buf = term.backend().buffer();
     // The address column starts at column 0, right-aligned in one width for the whole
     // frame, on the card's single row. The SELECTED card holds the mark there instead of
@@ -6499,7 +6576,7 @@ async fn nav_border_highlights_on_hover() {
 
 #[tokio::test]
 async fn nav_border_glyph_reflects_auto_hide_mode() {
-    // ║ (double) when auto-hide-nav mode is on, │ (single) when off - so a visible
+    // ╎ (dashed) when auto-hide-nav mode is on, │ (single) when off - so a visible
     // tree that will vanish on blur is distinguishable from a pinned one.
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
@@ -6521,9 +6598,47 @@ async fn nav_border_glyph_reflects_auto_hide_mode() {
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
-        "║",
-        "mode on → double line"
+        "╎",
+        "mode on → dashed line"
     );
+}
+
+#[tokio::test]
+async fn a_docked_floating_boxes_inner_border_highlights_on_hover() {
+    // The docked floating box's inner (left) edge is its resize handle: hovering it
+    // draws the edge heavy in the hover colour, the same grab cue a side nav shows.
+    let w = 20u16;
+    let backend = TestBackend::new(140, 30);
+    let mut term = Terminal::new(backend).unwrap();
+    let mut state = crate::state::State::from_scan(sample());
+    let sw = Switcher::new(&mut state);
+    let left = 140 - w - 2; // the box's left border column
+    let nav = || {
+        NavSize::visible(w)
+            .with_position(NavPosition::Floating)
+            .with_docked_floating(true)
+    };
+
+    state.chrome.set_nav_border_hovered(false);
+    term.draw(|f| {
+        sw.render_test(f, None, false, nav(), &state);
+    })
+    .unwrap();
+    assert_eq!(
+        term.backend().buffer()[(left, 2)].symbol(),
+        "│",
+        "no hover → single edge"
+    );
+
+    let hover = state.chrome.colors.hover;
+    state.chrome.set_nav_border_hovered(true);
+    term.draw(|f| {
+        sw.render_test(f, None, false, nav(), &state);
+    })
+    .unwrap();
+    let cell = &term.backend().buffer()[(left, 2)];
+    assert_eq!(cell.symbol(), "┃", "hover → heavy edge");
+    assert_eq!(cell.fg, hover, "hover → the border-hover colour");
 }
 
 #[tokio::test]
@@ -6621,8 +6736,10 @@ fn popup_border_press_then_drag_moves_the_rect() {
         &state,
         &RenderPlan::default(),
     );
-    term.draw(|f| sw.render(f, None, false, &state, &before_plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &before_plan);
+    })
+    .unwrap();
     let before = before_plan.popup_rect;
     let (bx, by) = (before.x, before.y); // top-left corner is on the border
     assert!(
@@ -6636,8 +6753,10 @@ fn popup_border_press_then_drag_moves_the_rect() {
         &state,
         &before_plan,
     );
-    term.draw(|f| sw.render(f, None, false, &state, &after_plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &after_plan);
+    })
+    .unwrap();
     assert_eq!(after_plan.popup_rect.x, before.x - 5, "moved left by 5");
     assert_eq!(after_plan.popup_rect.y, before.y - 1, "moved up by 1");
     sw.end_popup_drag();
@@ -6699,8 +6818,10 @@ fn popup_renders_without_panicking_on_a_narrow_screen() {
         &state,
         &RenderPlan::default(),
     );
-    term.draw(|f| sw.render(f, None, false, &state, &plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &plan);
+    })
+    .unwrap();
     assert!(plan.popup_rect.width <= 10, "popup fits the narrow screen");
 }
 
@@ -6778,7 +6899,9 @@ impl HelpOnScreen {
         );
         let (sw, state, plan) = (&self.sw, &self.state, &self.plan);
         self.term
-            .draw(|f| sw.render(f, None, false, state, plan))
+            .draw(|f| {
+                sw.render(f, None, false, state, plan);
+            })
             .unwrap();
     }
 
@@ -7154,8 +7277,10 @@ fn popup_drag_clamps_within_screen() {
         &state,
         &plan,
     );
-    term.draw(|f| sw.render(f, None, false, &state, &next))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &next);
+    })
+    .unwrap();
     assert_eq!(next.popup_rect.x, 0, "clamped to the left screen edge");
 }
 
@@ -7597,8 +7722,10 @@ fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, RenderPlan, Terminal<TestB
         &state,
         &RenderPlan::default(),
     );
-    term.draw(|f| sw.render(f, None, false, &state, &plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &plan);
+    })
+    .unwrap();
     assert_eq!(
         plan.layout,
         ViewLayout::Horizontal,
@@ -7824,8 +7951,10 @@ fn hidden_card_counts_use_the_focused_nav_border_color() {
                 sw.move_to(-1);
             }
             let plan = sw.layout(Rect::new(0, 0, 60, 20), nav, &state, &RenderPlan::default());
-            term.draw(|f| sw.render(f, None, false, &state, &plan))
-                .unwrap();
+            term.draw(|f| {
+                sw.render(f, None, false, &state, &plan);
+            })
+            .unwrap();
             let buf = term.backend().buffer();
             let y = plan.regions.nav_border.y;
             let arrow = if last { "‹" } else { "›" };
@@ -7965,8 +8094,10 @@ fn the_side_lists_overflow_thickens_the_seam_and_spares_every_card() {
         &state,
         &RenderPlan::default(),
     );
-    term.draw(|f| sw.render(f, None, false, &state, &plan))
-        .unwrap();
+    term.draw(|f| {
+        sw.render(f, None, false, &state, &plan);
+    })
+    .unwrap();
     assert_eq!(plan.layout, ViewLayout::Vertical);
     let buf = term.backend().buffer();
     let seam: String = (0..buf.area.height)
@@ -9417,5 +9548,57 @@ async fn the_landing_list_says_attached_only_for_a_client_other_than_xmuxs_own()
             .iter()
             .any(|(label, value)| label.ends_with("/web") && value == "1 window, attached"),
         "{facts:?}"
+    );
+}
+#[test]
+fn floating_nav_box_scans_rows_before_columns() {
+    // Rows outer, columns inner: the box lands on the topmost row it fits whole, and on
+    // that row the wall-most column, so the height beats the wall side.
+    let area = Rect::new(0, 0, 80, 24);
+    // Rows 0..9 hold full-width content; rows 10..23 are blank.
+    let blank = |_: u16, y: u16| !(y < 10);
+    assert_eq!(
+        floating_nav_box(area, 24, 8, blank),
+        Rect::new(56, 10, 24, 8),
+        "the box sits on the topmost blank row, wall-most column"
+    );
+}
+
+#[test]
+fn floating_nav_box_falls_back_to_the_first_least_glyph_spot() {
+    // No wall-margin window is empty, so the box takes the spot whose window wins the
+    // most empty cells (every window ties on completely empty rows first): a glyph in
+    // every window's shared column range (56..=74) at alternating rows keeps every
+    // window at the same empty-row and empty-cell count, so the first-found topmost row
+    // wins.
+    let area = Rect::new(0, 0, 80, 24);
+    let blank = |x: u16, y: u16| !(x == 70 && y.is_multiple_of(2));
+    assert_eq!(
+        floating_nav_box(area, 24, 8, blank),
+        Rect::new(56, 0, 24, 8),
+        "the box falls back to the first-found fewest-glyph spot"
+    );
+}
+
+#[test]
+fn floating_nav_box_prefers_more_completely_empty_rows_over_fewer_glyphs() {
+    // The completely-empty-row count ranks before the glyph count: rows 6-7 are densely
+    // filled, so the topmost window carries 48 glyphs but six completely empty rows,
+    // while the lower windows carry 8 glyphs each with no completely empty row. The box
+    // sits on the window with the most completely empty rows, not the fewest glyphs.
+    let area = Rect::new(0, 0, 80, 24);
+    let blank = |x: u16, y: u16| {
+        if y < 6 {
+            true // rows 0-5 completely empty
+        } else if y < 8 {
+            false // rows 6-7 dense
+        } else {
+            x != 70 // rows 8-23: one glyph per row
+        }
+    };
+    assert_eq!(
+        floating_nav_box(area, 24, 8, blank),
+        Rect::new(56, 0, 24, 8),
+        "six completely empty rows beat eight glyphs"
     );
 }

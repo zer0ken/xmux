@@ -37,6 +37,9 @@ pub(crate) struct AppModel {
     pub(crate) nav_position: NavPosition,
     pub(crate) nav_position_pinned: Option<NavPosition>,
     pub(crate) nav_default: NavPosition,
+    /// Whether the floating nav is docked (the nav view holds the focus or the prefix is
+    /// armed); see [`NavSize::docked_floating`].
+    pub(crate) floating_docked: bool,
     pub(crate) max_fps: u16,
     pub(crate) applied_nav_height: u16,
     pub(crate) auto_hide_nav: bool,
@@ -145,6 +148,7 @@ impl AppModel {
             nav_position: NavPosition::Left,
             nav_position_pinned: None,
             nav_default: NavPosition::Left,
+            floating_docked: false,
             max_fps: crate::provision::config::DEFAULT_MAX_FPS,
             applied_nav_height: u16::MAX,
             auto_hide_nav: false,
@@ -170,6 +174,7 @@ impl AppModel {
             height: self.nav_height,
             position: self.nav_position,
             floating: self.floating_rect,
+            docked_floating: self.floating_docked,
         }
     }
 
@@ -2280,6 +2285,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             let modal_kind = model.state.modal_kind();
             model.state.focus.sync_modal(modal_kind);
             let nav_focused = model.state.focus.view_is_nav();
+            model.switcher.set_nav_position(model.nav_position);
             model.switcher.sync_view_focus(!nav_focused);
             let mut effects = Vec::new();
             model.nav_was_focused = nav_focused;

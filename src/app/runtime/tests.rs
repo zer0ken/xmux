@@ -2385,6 +2385,7 @@ fn test_rt(env: Env) -> Runtime {
         nav_position: crate::ui::switcher::NavPosition::Left,
         nav_position_pinned: None,
         nav_default: crate::ui::switcher::NavPosition::Left,
+        floating_docked: false,
         max_fps: crate::provision::config::DEFAULT_MAX_FPS,
         floating_rect: None,
         applied_nav_height: u16::MAX,
@@ -4602,11 +4603,11 @@ fn a_click_on_a_floating_card_selects_and_executes_it() {
 }
 
 #[test]
-fn a_floating_box_keeps_its_spot_while_it_still_fits() {
+fn a_floating_box_replaces_every_frame_on_the_current_best_spot() {
     use crate::display::grid::Grid;
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
-    // A grid that scrolls must not make the box hop frame to frame: it keeps its spot
-    // while the spot stays blank and re-places only when the spot is covered.
+    // The box re-places every frame: as the content above it changes, the box moves onto
+    // the current best spot instead of holding its old one.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_machines(&["local"]));
@@ -4615,27 +4616,23 @@ fn a_floating_box_keeps_its_spot_while_it_still_fits() {
     rt.model.nav_position = NavPosition::Floating;
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
     let mut top = Grid::new(24, 80);
-    top.feed(&b"top text\n".repeat(10));
+    for _ in 0..10 {
+        top.feed(&b"X".repeat(80));
+        top.feed(b"\n");
+    }
     let nav = rt.place_floating_nav(area, Some(&top), rt.model.nav_size());
     let first = rt.model.floating_rect.unwrap();
-    // The top content grew, but the box's spot is still blank: the box stays put.
+    // More rows of content above: the box re-places onto the new best spot.
     let mut top2 = Grid::new(24, 80);
-    top2.feed(&b"top text\n".repeat(20));
+    for _ in 0..20 {
+        top2.feed(&b"X".repeat(80));
+        top2.feed(b"\n");
+    }
     let _ = rt.place_floating_nav(area, Some(&top2), nav);
-    assert_eq!(
-        rt.model.floating_rect,
-        Some(first),
-        "the box keeps a spot that still fits"
-    );
-    // The content now covers the box's spot: the box re-places.
-    let mut covered = Grid::new(24, 80);
-    covered.feed(&b"X".repeat(80));
-    covered.feed(b"\n");
-    let _ = rt.place_floating_nav(area, Some(&covered), nav);
     assert_ne!(
         rt.model.floating_rect,
         Some(first),
-        "a covered spot re-places the box"
+        "the box follows the current best spot"
     );
 }
 
@@ -4677,6 +4674,62 @@ fn a_floating_box_holds_its_spot_while_the_pointer_rests_on_it() {
         rt.model.floating_rect,
         Some(first),
         "once the pointer leaves, a covered spot re-places the box"
+    );
+}
+
+#[test]
+fn a_floating_box_grows_with_its_content_while_the_pointer_rests_on_it() {
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The pointer on the box holds its POSITION, not its size: a card that reveals more
+    // rows (a taller list, a shown host band) grows the box in place.
+    let group = |host: &str, names: &[&str]| crate::model::Group {
+        host: host.into(),
+        err: None,
+        sessions: names
+            .iter()
+            .map(|name| crate::session::Session {
+                host: host.into(),
+                mux: String::new(),
+                id: String::new(),
+                name: (*name).into(),
+                windows: 1,
+                ..Default::default()
+            })
+            .collect(),
+    };
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![group("local", &["a", "b", "c"])],
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 40);
+    let grid = crate::display::grid::Grid::new(40, 80);
+    let nav = rt.place_floating_nav(area, Some(&grid), rt.model.nav_size());
+    let first = rt.model.floating_rect.unwrap();
+    let (x, y) = (first.x, first.y);
+
+    // The pointer rests on the box: its position holds, but a taller list grows it in
+    // place instead of leaving it too short for its cards.
+    rt.model.mouse_state.hovering_floating_nav = true;
+    let mut state2 = crate::state::State::from_scan(Scan {
+        groups: vec![group("local", &["a", "b", "c", "d", "e", "f"])],
+    });
+    let switcher2 = Switcher::new(&mut state2);
+    rt.model.switcher = switcher2;
+    rt.model.state = state2;
+    let _ = rt.place_floating_nav(area, Some(&grid), nav);
+    let grown = rt.model.floating_rect.unwrap();
+    assert_eq!(
+        (grown.x, grown.y),
+        (x, y),
+        "the hover holds the box's position"
+    );
+    assert!(
+        grown.height > first.height,
+        "the box grows to fit its taller content"
     );
 }
 
@@ -4794,9 +4847,10 @@ fn a_dropped_floating_drag_holds_the_box_then_the_scan_resumes() {
 }
 
 #[test]
-fn floating_box_width_equals_the_nav_width() {
+fn floating_box_interior_equals_the_nav_width() {
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
-    // The box's width is the nav width the user set, not a content measure.
+    // The nav width the user set is the box's INTERIOR: the box total adds its two
+    // border columns, so the content is exactly the nav width, matching a docked box.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_machines(&["local"]));
@@ -4806,7 +4860,11 @@ fn floating_box_width_equals_the_nav_width() {
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
     let nav = rt.place_floating_nav(area, None, rt.model.nav_size());
     let rect = rt.model.floating_rect.unwrap();
-    assert_eq!(rect.width, nav.natural, "the box's width is the nav width");
+    assert_eq!(
+        rect.width.saturating_sub(2),
+        nav.natural,
+        "the box's interior is the nav width"
+    );
 }
 
 #[test]
@@ -4824,9 +4882,11 @@ fn a_drag_in_flight_keeps_the_floating_box_following() {
     rt.model.nav_position = NavPosition::Floating;
     rt.model.nav_position_pinned = Some(NavPosition::Floating);
     let _ = update(&mut rt.model, Msg::Focus(FocusTarget::Terminal));
-    sync_test_render_plan(&mut rt);
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
     let nav = rt.place_floating_nav(area, None, rt.model.nav_size());
+    // The plan is built after the box is placed (as the loop does), so the press is
+    // hit-tested against the box that is actually on screen.
+    sync_test_render_plan(&mut rt);
     let base = rt.model.floating_rect.unwrap();
     let (col, row) = (base.x + 2, base.y + 2);
     rt.handle_stdin_bytes(
@@ -4901,9 +4961,15 @@ fn prefix_ready_docks_the_floating_nav() {
     assert!(rt.prefix_active(), "the prefix arms");
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
     rt.prepare_and_draw(&mut term);
+    // The dock is a layout flag, not a position change: the nav stays Floating while it
+    // is docked, and `floating_docked` carries the docked state.
     assert_eq!(
         rt.model.nav_position,
-        NavPosition::Right,
+        NavPosition::Floating,
+        "a docked floating nav stays Floating"
+    );
+    assert!(
+        rt.model.floating_docked,
         "the armed prefix docks the floating nav"
     );
 }
@@ -4913,8 +4979,8 @@ fn floating_box_height_wraps_every_painted_row() {
     use crate::model::FocusTarget;
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
     // The box's height counts the rows the paint actually draws: the painted cards and
-    // the band rule rows between them, so the box has room for every card and the row
-    // right above the bottom border is a card or a rule, never blank.
+    // the blank rows between them, so the box has room for every card and the row
+    // right above the bottom border is a card or blank, never cut off.
     let sess = |host: &str, name: &str| crate::session::Session {
         host: host.into(),
         name: name.into(),

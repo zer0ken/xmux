@@ -33,10 +33,6 @@ pub const NAV_WIDTH: u16 = 48;
 /// between a name and the next number rather than two names running together.
 pub(super) const COL_GUTTER: u16 = 1;
 
-/// The glyph the side list's band rule is drawn from, repeated across the nav. A light
-/// box-drawing line, so it parts the bands without reading as a border around either.
-pub(super) const BAND_RULE: &str = "\u{2500}";
-
 /// The columns a session card is indented by under its section title, at every nav
 /// position. The indent and the bold title are the whole of what marks a group: no rule
 /// and no connector is painted for it. The indent lies outside the card's rect, so the
@@ -152,7 +148,43 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
         };
     }
     match nav.position {
-        NavPosition::Floating => floating_regions(area, nav, nav_width),
+        NavPosition::Floating => {
+            if nav.docked_floating {
+                // A docked floating nav: a rounded box over the right side filling the
+                // column's full height, its border region the outer box and its interior
+                // the nav's content, the terminal keeping the remainder, the prefix hint
+                // on the top border. The box total comes from the SAME natural width the
+                // free box uses (interior = the user's nav width), so the box is no
+                // wider in the docked state than when it floats. Docking is a layout
+                // flag, not a position change: the nav stays Floating, so every
+                // floating-box behaviour (drag, hover hold, click routing, the band
+                // following the selection) keeps applying. The box's rect flows through
+                // the same `floating_box_rect` resolver the free box uses, so the two
+                // layouts can never disagree on the box's size or position.
+                let outer = floating_box_rect(area, nav, 0, false, false, false, |_, _| true);
+                let box_x = outer.x;
+                let inner = Rect::new(
+                    box_x.saturating_add(1),
+                    area.y.saturating_add(1),
+                    nav.natural.min(outer.width.saturating_sub(2)),
+                    area.height.saturating_sub(2),
+                );
+                Regions {
+                    layout,
+                    nav: inner,
+                    nav_border: outer,
+                    terminal: Rect::new(area.x, area.y, box_x.saturating_sub(area.x), area.height),
+                    prefix_hint: Rect::new(
+                        box_x.saturating_add(1),
+                        area.y,
+                        outer.width.saturating_sub(2),
+                        1,
+                    ),
+                }
+            } else {
+                floating_regions(area, nav, nav_width)
+            }
+        }
         NavPosition::Left => {
             let c = Layout::horizontal([
                 Constraint::Length(nav_width),
@@ -233,6 +265,56 @@ pub(crate) fn default_floating_box(area: Rect, nav_width: u16) -> Rect {
     Rect::new(area.right().saturating_sub(w), area.y, w, h)
 }
 
+/// The single owner of the floating nav box's rect: its size and its position. The
+/// docked box (full height) and the free box (content-fit) both flow through here, and
+/// so does the box a drag, a hover, or a drop's freeze holds in place, so no two callers
+/// can size or place the box differently. The drag offset is a translation the render
+/// path applies on top of the stored base, so it stays out of the box's intrinsic
+/// geometry.
+pub(crate) fn floating_box_rect(
+    area: Rect,
+    nav: NavSize,
+    content_rows: u16,
+    panel: bool,
+    scan: bool,
+    interacting: bool,
+    blank: impl Fn(u16, u16) -> bool,
+) -> Rect {
+    // The box total is the user's nav width plus its two border columns, capped by the
+    // screen, so the content is exactly the nav width the user set, the same value a
+    // right nav's column is wide.
+    let w = nav.natural.saturating_add(2).min(area.width);
+    if nav.docked_floating {
+        // A docked floating nav fills the right column's full height in a rounded box.
+        let box_x = area.right().saturating_sub(w).max(area.x);
+        return Rect::new(
+            box_x,
+            area.y,
+            area.right().saturating_sub(box_x),
+            area.height,
+        );
+    }
+    // Content-fit: the box is as tall as the nav's card content plus its two border
+    // rows, so it always has room for every card.
+    let h = content_rows.saturating_add(2).min(area.height).max(3);
+    let (x, y) = if interacting {
+        // A drag, a hover, or a drop's freeze holds the box's POSITION, not its size: it
+        // still grows or shrinks to fit its content in place.
+        nav.floating
+            .map(|r| (r.x, r.y))
+            .unwrap_or((area.right().saturating_sub(w), area.y))
+    } else if panel || !scan {
+        // A non-session screen (or no grid to scan) pins the box to the top-right corner
+        // instead of leaving it over a stale spot on the underlying grid.
+        (area.right().saturating_sub(w), area.y)
+    } else {
+        // Over a session's grid, re-place on the current best empty spot.
+        let r = floating_nav_box(area, w, h, blank);
+        (r.x, r.y)
+    };
+    Rect::new(x, y, w, h)
+}
+
 /// The regions of a floating nav: the terminal keeps the whole area and the nav floats
 /// over it as a content-fit box, placed by the runtime over the terminal's empty space.
 /// The box's border is its region; its interior holds the cards exactly as a right nav's
@@ -263,10 +345,12 @@ fn floating_regions(area: Rect, nav: NavSize, nav_width: u16) -> Regions {
 pub const FLOATING_MARGIN: u16 = 5;
 
 /// Where the floating nav's box sits: its right edge within [`FLOATING_MARGIN`] of the
-/// terminal's right wall. Over the strips whose tallest all-blank vertical run fits the
-/// box whole, the topmost such run wins, the box at its top. When no run fits the box,
-/// the widest run wins, the box at its top. With no all-blank run at all the box holds
-/// at the top-right corner. `blank` reports whether a cell carries no glyph.
+/// terminal's right wall. One pass over the wall-margin spots, rows before columns,
+/// keeps the spot whose window wins the most completely empty rows, then the most empty
+/// cells (the fewest glyphs); the scan's top-down, right-to-left order breaks an exact
+/// tie by the topmost, then the wall-most, spot. A window with no glyph at all (every
+/// row completely empty) takes the box at once. With no wall-margin spot at all it
+/// holds at the top-right corner. `blank` reports whether a cell carries no glyph.
 pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> bool) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
@@ -275,60 +359,46 @@ pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> 
         .saturating_sub(FLOATING_MARGIN)
         .saturating_sub(w)
         .max(area.x);
-    let mut fitting: Option<(u16, u16)> = None; // (x, y)
-    let mut widest: Option<(u16, u16, u16)> = None; // (run_height, y, x)
-    let mut x = right.saturating_sub(w);
-    loop {
-        for (y, run) in blank_runs(area, x, w, &blank) {
-            if run >= h {
-                if fitting.is_none_or(|(_, fy)| y < fy) {
-                    fitting = Some((x, y));
+    let x_last = right.saturating_sub(w);
+    // One pass over the wall-margin spots, rows before columns. The best spot's window
+    // wins the most completely empty rows, then the most empty cells; the scan's
+    // top-down, right-to-left order breaks an exact tie by the topmost, then the
+    // wall-most, spot. A window with no glyph at all (every row empty) takes the box at
+    // once.
+    let mut best: Option<(u16, u32, u16, u16)> = None; // (empty_rows, empty_cells, y, x)
+    for y in area.y..area.bottom().saturating_sub(h).saturating_add(1) {
+        for x in (x_lo..=x_last).rev() {
+            let mut glyphs = 0u16;
+            let mut empty_rows = 0u16;
+            for cy in y..y + h {
+                let mut row_glyphs = 0u16;
+                for cx in x..x + w {
+                    if !blank(cx, cy) {
+                        row_glyphs += 1;
+                    }
                 }
-            } else if widest.is_none_or(|(br, by, _)| run > br || (run == br && y < by)) {
-                widest = Some((run, y, x));
+                glyphs += row_glyphs;
+                if row_glyphs == 0 {
+                    empty_rows += 1;
+                }
+            }
+            if glyphs == 0 {
+                return Rect::new(x, y, w, h);
+            }
+            // The window's own blank cells: its w×h area minus the glyphs inside it.
+            let empty_cells = (w as u32) * (h as u32) - (glyphs as u32);
+            if best.is_none_or(|(be, bc, _, _)| {
+                empty_rows > be || (empty_rows == be && empty_cells > bc)
+            }) {
+                best = Some((empty_rows, empty_cells, y, x));
             }
         }
-        if x == x_lo {
-            break;
-        }
-        x = x.saturating_sub(1);
-        if x < x_lo {
-            break;
-        }
     }
-    match fitting {
-        Some((x, y)) => Rect::new(x, y, w, h),
-        None => match widest {
-            // No run fits the box whole: the top of the widest blank strip.
-            Some((_, y, x)) => Rect::new(x, y, w, h),
-            // No all-blank run at all: hold it at the top-right corner.
-            None => Rect::new(area.right().saturating_sub(w), area.y, w, h),
-        },
+    match best {
+        Some((_, _, y, x)) => Rect::new(x, y, w, h),
+        // No spot at all: hold it at the top-right corner.
+        None => Rect::new(area.right().saturating_sub(w), area.y, w, h),
     }
-}
-
-/// The tallest vertical run of all-blank cells in the `w`-wide strip starting at column
-/// `x`, as `(row, height)`. `None` when no cell in the strip is blank.
-/// The all-blank vertical runs of the column strip `x..x+w`, each as `(start_y,
-/// height)` in row order. A wide char's right half is not blank (see [`Grid`]'s
-/// `cell_blank`), so a run never slices a glyph in two.
-fn blank_runs(area: Rect, x: u16, w: u16, blank: &impl Fn(u16, u16) -> bool) -> Vec<(u16, u16)> {
-    let mut runs = Vec::new();
-    let mut run_y: Option<u16> = None;
-    let mut run_h = 0u16;
-    for y in area.y..area.bottom() {
-        if (x..x + w).all(|cx| blank(cx, y)) {
-            run_h += 1;
-            run_y.get_or_insert(y);
-        } else if let Some(sy) = run_y.take() {
-            runs.push((sy, run_h));
-            run_h = 0;
-        }
-    }
-    if let Some(sy) = run_y.take() {
-        runs.push((sy, run_h));
-    }
-    runs
 }
 
 /// The smallest window xmux draws its split view in; a smaller one shows the required
@@ -468,6 +538,9 @@ pub struct Switcher {
     terminal_view: bool,
     /// Whether host cards are omitted after leaving nav from a session card.
     host_band_hidden: bool,
+    /// The nav's attachment position. The floating nav's band follows the selection
+    /// (see [`Switcher::band_unpainted`]).
+    nav_position: NavPosition,
     /// Whether the prefix is armed. An armed prefix paints the hidden host band, so the
     /// cards a chord can reach are on screen while it is typed.
     prefix_armed: bool,
@@ -515,7 +588,7 @@ mod render;
 pub(crate) use render::MIDDLE_ELLIPSIS;
 mod side;
 
-pub use render::RenderPlan;
+pub use render::{Cursor, RenderPlan};
 
 pub use crate::model::{step_nav_position, NavPosition};
 
@@ -549,6 +622,7 @@ impl Switcher {
             numbers_held: false,
             terminal_view: false,
             host_band_hidden: false,
+            nav_position: NavPosition::Left,
             prefix_armed: false,
             rescan_collapse: None,
             create_host: None,
@@ -741,11 +815,23 @@ impl Switcher {
         self.resume_kick.take()
     }
 
-    /// Whether the paint leaves the host band out: hidden by the move into the terminal
-    /// view from a session card. An armed prefix paints the band without changing that
-    /// decision, so it hides again when the chord ends, and a selection on a host card
-    /// paints the band, since a selected card is always painted.
+    /// The nav's attachment position, for the band rule the floating nav uses.
+    pub fn set_nav_position(&mut self, position: NavPosition) {
+        self.nav_position = position;
+    }
+
+    /// Whether the paint leaves the host band out. The docked nav hides the host band on
+    /// the move into the terminal view from a session card (see `host_band_hidden`); an
+    /// armed prefix paints the band without changing that decision, so it hides again
+    /// when the chord ends, and a selection on a host card paints the band, since a
+    /// selected card is always painted. The floating nav is always inside the terminal
+    /// view, so its band follows the selection: a session card hides the host band, a
+    /// host or machine card shows it.
     fn band_unpainted(&self) -> bool {
+        if self.nav_position == NavPosition::Floating {
+            return !self.prefix_armed
+                && matches!(self.current_ref(), Some(RowRef::Session { .. }));
+        }
         self.host_band_hidden
             && !self.prefix_armed
             && !matches!(
@@ -1244,7 +1330,7 @@ impl Switcher {
         }
     }
 
-    /// The rows the nav paints plus the band rule rows between the bands: the floating
+    /// The rows the nav paints plus the blank rows between the bands: the floating
     /// nav's content height, from what the paint actually draws, so its box wraps every
     /// painted row and no card drops and no blank row is left inside. Follows the band
     /// hiding: the band's hide shows fewer rows and the box shrinks with them.

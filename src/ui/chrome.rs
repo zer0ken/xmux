@@ -514,7 +514,7 @@ impl Chrome {
             let g = if self.nav_border_hovered {
                 "━"
             } else if self.auto_hide {
-                "═"
+                "╌"
             } else {
                 "─"
             };
@@ -538,7 +538,7 @@ impl Chrome {
         let (glyph, style) = if self.nav_border_hovered {
             ("┃", Style::default().fg(self.colors.hover))
         } else if self.auto_hide {
-            ("║", Style::default().fg(color))
+            ("╎", Style::default().fg(color))
         } else {
             ("│", Style::default().fg(color))
         };

@@ -50,7 +50,7 @@ pub fn dump_screen(
                 previous.nav_size
             };
             let plan = switcher.layout(f.area(), nav, state, previous);
-            switcher.render(f, grid, state.focus.is_terminal_focused(), state, &plan)
+            switcher.render(f, grid, state.focus.is_terminal_focused(), state, &plan);
         })
         .is_err()
     {
@@ -210,7 +210,9 @@ mod tests {
             };
             let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
             terminal
-                .draw(|frame| switcher.render(frame, None, false, &state, &plan))
+                .draw(|frame| {
+                    switcher.render(frame, None, false, &state, &plan);
+                })
                 .unwrap();
             let buffer = terminal.backend().buffer();
             assert!(

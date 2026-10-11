@@ -1,5 +1,5 @@
-//! The side list's card geometry: where every card paints, where the rule parting the
-//! groups goes, and how far the list has scrolled. Pure over card HEIGHTS, so the
+//! The side list's card geometry: where every card paints, the blank row parting the
+//! groups, and how far the list has scrolled. Pure over card HEIGHTS, so the
 //! paint, the mouse hit-test and the tests all read one answer.
 
 /// One card's placement inside the card region, in rows from its top edge. `h` is what
@@ -16,8 +16,6 @@ pub(super) struct Slot {
 pub(super) struct Flow {
     /// The cards with at least one row on screen, in list order.
     pub slots: Vec<Slot>,
-    /// The row the parting rule paints on, when a rule is what parts the bands.
-    pub rule_y: Option<u16>,
     /// The first card drawn: the scroll position, counted in cards.
     pub offset: usize,
     /// How many cards are drawn whole.
@@ -26,13 +24,13 @@ pub(super) struct Flow {
     pub scrolls: bool,
 }
 
-/// The rows cards `from..to` take, counting the parting rule when the boundary falls
-/// inside that run. The rule sits immediately above card `boundary`, so a run starting
+/// The rows cards `from..to` take, counting the blank row when the boundary falls inside
+/// that run. The blank row sits immediately above card `boundary`, so a run starting
 /// exactly there still pays for it.
 fn span(heights: &[u16], boundaries: &[usize], from: usize, to: usize) -> u16 {
     let cards: u16 = heights[from..to].iter().sum();
-    let rule = boundaries.iter().filter(|&&b| from <= b && b < to).count() as u16;
-    cards + rule
+    let blanks = boundaries.iter().filter(|&&b| from <= b && b < to).count() as u16;
+    cards + blanks
 }
 
 /// The scroll position that keeps card `selected` whole, moving the least it takes: down
@@ -107,7 +105,6 @@ pub(super) fn place(
         }
         return Flow {
             slots,
-            rule_y: None,
             offset: 0,
             visible: n,
             scrolls: false,
@@ -122,7 +119,6 @@ pub(super) fn place(
         selected_section_title,
     );
     let mut slots = Vec::new();
-    let mut rule_y = None;
     let mut visible = 0usize;
     let mut y = 0u16;
     for (i, &card_h) in heights.iter().enumerate().skip(offset) {
@@ -130,7 +126,6 @@ pub(super) fn place(
             if y >= region_h {
                 break;
             }
-            rule_y = rule_y.or(Some(y));
             y += 1;
         }
         if y >= region_h {
@@ -145,7 +140,6 @@ pub(super) fn place(
     }
     Flow {
         slots,
-        rule_y,
         offset,
         visible,
         scrolls: true,
@@ -164,7 +158,6 @@ mod tests {
     fn one_band_stacks_from_the_top() {
         let flow = place(&[2, 2, 2], None, 20, 0, 0, None);
         assert_eq!(ys(&flow), vec![(0, 0, 2), (1, 2, 2), (2, 4, 2)]);
-        assert_eq!(flow.rule_y, None);
     }
 
     #[test]
@@ -175,7 +168,6 @@ mod tests {
             ys(&flow),
             vec![(0, 0, 2), (1, 2, 2), (2, 4, 2), (3, 7, 2), (4, 9, 2)]
         );
-        assert_eq!(flow.rule_y, None, "a gap parts them, not a rule");
         assert_eq!(flow.offset, 0);
     }
 
@@ -185,7 +177,6 @@ mod tests {
         // the list turns into a scrolling run one row before the cards overflow it.
         let flow = place(&[2, 2], Some(1), 4, 0, 0, None);
         assert!(flow.scrolls);
-        assert_eq!(flow.rule_y, Some(2));
         // One row to spare is a gap, and a gap needs no scrolling.
         let fits = place(&[2, 2], Some(1), 5, 0, 0, None);
         assert!(!fits.scrolls);
@@ -211,18 +202,16 @@ mod tests {
     }
 
     #[test]
-    fn overflow_closes_the_gap_and_draws_the_rule() {
-        // 5 cards of 2 rows plus the rule is 11 rows in 6: one scrolling run.
+    fn overflow_closes_the_gap_into_a_scrolling_run() {
+        // 5 cards of 2 rows plus the blank row is 11 rows in 6: one scrolling run.
         let flow = place(&[2, 2, 2, 2, 2], Some(1), 6, 0, 0, None);
-        assert_eq!(flow.rule_y, Some(2), "the rule takes the boundary's row");
         assert_eq!(ys(&flow), vec![(0, 0, 2), (1, 3, 2), (2, 5, 1)]);
         assert_eq!(flow.visible, 2, "the cut-off card is not a viewport card");
     }
 
     #[test]
-    fn a_boundary_below_the_fold_draws_no_rule() {
+    fn a_boundary_below_the_fold_pays_no_blank_row() {
         let flow = place(&[2, 2, 2, 2, 2], Some(3), 6, 0, 0, None);
-        assert_eq!(flow.rule_y, None);
         assert_eq!(ys(&flow), vec![(0, 0, 2), (1, 2, 2), (2, 4, 2)]);
     }
 
@@ -234,15 +223,13 @@ mod tests {
         assert_eq!(
             ys(&flow),
             vec![(3, 1, 2), (4, 3, 2)],
-            "the rule leads the band it opens"
+            "the blank row leads the band it opens"
         );
-        assert_eq!(flow.rule_y, Some(0));
     }
 
     #[test]
-    fn the_rule_scrolls_away_with_its_boundary() {
+    fn the_blank_row_scrolls_away_with_its_boundary() {
         let flow = place(&[2, 2, 2, 2, 2, 2, 2], Some(1), 6, 4, 6, None);
-        assert_eq!(flow.rule_y, None);
         assert_eq!(flow.slots.first().map(|s| s.idx), Some(4));
     }
 

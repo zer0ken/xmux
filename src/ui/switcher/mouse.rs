@@ -28,6 +28,7 @@ impl Switcher {
             .as_ref()
             .map(|(rect, _)| (modal::PopupSurface::KeyList, *rect));
         let floating = (plan.nav_position == crate::model::NavPosition::Floating
+            && !plan.docked_floating
             && !state.is_modal_popup_open())
         .then_some((modal::PopupSurface::FloatingNav, plan.regions.nav_border));
         let boxes: Vec<_> = modal.into_iter().chain(key_list).chain(floating).collect();
@@ -171,7 +172,7 @@ impl Switcher {
 
     /// The nav target under a 0-based screen `(col, row)`: a card, or one half of a
     /// section title or of a host card's `{machine}/{mux}`. `None` outside the nav or on
-    /// none of its targets (the gap between the bands, the band rule, the indent, a
+    /// none of its targets (the gap between the bands, the indent, a
     /// title's blank tail, the rows past the last card). A band's overflow count on the
     /// seam stands for the hidden card nearest the visible ones.
     ///
