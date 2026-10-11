@@ -13,11 +13,11 @@ import fcntl, json, os, pty, re, select, struct, sys, termios, threading, time
 
 import pyte
 
-TYPE = 0.11       # typing a command
-KEY = 0.45        # pressing one key in the app
-CHORD = 0.6       # after the prefix, before its command key
-HOLD = 0.3        # a held Ctrl-arrow, repeating inside the app's resize mode
-REACT = 0.6       # after the screen answers, before the next command
+TYPE = 0.15       # typing a command
+KEY = 0.8         # pressing one key in the app
+CHORD = 1.1       # after the prefix, before its command key
+HOLD = 0.4        # a held Ctrl-arrow, repeating inside the app's resize mode
+REACT = 1.0       # after the screen answers, before the next command
 
 # The nav leaves room for card padding around "3 my-important-session".
 # A band holds a source title, its two cards, and the status line (4 rows).
@@ -67,6 +67,7 @@ class Term:
         return time.perf_counter() - self.t0
 
     def _pump(self):
+        pending = b""
         while True:
             r, _, _ = select.select([self.fd], [], [], 0.5)
             if not r:
@@ -77,10 +78,26 @@ class Term:
                 return
             if not data:
                 return
+            data = pending + data
+            # Trim any incomplete trailing UTF-8 so a multibyte char is never split
+            # across two recorded events (a split would decode to U+FFFD in the GIF).
+            cut = len(data)
+            while cut > 0:
+                try:
+                    data[:cut].decode("utf-8")
+                    break
+                except UnicodeDecodeError as e:
+                    if "unexpected end of data" in str(e):
+                        cut -= 1
+                    else:
+                        break
+            pending = data[cut:]
+            complete = data[:cut]
             with self.lock:
-                self.events.append((self.now(), data))
-                self.stream.feed(data)
-                for m in QUERIES.finditer(data):
+                if complete:
+                    self.events.append((self.now(), complete))
+                self.stream.feed(complete)
+                for m in QUERIES.finditer(complete):
                     self._answer(m)
 
     def _answer(self, m):
@@ -196,22 +213,24 @@ def features(s):
     s.answered("3  gpu-01/tmux/my-important-session", 1.4)
     s.key("Down"); s.key("Down"); s.hold(0.6); s.key("Enter")
     s.answered("epoch 17/50", 1.6)
-    s.prefix(); s.key("Tab")
-    s.hold(1.0)
 
     s.caption("Switch sessions")
-    s.key("Down"); s.hold(1.8)
+    s.prefix(); s.key("Tab"); s.hold(1.0)
+    s.key("Down"); s.hold(1.0)
+    s.key("Down"); s.hold(1.0)
+    s.key("Down"); s.hold(1.0)
     s.prefix(); s.type("5", KEY); s.key("Enter")
     s.answered("listening on :8080", 1.8)
     s.prefix(); s.type("3", KEY); s.key("Enter")
     s.answered("epoch 17/50", 2.0)
 
     s.caption("Walk up to the host and the machine")
-    s.prefix(); s.key("Left"); s.hold(0.6)
-    s.key("Ctrl ↑"); s.answered("last listed", 2.0)
-    s.key("Ctrl ↑"); s.answered("last reached", 2.0)
-    s.key("Ctrl ↓"); s.answered("last listed", 1.4)
-    s.key("Ctrl ↓"); s.answered("epoch 17/50", 2.0)
+    # The digit jump leaves the nav focused (the docked box follows the selection), so
+    # Ctrl-↑/↓ walk the selection up and down without any prefix toggle.
+    s.key("Ctrl ↑"); s.answered("last listed", 6.0)
+    s.key("Ctrl ↑"); s.answered("last reached", 6.0)
+    s.key("Ctrl ↓"); s.answered("last listed", 4.0)
+    s.key("Ctrl ↓"); s.answered("epoch 17/50", 4.0)
 
     s.caption("Resize the nav")
     s.prefix()
@@ -224,9 +243,18 @@ def features(s):
     s.hold(2.0)
 
     s.caption("Place the nav")
-    for _ in range(4):
+    for _ in range(5):
         s.prefix(); s.type("p", KEY)
         s.hold(2.2)
+
+    s.caption("Float the nav")
+    # The nav is back on the floating side after the full cycle, so the box floats over
+    # the terminal. Toggling focus docks the box to the right column at full height and
+    # undocks it to a content-fit box when the terminal returns.
+    s.prefix(); s.key("Tab"); s.hold(1.8)
+    s.prefix(); s.key("Tab"); s.hold(1.8)
+    s.prefix(); s.key("Tab"); s.hold(1.8)
+    s.prefix(); s.key("Tab"); s.hold(1.6)
 
     s.caption("Auto-hide the nav")
     s.prefix(); s.type("t", KEY); s.hold(1.6)

@@ -16,8 +16,8 @@ ssh로 gpu-01에 접속해 tmux 세션 목록을 확인하고 attach하기까지
 
 **세션 전환**
 
-![xmux는 card 한 개를 내려간 뒤 번호로 5번과 3번 세션으로 이동한다. terminal view는
-선택한 세션을 따라 바뀐다.](docs/assets/xmux-nav-switch.gif)
+![xmux는 card 여러 개를 화살표로 내려간 뒤 번호로 5번과 3번 세션으로 이동한다.
+terminal view는 선택한 세션을 따라 바뀐다.](docs/assets/xmux-nav-switch.gif)
 
 **host와 machine으로 올라가기**
 
@@ -38,8 +38,13 @@ ssh로 gpu-01에 접속해 tmux 세션 목록을 확인하고 attach하기까지
 
 **nav 배치**
 
-![xmux는 prefix p를 누를 때마다 nav를 terminal view의 다음 변에 배치한다. nav는 위,
-오른쪽, 아래를 거쳐 왼쪽으로 돌아온다.](docs/assets/xmux-nav-place.gif)
+![플로팅이 기본값이며, prefix p를 누를 때마다 nav를 terminal view의 다음 변에
+배치한다. 왼쪽·위·오른쪽·아래를 한 바퀴 돌아 플로팅으로 되돌아온다.](docs/assets/xmux-nav-place.gif)
+
+**nav 플로팅**
+
+![포커스를 전환하면 플로팅 박스가 오른쪽 열 전체 높이로 고정되고, terminal view로
+돌아오면 콘텐츠 높이의 박스로 다시 떠 있다.](docs/assets/xmux-nav-floating.gif)
 
 **nav 자동 숨기기**
 

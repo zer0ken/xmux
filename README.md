@@ -17,7 +17,7 @@ gpu-01.](docs/assets/xmux-landing.gif)
 
 **Switch sessions**
 
-![Moving down one card, then jumping to sessions 5 and 3 by number; the terminal
+![Moving down several cards, then jumping to sessions 5 and 3 by number; the terminal
 view follows each selection.](docs/assets/xmux-nav-switch.gif)
 
 **Walk up to the host and the machine**
@@ -40,8 +40,13 @@ it back.](docs/assets/xmux-nav-resize.gif)
 
 **Place the nav**
 
-![Each prefix p places the nav on the next side of the terminal view: top, right,
-bottom, then back to the left.](docs/assets/xmux-nav-place.gif)
+![From the floating default, each prefix p places the nav on the next side of the
+terminal view, cycling through left, top, right, bottom, and back to floating.](docs/assets/xmux-nav-place.gif)
+
+**Float the nav**
+
+![Toggling focus docks the floating box to the right column at full height and undocks
+it to a content-fit box when the terminal returns.](docs/assets/xmux-nav-floating.gif)
 
 **Auto-hide the nav**
 
