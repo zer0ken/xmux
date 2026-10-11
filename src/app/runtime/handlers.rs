@@ -1032,9 +1032,9 @@ impl Runtime {
         // column as a rounded box (the terminal view keeps the remainder), and the
         // focus's return to the terminal view or the chord's end undocks it. Docking is
         // a layout flag, not a position change: the nav stays Floating, so every
-        // floating-box behaviour (drag, hover hold, click routing, the band following
-        // the selection) keeps applying, and the box's inner border stays the resize
-        // handle it is. The reconcile below resizes the PTYs when the dock flips.
+        // floating-box behaviour (drag, hover hold, click routing, the box's band rule)
+        // keeps applying, and the box's inner border stays the resize handle it is. The
+        // reconcile below resizes the PTYs when the dock flips.
         let docked = want_position == crate::ui::switcher::NavPosition::Floating
             && (self.model.state.focus.view_is_nav() || prefix_active);
         let docked_changed = docked != self.model.floating_docked;

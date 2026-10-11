@@ -157,10 +157,10 @@ pub fn compute_regions(area: Rect, nav: NavSize) -> Regions {
                 // free box uses (interior = the user's nav width), so the box is no
                 // wider in the docked state than when it floats. Docking is a layout
                 // flag, not a position change: the nav stays Floating, so every
-                // floating-box behaviour (drag, hover hold, click routing, the band
-                // following the selection) keeps applying. The box's rect flows through
-                // the same `floating_box_rect` resolver the free box uses, so the two
-                // layouts can never disagree on the box's size or position.
+                // floating-box behaviour (drag, hover hold, click routing, the box's band
+                // rule) keeps applying. The box's rect flows through the same
+                // `floating_box_rect` resolver the free box uses, so the two layouts can
+                // never disagree on the box's size or position.
                 let outer = floating_box_rect(area, nav, 0, false, false, false, |_, _| true);
                 let box_x = outer.x;
                 let inner = Rect::new(
@@ -538,9 +538,6 @@ pub struct Switcher {
     terminal_view: bool,
     /// Whether host cards are omitted after leaving nav from a session card.
     host_band_hidden: bool,
-    /// The nav's attachment position. The floating nav's band follows the selection
-    /// (see [`Switcher::band_unpainted`]).
-    nav_position: NavPosition,
     /// Whether the prefix is armed. An armed prefix paints the hidden host band, so the
     /// cards a chord can reach are on screen while it is typed.
     prefix_armed: bool,
@@ -622,7 +619,6 @@ impl Switcher {
             numbers_held: false,
             terminal_view: false,
             host_band_hidden: false,
-            nav_position: NavPosition::Left,
             prefix_armed: false,
             rescan_collapse: None,
             create_host: None,
@@ -815,23 +811,14 @@ impl Switcher {
         self.resume_kick.take()
     }
 
-    /// The nav's attachment position, for the band rule the floating nav uses.
-    pub fn set_nav_position(&mut self, position: NavPosition) {
-        self.nav_position = position;
-    }
-
-    /// Whether the paint leaves the host band out. The docked nav hides the host band on
-    /// the move into the terminal view from a session card (see `host_band_hidden`); an
-    /// armed prefix paints the band without changing that decision, so it hides again
-    /// when the chord ends, and a selection on a host card paints the band, since a
-    /// selected card is always painted. The floating nav is always inside the terminal
-    /// view, so its band follows the selection: a session card hides the host band, a
-    /// host or machine card shows it.
+    /// Whether the paint leaves the host band out: hidden by the move into the terminal
+    /// view from a session card (see `host_band_hidden`). An armed prefix paints the band
+    /// without changing that decision, so it hides again when the chord ends, and a
+    /// selection on a host card paints the band, since a selected card is always painted.
+    /// The rule is position-independent: the floating nav's box follows the same focus
+    /// rule as any docked nav, so its band shows on the nav's focus and hides on the move
+    /// into the terminal view exactly as a side nav's does.
     fn band_unpainted(&self) -> bool {
-        if self.nav_position == NavPosition::Floating {
-            return !self.prefix_armed
-                && matches!(self.current_ref(), Some(RowRef::Session { .. }));
-        }
         self.host_band_hidden
             && !self.prefix_armed
             && !matches!(

@@ -4878,11 +4878,12 @@ async fn the_bands_part_with_the_rows_left_over() {
 }
 
 #[test]
-fn a_floating_nav_follows_the_selection_band() {
-    // The floating nav is always inside the terminal view, so its band follows the
-    // selection: a session card hides the host band, a host or machine card shows it.
+fn a_floating_nav_band_follows_the_focus_like_any_nav() {
+    // The floating nav's box uses the same band rule as a docked nav: the host band
+    // hides on the move into the terminal view from a session card and shows again on
+    // the nav's focus. The rule never reads the nav's position, so the floating and the
+    // docked navs cannot diverge.
     let mut h = Harness::new(scan_with_bands(3));
-    h.sw.set_nav_position(NavPosition::Floating);
 
     let session =
         h.sw.rows
@@ -4895,17 +4896,32 @@ fn a_floating_nav_follows_the_selection_band() {
             .position(|r| matches!(r.reference, RowRef::Host { .. } | RowRef::Machine { .. }))
             .expect("a host-state card");
 
+    // Nav focus: the band shows whatever the selection is, like a docked nav.
     h.sw.set_selected(session);
+    h.sw.sync_view_focus(false);
     assert!(
-        h.sw.band_unpainted(),
-        "a selected session hides the host band"
+        !h.sw.band_unpainted(),
+        "a session card on the nav's focus shows the band"
     );
-    let compact = h.sw.nav_content_rows();
-
     h.sw.set_selected(host);
     assert!(
         !h.sw.band_unpainted(),
-        "a selected host or machine shows the band"
+        "a host or machine card shows the band"
+    );
+
+    // The move into the terminal view from a session card hides the band, and the box
+    // shrinks with it; a host card keeps it, exactly as a docked nav.
+    h.sw.set_selected(session);
+    h.sw.sync_view_focus(true);
+    assert!(
+        h.sw.band_unpainted(),
+        "the move into the terminal view from a session hides the band"
+    );
+    let compact = h.sw.nav_content_rows();
+    h.sw.sync_view_focus(false);
+    assert!(
+        !h.sw.band_unpainted(),
+        "the return to the nav shows the band again"
     );
     assert!(
         h.sw.nav_content_rows() > compact,
