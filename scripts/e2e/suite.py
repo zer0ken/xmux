@@ -72,8 +72,8 @@ HERDR_FORGET = ("herdr machine list --json | sed -n 's/.*\"id\": *\"\\([0-9a-f]*
 DIRECT_ATTACH = {"tmux": "tmux attach -t {s}", "screen": "screen -x {s}",
                  "zellij": "zellij attach {s}", "abduco": "abduco -a {s}",
                  "tuios": "tuios attach {s}", "herdr": "herdr session attach {s}"}
-# The display attach child xmux's own attach runs on the host: each mux's attach_plan
-# shape, which the residual-client scenario greps the host's process table for.
+# The display attach child xmux's own attach runs on the host: each mux's display-attach
+# argv, which the residual-client scenario greps the host's process table for.
 ATTACH_CHILD = {"tmux": "tmux attach -t {s}", "screen": "screen -x {s}",
                 "zellij": "zellij attach {s}", "abduco": "abduco -l -a {s}",
                 "tuios": "tuios attach {s}", "herdr": "herdr --session {s} client"}
@@ -673,6 +673,15 @@ def wait_regex(app, pattern, what, timeout=15):
                       what, timeout)
 
 
+def wait_host(cond, what, timeout):
+    """Polls a host predicate until it holds or the timeout passes."""
+    end = time.monotonic() + timeout
+    while not cond():
+        if time.monotonic() > end:
+            raise Failure(what)
+        time.sleep(0.2)
+
+
 def residual_client(c):
     # Quitting xmux leaves no client holding its session: a client whose process
     # outlives the teardown keeps the session attached, and the next run's client hits
@@ -690,26 +699,30 @@ def residual_client(c):
     app = c.launch(c.h1)
     app.open(f"{c.h1}/{m}", f"{m}1")
     app.whereami(c.path(c.h1, f"{m}1"))
-    # The attach child takes a moment to appear on the host (an ssh attach establishes
-    # its connection first), so wait for it: the after-quit check answers something.
-    end = time.monotonic() + 15
-    while not attach_child_running():
-        if time.monotonic() > end:
-            raise Failure(f"{c.h1} never ran the attach child while xmux was alive; "
-                          "the after-quit check answers nothing")
-        time.sleep(0.2)
+    if m == "tmux":
+        # tmux names its client by tty; wait for one to hold the session, so the
+        # after-quit check answers something. tmux's display rides the control client,
+        # which a reattach switches in place instead of spawning a fresh attach child,
+        # so there is no per-session child process to grep for.
+        def session_client():
+            return c.hosts.sh(c.h1, f"tmux list-clients -t {m}1", check=False).strip() != ""
+        wait_host(session_client, f"{c.h1} never attached a client to {m}1 while xmux was alive", 15)
+    else:
+        # The attach child takes a moment to appear on the host (an ssh attach
+        # establishes its connection first), so wait for it: the after-quit check
+        # answers something.
+        wait_host(attach_child_running,
+                  f"{c.h1} never ran the attach child while xmux was alive", 15)
     app.t.send("C-g", gap=0.3)
     app.t.send("q", gap=0.5)
-    # The teardown kills the child and detaches the client; wait for the child to leave.
-    end = time.monotonic() + 10
-    while attach_child_running():
-        if time.monotonic() > end:
-            raise Failure(f"{c.h1} still runs the attach child of a quit xmux")
-        time.sleep(0.2)
     if m == "tmux":
-        out = c.hosts.sh(c.h1, f"tmux list-clients -t {m}1", check=False)
-        if out.strip():
-            raise Failure(f"a client still holds {m}1 after quit:\n{out}")
+        # The teardown detaches the client; wait for none to hold the session.
+        wait_host(lambda: not session_client(),
+                  f"a client still holds {m}1 after quit", 10)
+    else:
+        # The teardown kills the child; wait for it to leave.
+        wait_host(lambda: not attach_child_running(),
+                  f"{c.h1} still runs the attach child of a quit xmux", 10)
 
 
 def click(app, x, y):
