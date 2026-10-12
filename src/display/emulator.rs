@@ -801,7 +801,7 @@ impl<'a> View<'a> {
             for col in 0..cols {
                 match self.cell(row, col) {
                     Some(cell) if cell.is_wide_continuation() => {}
-                    Some(cell) if cell.has_contents() => cell.push_contents(&mut text),
+                    Some(cell) if cell.has_contents() => text.extend(cell.chars()),
                     _ => text.push(' '),
                 }
             }
@@ -885,16 +885,18 @@ impl Cell<'_> {
     /// The cell's text: its character and the zero-width characters written after it,
     /// or nothing for a cell no character was written to.
     pub fn contents(&self) -> String {
-        let mut text = String::new();
-        self.push_contents(&mut text);
-        text
+        self.chars().collect()
     }
 
-    fn push_contents(&self, text: &mut String) {
-        if self.has_contents() {
-            text.push(self.cell.c);
-            text.extend(self.cell.zerowidth().into_iter().flatten());
-        }
+    /// The characters the cell shows, none for a blank cell.
+    pub fn chars(&self) -> impl Iterator<Item = char> + '_ {
+        self.has_contents()
+            .then(|| {
+                std::iter::once(self.cell.c)
+                    .chain(self.cell.zerowidth().unwrap_or_default().iter().copied())
+            })
+            .into_iter()
+            .flatten()
     }
 
     pub fn has_contents(&self) -> bool {
