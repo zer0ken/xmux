@@ -4898,11 +4898,11 @@ async fn the_bands_part_with_the_rows_left_over() {
 }
 
 #[test]
-fn a_floating_nav_band_follows_the_focus_like_any_nav() {
-    // The floating nav's box uses the same band rule as a docked nav: the host band
-    // hides on the move into the terminal view from a session card and shows again on
-    // the nav's focus. The rule never reads the nav's position, so the floating and the
-    // docked navs cannot diverge.
+fn a_floating_nav_band_follows_the_selection_like_any_nav() {
+    // The floating nav's box uses the same band rule as a docked nav: the band hides
+    // while a user move onto a session card or the move into the terminal view from one
+    // hid it, and shows again when a user move lands on a host card. The rule never
+    // reads the nav's position, so the floating and the docked navs cannot diverge.
     let mut h = Harness::new(scan_with_bands(3));
 
     let session =
@@ -4916,32 +4916,40 @@ fn a_floating_nav_band_follows_the_focus_like_any_nav() {
             .position(|r| matches!(r.reference, RowRef::Host { .. } | RowRef::Machine { .. }))
             .expect("a host-state card");
 
-    // Nav focus: the band shows whatever the selection is, like a docked nav.
+    // The band hides on a user move onto a session card, and shows again on a user move
+    // onto a host card, whatever the focus.
     h.sw.set_selected(session);
+    h.sw.note_user_move();
     h.sw.sync_view_focus(false);
+    h.sw.set_selected(session);
     assert!(
-        !h.sw.band_unpainted(),
-        "a session card on the nav's focus shows the band"
+        h.sw.band_unpainted(),
+        "a user move onto a session card hides the band"
     );
+    h.sw.set_selected(host);
+    h.sw.note_user_move();
     h.sw.set_selected(host);
     assert!(
         !h.sw.band_unpainted(),
-        "a host or machine card shows the band"
+        "a user move onto a host card shows the band"
     );
 
     // The move into the terminal view from a session card hides the band, and the box
     // shrinks with it; a host card keeps it, exactly as a docked nav.
     h.sw.set_selected(session);
+    h.sw.note_user_move();
     h.sw.sync_view_focus(true);
     assert!(
         h.sw.band_unpainted(),
         "the move into the terminal view from a session hides the band"
     );
     let compact = h.sw.nav_content_rows();
-    h.sw.sync_view_focus(false);
+    h.sw.set_selected(host);
+    h.sw.note_user_move();
+    h.sw.set_selected(host);
     assert!(
         !h.sw.band_unpainted(),
-        "the return to the nav shows the band again"
+        "a user move onto a host card shows the band again"
     );
     assert!(
         h.sw.nav_content_rows() > compact,
@@ -8607,8 +8615,15 @@ async fn moving_into_the_terminal_view_from_a_session_card_hides_the_host_band()
     h.sw.sync_view_focus(false);
     h.draw();
     assert!(
+        !h.nav_cards_text().contains("db-2"),
+        "the session still holds the selection, so the band stays hidden"
+    );
+    h.key(KeyCode::Right).await;
+    h.key(KeyCode::Right).await; // the selection moves onto a host card
+    h.draw();
+    assert!(
         h.nav_cards_text().contains("db-2"),
-        "the move back into the nav shows the band again"
+        "a user move onto a host card shows the band again"
     );
 }
 
@@ -8655,17 +8670,21 @@ async fn moving_into_the_terminal_view_from_a_host_card_keeps_the_host_band() {
 }
 
 #[tokio::test]
-async fn the_decision_holds_while_the_terminal_view_keeps_the_focus() {
-    // Decided once, on the move: a later sync with the terminal view still focused does
-    // not re-decide, whatever the selection is by then.
+async fn the_band_follows_a_user_move_while_the_terminal_view_keeps_the_focus() {
+    // The band is decided by the user's moves, not by the focus: a move onto a session
+    // card hides it while the terminal view keeps the focus, and a move onto a host
+    // card shows it again.
     let mut h = Harness::new(scan_with_a_host_band());
     h.key(KeyCode::Right).await;
     h.key(KeyCode::Right).await; // a host card
     h.sw.sync_view_focus(true);
-    h.key(KeyCode::Left).await; // back onto a session card, the band still shown
+    h.key(KeyCode::Left).await; // back onto a session card
     h.sw.sync_view_focus(true);
     h.draw();
-    assert!(h.nav_cards_text().contains("db-2"), "the band stays shown");
+    assert!(!h.nav_cards_text().contains("db-2"), "the band is hidden");
+    h.key(KeyCode::Right).await; // onto a host card again
+    h.draw();
+    assert!(h.nav_cards_text().contains("db-2"), "the band shows again");
 }
 
 #[tokio::test]
@@ -8714,7 +8733,7 @@ async fn a_selected_host_card_is_painted_while_the_band_is_hidden() {
     let nav = h.nav_cards_text();
     assert!(
         !nav.contains("db-2"),
-        "the focus decision holds:
+        "the band follows the selection:
 {nav}"
     );
 }
@@ -8742,6 +8761,50 @@ async fn a_hidden_host_band_reserves_no_rows() {
         !nav.contains("db-2") && !nav.contains("db-3"),
         "no host cards paint:
 {nav}"
+    );
+}
+
+#[tokio::test]
+async fn a_user_move_onto_a_session_card_hides_the_band_while_the_nav_keeps_the_focus() {
+    // The reported scenario: a user navigating the nav descends onto a session card
+    // (an arrow step here, Ctrl+↓ covered below), and the band hides immediately, with
+    // no terminal transition and no armed prefix. Later frames with the nav still
+    // focused keep it hidden.
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.key(KeyCode::Down).await; // onto the next session card
+    h.draw();
+    let nav = h.nav_cards_text();
+    assert!(
+        !nav.contains("db-2") && !nav.contains("db-3"),
+        "a user move onto a session card hides the band:\n{nav}"
+    );
+    h.sw.sync_view_focus(false);
+    h.draw();
+    assert!(
+        !h.nav_cards_text().contains("db-2"),
+        "a later nav-focused frame keeps the band hidden"
+    );
+    // The rows stay whole: the band's cards keep their numbers, so the keys and the
+    // jumps reach them either way.
+    let number = number_of(&h.sw, "db-2").expect("the hidden card keeps its number");
+    assert!(number > 0);
+}
+
+#[tokio::test]
+async fn descending_onto_a_session_card_hides_the_band() {
+    // Ctrl+↑ then Ctrl+↓ walk down a level onto a session card, and the band hides
+    // with it.
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.ctrl(KeyCode::Up); // session → its host's title
+    h.ctrl(KeyCode::Down); // host → its first session card
+    h.draw();
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Session { .. })),
+        "the descend lands on a session card"
+    );
+    assert!(
+        !h.nav_cards_text().contains("db-2"),
+        "the band hides on the move onto a session card"
     );
 }
 

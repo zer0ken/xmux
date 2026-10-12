@@ -1026,8 +1026,8 @@ impl Switcher {
     /// The floating nav: the terminal owns the whole area and the nav renders as a
     /// rounded box over it, with the prefix hint on its top border. Its cards render
     /// exactly as a right nav's, so the box follows the same band rule as any docked
-    /// nav: the band shows on the nav's focus and hides on the move into the terminal
-    /// view from a session card, and the box wraps what the paint draws.
+    /// nav: the band hides while a user move onto a session card or the move into the
+    /// terminal view from one hid it, and the box wraps what the paint draws.
     #[allow(clippy::too_many_arguments)] // mirrors the main render's surface, all needed
     fn render_floating(
         &self,

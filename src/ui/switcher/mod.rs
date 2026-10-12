@@ -536,8 +536,13 @@ pub struct Switcher {
     /// every host on the list has answered. The numbers are not fixed while it does.
     numbers_held: bool,
     terminal_view: bool,
-    /// Whether host cards are omitted after leaving nav from a session card.
+    /// Whether host cards are omitted: a user move onto a session card or the move
+    /// into the terminal view from one hides the band, and a user move onto a host
+    /// card shows it again.
     host_band_hidden: bool,
+    /// Whether a user move was asked and has not landed its selection yet, so the
+    /// landing decides the band hide from the card it lands on.
+    moved_by_user: bool,
     /// Whether the prefix is armed. An armed prefix paints the hidden host band, so the
     /// cards a chord can reach are on screen while it is typed.
     prefix_armed: bool,
@@ -619,6 +624,7 @@ impl Switcher {
             numbers_held: false,
             terminal_view: false,
             host_band_hidden: false,
+            moved_by_user: false,
             prefix_armed: false,
             rescan_collapse: None,
             create_host: None,
@@ -749,8 +755,8 @@ impl Switcher {
     }
 
     /// Tells the nav which view holds the focus, the one behind a modal included. The
-    /// move from the nav into the terminal view decides whether the host band is hidden
-    /// (see `host_band_hidden`); the move back into the nav shows it again.
+    /// terminal view executes the selection on the move in; the band's visibility is
+    /// not a focus question, so this move never changes it.
     pub fn sync_view_focus(&mut self, terminal: bool) {
         // The nav's hover follows the pointer whether or not the nav holds the focus, so
         // it survives a terminal focus. The link hover belongs to the terminal view, so
@@ -763,8 +769,6 @@ impl Switcher {
         let entered = terminal && !self.terminal_view;
         if entered {
             self.host_band_hidden = matches!(self.current_ref(), Some(RowRef::Session { .. }));
-        } else if !terminal {
-            self.host_band_hidden = false;
         }
         self.terminal_view = terminal;
         // Moving the focus into the terminal view executes the selection, which is what
@@ -811,13 +815,15 @@ impl Switcher {
         self.resume_kick.take()
     }
 
-    /// Whether the paint leaves the host band out: hidden by the move into the terminal
-    /// view from a session card (see `host_band_hidden`). An armed prefix paints the band
-    /// without changing that decision, so it hides again when the chord ends, and a
-    /// selection on a host card paints the band, since a selected card is always painted.
-    /// The rule is position-independent: the floating nav's box follows the same focus
-    /// rule as any docked nav, so its band shows on the nav's focus and hides on the move
-    /// into the terminal view exactly as a side nav's does.
+    /// Whether the paint leaves the host band out: a user move onto a session card or
+    /// the move into the terminal view from one hid it, and no user move onto a host
+    /// card has shown it again. An armed prefix paints the band without changing that
+    /// decision, so it hides again when the chord ends, and the selection's current
+    /// card is always painted, so a selection on a host card shows the band.
+    /// The hide is a paint question only: the rows stay whole, so the keys that walk
+    /// the list and the number jumps reach the band's cards either way. The rule is
+    /// position-independent, so the floating nav's box follows the same rule as any
+    /// docked nav.
     fn band_unpainted(&self) -> bool {
         self.host_band_hidden
             && !self.prefix_armed
@@ -1121,6 +1127,7 @@ impl Switcher {
 
     /// Leaves the selection naming nothing, at row `at`, remembering `lost`.
     fn vacate(&mut self, at: usize, lost: Option<Node>) {
+        std::mem::take(&mut self.moved_by_user);
         let was = self.selected_node();
         self.selected = at.min(self.rows.len().saturating_sub(1));
         self.part = Part::Card;
@@ -1397,8 +1404,10 @@ impl Switcher {
 
     /// Puts the selection on `target`, coming from the node `before` named. A
     /// rebuild passes the node the selection named on the rows it replaced, so a list
-    /// that changed around an unchanged node keeps that node's selected link.
+    /// that changed around an unchanged node keeps that node's selected link. A move
+    /// the user asked for decides the band hide from the card the selection lands on.
     fn place(&mut self, before: Option<Node>, target: Target) {
+        let moved_by_user = std::mem::take(&mut self.moved_by_user);
         self.vacant = false;
         self.lost = None;
         self.vacant_place = None;
@@ -1431,6 +1440,9 @@ impl Switcher {
         if before != after {
             self.link_selection = 0;
             self.link_selection_node = None;
+        }
+        if moved_by_user {
+            self.host_band_hidden = matches!(self.current_ref(), Some(RowRef::Session { .. }));
         }
         self.on_focus_changed();
     }
@@ -1508,11 +1520,13 @@ impl Switcher {
 
     /// Records a selection move the user or a caller of xmux made, as opposed to one a
     /// rebuild made. Such a move ends a full re-scan's collapse, so the scanning host
-    /// card it lands on shows its own screen.
+    /// card it lands on shows its own screen, and decides the band hide from the card
+    /// the selection lands on.
     fn note_user_move(&mut self) {
         self.interest = Interest::Selected;
         self.rescan_collapse = None;
         self.create_host = None;
+        self.moved_by_user = true;
     }
 
     fn move_selection(&mut self, delta: isize) {
