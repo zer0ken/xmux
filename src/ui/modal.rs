@@ -1388,6 +1388,27 @@ pub(crate) fn popup_block(
     block
 }
 
+/// Blank the orphaned half of a double-width glyph whose right half an overlay's left
+/// edge covers. ratatui stores a wide glyph as `[glyph][space]`: the lead at
+/// `rect.x - 1` keeps painting into the cell the overlay drew at `rect.x`, hiding the
+/// overlay's edge there. Clearing that one cell, and only when it really holds a wide
+/// glyph, removes the ghost so the overlay's border reads cleanly. The right edge needs
+/// no fixup: a glyph whose lead an overlay covers leaves only its already-blank
+/// continuation outside.
+pub(crate) fn blank_bisected_wide_glyph(frame: &mut Frame, rect: Rect) {
+    if rect.x == 0 || rect.height == 0 {
+        return;
+    }
+    let x = rect.x - 1;
+    let buf = frame.buffer_mut();
+    for y in rect.y..rect.bottom() {
+        let cell = &mut buf[(x, y)];
+        if cell.symbol().width() > 1 {
+            cell.set_symbol(" ");
+        }
+    }
+}
+
 /// Renders an opaque bordered popup at `rect` (titled, content `lines`), in tmux's
 /// edge style. Two things make it tmux-consistent:
 ///
@@ -1424,14 +1445,7 @@ pub(crate) fn render_popup(
     }
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
     if rect.x > area.x {
-        let x = rect.x - 1;
-        let y_end = (rect.y + rect.height).min(area.y + area.height);
-        let buf = frame.buffer_mut();
-        for y in rect.y..y_end {
-            if buf[(x, y)].symbol().width() > 1 {
-                buf[(x, y)].set_symbol(" ");
-            }
-        }
+        blank_bisected_wide_glyph(frame, rect);
     }
 }
 

@@ -197,6 +197,9 @@ pub(crate) fn render_toast(
             }
         }
     }
+    // A wide glyph straddling the toast's left edge would keep painting its lead over
+    // the border; blank the orphan half so the edge reads cleanly.
+    crate::ui::modal::blank_bisected_wide_glyph(frame, rect);
 }
 
 /// How long ago `at` was, in the largest whole unit: `12s`, `4m`, `2h`, `3d`.
@@ -492,6 +495,37 @@ mod tests {
         assert!(footer.contains("C-g m history"), "{footer:?}");
         let filled = (1..29).filter(|&x| buf[(x, 3)].symbol() == "━").count();
         assert!(filled > 0, "an error toast draws its countdown too");
+    }
+
+    #[test]
+    fn a_toast_blanks_a_wide_glyph_bisected_by_its_left_border() {
+        let n = notify_with(&["gpu-02"]);
+        let rect = Rect::new(5, 1, 20, 4);
+        let mut term = Terminal::new(TestBackend::new(30, 6)).unwrap();
+        term.draw(|f| {
+            f.buffer_mut()[(4u16, 2u16)].set_symbol("한"); // wide; right half under the border at x=5
+            f.buffer_mut()[(4u16, 3u16)].set_symbol("Y"); // half-width at the same edge column
+            render_toast(
+                f,
+                rect,
+                &n.toasts[0],
+                Some(n.toasts[0].shown),
+                "C-g",
+                &Palette::default(),
+            )
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        assert_eq!(
+            buf[(4u16, 2u16)].symbol(),
+            " ",
+            "wide glyph bisected by the toast's left border is blanked"
+        );
+        assert_eq!(
+            buf[(4u16, 3u16)].symbol(),
+            "Y",
+            "a half-width char at the edge stays flush"
+        );
     }
 
     #[test]
