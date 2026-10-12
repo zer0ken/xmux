@@ -472,15 +472,26 @@ impl Attachment {
         }
         self.size = (cols, rows);
     }
-    /// Tear down: kill the child, drop the control sender so the control thread
-    /// drops the master on ITS thread and exits, then REAP the child on a detached
-    /// thread (`wait`) so it does not linger as a zombie / leaked handle. The wait
-    /// runs off the event loop (it can block on a ConPTY close pre-24H2) and is
+    /// Tear down: kill the child's whole process group, drop the control sender so the
+    /// control thread drops the master on ITS thread and exits, then REAP the child on a
+    /// detached thread (`wait`) so it does not linger as a zombie / leaked handle. The
+    /// wait runs off the event loop (it can block on a ConPTY close pre-24H2) and is
     /// bounded because the child was just killed. The pump exits on master EOF.
+    ///
+    /// The group kill is what reaches the child's DESCENDANTS: the attach child is a
+    /// session leader (the PTY layer setsids it), so its pid is its group, and a
+    /// descendant it forked (an askpass helper, a wrapper's own children) would
+    /// otherwise outlive the leader and keep its server-side client standing.
     pub fn teardown(self) {
         let mut child = self.child;
         let auth = self._auth;
         let _ = child.kill();
+        #[cfg(unix)]
+        if let Some(pid) = child.process_id() {
+            // The group kill reaches the descendants; the leader is in the group too, so
+            // a failed child kill is covered here as well.
+            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+        }
         drop(self.control_tx);
         std::thread::spawn(move || {
             let _ = child.wait();
@@ -1465,5 +1476,43 @@ sleep 2
             &mut Vec::new(),
             &events,
         ));
+    }
+
+    /// The attach child's descendants die with it: a descendant that outlived the leader
+    /// kept its server-side client standing, and the next run's client hit it in a size
+    /// negotiation. The child is a session leader (the PTY layer setsids it), so the
+    /// teardown's group kill is what reaches its descendants.
+    #[cfg(unix)]
+    #[test]
+    fn teardown_kills_the_childs_descendants() {
+        let marker = std::env::temp_dir().join(format!("xmux-descendant-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let script = format!("sleep 30 & echo $! > {}; wait", marker.to_string_lossy());
+        let command =
+            crate::transport::CommandSpec::new("sh".to_string(), vec!["-c".into(), script]);
+        let (events, _received) = tokio::sync::mpsc::unbounded_channel();
+        let att = spawn_attachment(&command, 80, 24, 1, events, &[]).expect("spawn");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let descendant = loop {
+            match std::fs::read_to_string(&marker) {
+                Ok(text) => break text.trim().parse::<i32>().expect("the descendant's pid"),
+                Err(_) if std::time::Instant::now() >= deadline => {
+                    panic!("the attach child never started its descendant")
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            }
+        };
+        att.teardown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::path::Path::new(format!("/proc/{descendant}").as_str()).exists()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = std::fs::remove_file(&marker);
+        assert!(
+            !std::path::Path::new(format!("/proc/{descendant}").as_str()).exists(),
+            "the attach child's descendant died with the child"
+        );
     }
 }

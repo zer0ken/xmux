@@ -1696,9 +1696,42 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // is persisted through the same effect stream before the runtime tears I/O down.
     let effects = update(&mut rt.model, Msg::Shutdown);
     let _ = rt.execute_effects(effects);
+    shutdown_detach(&rt.registry, &rt.hosts).await;
     rt.registry.teardown_all();
     rt.mgr.teardown_all();
     0
+}
+
+/// How long the shutdown's mux-side detach waits: one deadline shared by every host, so
+/// a silent machine cannot delay the exit past it.
+const SHUTDOWN_DETACH_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Asks every live display client's mux server to detach xmux's own client, before the
+/// teardown kills the children. The server drop is what keeps a client from holding its
+/// session after the exit: a child whose process outlives the kill (a wrapper the group
+/// kill could not reach, a connection whose far side lingers) then stands detached, and
+/// the next run's client cannot hit it in a size negotiation. One command per host, over
+/// the host's transport, bounded by [`SHUTDOWN_DETACH_BUDGET`].
+async fn shutdown_detach(registry: &AttachRegistry, hosts: &crate::model::Hosts) {
+    let deadline = tokio::time::Instant::now() + SHUTDOWN_DETACH_BUDGET;
+    let specs: Vec<crate::transport::CommandSpec> = registry
+        .addresses()
+        .iter()
+        .filter_map(|addr| {
+            let host = hosts.get(addr.split('/').next().unwrap_or(addr))?;
+            let tty = host.display_tty.0.as_deref().filter(|t| !t.is_empty())?;
+            let argv = host.mux.detach_client_plan(tty)?;
+            Some(host.transport.exec_argv(false, &argv))
+        })
+        .collect();
+    if specs.is_empty() {
+        return;
+    }
+    let runs = specs
+        .iter()
+        .map(|spec| crate::model::host_def::ExecRunner.run_spec_output(spec));
+    let _ =
+        crate::model::host_def::within_deadline(deadline, futures::future::join_all(runs)).await;
 }
 
 /// The window title xmux writes when the session on screen has none after another did.

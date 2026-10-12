@@ -63,6 +63,13 @@ pub fn attach(bin: &str, name: &str) -> Vec<String> {
     argv(&[bin, "attach", "-t", name])
 }
 
+/// Detaches one client from its session's server, named by the client's own tty. The
+/// teardown asks the server to drop xmux's client before killing the child, so a client
+/// whose process outlives the kill never keeps holding the session.
+pub fn detach_client(bin: &str, tty: &str) -> Vec<String> {
+    argv(&[bin, "detach-client", "-t", tty])
+}
+
 /// Creates-or-attaches a DETACHED session and prints its assigned name. `-A`
 /// makes it idempotent, `-d` keeps it detached, and `-P -F` prints the assigned
 /// name even when the mux auto-names (e.g. `"0"`). A non-empty name is requested

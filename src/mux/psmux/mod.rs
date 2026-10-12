@@ -119,6 +119,13 @@ impl Mux for Psmux {
         ]
     }
 
+    /// psmux's client protocol is tmux's: the same `detach-client -t <tty>` drops one
+    /// client from its session's server, so the teardown asks the server to release
+    /// xmux's client before the child is killed.
+    fn detach_client_plan(&self, tty: &str) -> Option<Vec<String>> {
+        Some(mux::detach_client(&self.bin, tty))
+    }
+
     // No `switch_in_place` override: psmux can name no client from outside its own
     // session, so every session change reattaches (the trait default is no plan).
     // `switch-client` accepts a client selector and honors none of it: a `-c <tty>`
@@ -286,6 +293,29 @@ mod tests {
         assert!(
             got.is_ok(),
             "local psmux swallows the error into the registry merge, never errors: {got:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod detach_tests {
+    use super::*;
+
+    /// psmux's client protocol is tmux's, so the teardown's detach names one client the
+    /// same way tmux's does.
+    #[test]
+    fn the_teardown_drops_one_client_by_its_tty() {
+        let psmux = Psmux {
+            bin: "psmux".into(),
+        };
+        assert_eq!(
+            psmux.detach_client_plan("/dev/pts/3"),
+            Some(vec![
+                "psmux".to_string(),
+                "detach-client".to_string(),
+                "-t".to_string(),
+                "/dev/pts/3".to_string(),
+            ])
         );
     }
 }
