@@ -979,7 +979,7 @@ impl Runtime {
     /// The share of the drop-hold freeze still ahead, as 0 to 1000, while a dropped drag
     /// holds the floating nav in place. `None` when the box is free to relocate. The
     /// floating box's bottom border draws it the way a toast draws its remaining life.
-    fn floating_freeze_fraction(&self) -> Option<u16> {
+    pub(super) fn floating_freeze_fraction(&self) -> Option<u16> {
         let elapsed = self.floating_frozen_at?.elapsed();
         (elapsed < Self::FLOATING_FREEZE).then(|| {
             let frac = 1.0 - elapsed.as_secs_f32() / Self::FLOATING_FREEZE.as_secs_f32();
@@ -2460,6 +2460,9 @@ impl Runtime {
                 );
             }
         }
+        let scans = |s: &crate::state::State| s.scanning.len() + s.machine_scanning.len();
+        let scanning = scans(&self.model.state);
+        let spinner_moved = sp != self.model.state.chrome.spinner;
         let effects = update(
             &mut self.model,
             Msg::Tick {
@@ -2468,9 +2471,11 @@ impl Runtime {
             },
         );
         debug_assert!(effects.is_empty());
-        // A toast that left, one still counting down its remaining time, or the open
-        // history's ages moving is a change on screen the tick is the only wake for.
-        if self.model.state.notify.repaint {
+        // A scan that timed out, a spinner that started or stopped, a toast that left,
+        // one still counting down its remaining time, or the open history's ages moving
+        // is a change on screen the tick is the only wake for.
+        if self.model.state.notify.repaint || spinner_moved || scans(&self.model.state) != scanning
+        {
             self.dirty = true;
         }
     }
