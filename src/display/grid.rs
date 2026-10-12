@@ -324,9 +324,9 @@ impl Grid {
     /// blank. A wide char's right half counts as taken, so a box edge never lands on
     /// half a glyph.
     pub fn cell_blank(&self, row: u16, col: u16) -> bool {
-        self.visible().cell(row, col).is_none_or(|c| {
-            c.contents().chars().all(char::is_whitespace) && !c.is_wide_continuation()
-        })
+        self.visible()
+            .cell(row, col)
+            .is_none_or(|c| c.chars().all(char::is_whitespace) && !c.is_wide_continuation())
     }
 
     /// A cheap, stable hash of the visible cell contents. Changes if and only if the
@@ -335,7 +335,12 @@ impl Grid {
     /// by a `display_grid_changed` event indicates the mux switch had no visible effect.
     pub fn fingerprint(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.parser.screen().contents().hash(&mut h);
+        let screen = self.parser.screen().view();
+        let (rows, cols) = screen.size();
+        for cell in (0..rows).flat_map(|r| (0..cols).filter_map(move |c| screen.cell(r, c))) {
+            cell.chars().for_each(|ch| ch.hash(&mut h));
+            h.write_u8(0);
+        }
         h.finish()
     }
 
@@ -350,6 +355,7 @@ impl Grid {
         let cols = area.width.min(grid_cols);
         let kitty = crate::display::image::Caps::current().kitty;
         let styled = crate::display::outer::outer().styled_underlines();
+        let mut text = String::new();
         for r in 0..rows {
             let mut left = None;
             for c in 0..cols {
@@ -376,7 +382,8 @@ impl Grid {
                     // of the next line; blank it so the pane stays aligned.
                     cell.set_symbol(" ");
                 } else if vcell.has_contents() {
-                    let text = vcell.contents();
+                    text.clear();
+                    text.extend(vcell.chars());
                     let link = vcell.hyperlink().filter(|uri| uri.len() <= LINK_MAX);
                     let underline = styled.then(|| underline_style(vcell.underline())).flatten();
                     let vs16 = vcell.is_wide() && text.contains('\u{fe0f}');

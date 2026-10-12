@@ -1631,10 +1631,11 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         // sustained output flood would starve stdin, the control socket, ops,
         // enumeration, and the tick. Unbiased select gives every branch a fair share.
         //
-        // Every arm EXCEPT the bare frame timer represents a real state change, so it
-        // marks the UI dirty (drawn on the next gated pass); the frame timer only wakes
-        // the loop to flush an already-pending dirty draw, so it must NOT set dirty.
-        let mut from_frame = false;
+        // Every arm EXCEPT the two timers represents a real state change, so it marks
+        // the UI dirty (drawn on the next gated pass). The frame timer wakes the loop to
+        // flush an already-pending dirty draw, and the poll tick marks dirty only what
+        // its polling changed, so an idle screen is not redrawn on their cadence.
+        let mut timer = false;
         tokio::select! {
             Some(ev) = io.host_rx.recv() => rt.on_host_event(ev, &mut io.host_rx),
             Some(ev) = io.pty_rx.recv() => rt.on_pty_event(ev, &mut io.pty_rx),
@@ -1650,9 +1651,12 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 }
             }
             Some(result) = io.op_rx.recv() => rt.on_op_result(result),
-            _ = tick.tick() => rt.on_tick(&mut term),
+            _ = tick.tick() => {
+                timer = true;
+                rt.on_tick(&mut term);
+            }
             _ = frame.tick() => {
-                from_frame = true;
+                timer = true;
                 // Cheap live config reload: on the redraw cadence, stat the config
                 // file and re-apply the `[ui]` presentation settings when it changed.
                 // Marked dirty so the re-applied styles actually repaint this frame.
@@ -1664,6 +1668,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                     || rt.model.state.scanning_any()
                     || !rt.model.state.chrome.spinner.is_empty()
                     || rt.display_sync_held
+                    || rt.floating_freeze_fraction().is_some()
                     || rt
                         .model
                         .state
@@ -1675,8 +1680,8 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 }
             }
         }
-        // Any real event (not the bare frame wake) means the UI may have changed.
-        if !from_frame {
+        // Any real event (not a timer wake) means the UI may have changed.
+        if !timer {
             rt.dirty = true;
         }
         let next_period = frame_interval(rt.model.max_fps);

@@ -18,7 +18,9 @@ name = "xmux"
 path = "src/lib.rs"
 
 [profile.release]
-opt-level = "z"
+# "s" rather than "z": the draw loop runs about a third faster for a binary under a
+# tenth larger.
+opt-level = "s"
 lto = true
 codegen-units = 1
 # Unwind (the default), NOT abort: the TUI relies on RAII Drop (TerminalGuard,

@@ -360,6 +360,23 @@ pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> 
         .saturating_sub(w)
         .max(area.x);
     let x_last = right.saturating_sub(w);
+    // Each cell of the wall-margin band is read once: a row's entry `i` counts the
+    // glyphs in the band's first `i` columns, so a window's glyphs on a row are the
+    // difference of two entries.
+    let band = usize::from(right - x_lo) + 1;
+    let blank = &blank;
+    let prefix: Vec<u16> = (area.y..area.bottom())
+        .flat_map(|cy| {
+            std::iter::once(0).chain((x_lo..right).scan(0u16, move |glyphs, cx| {
+                *glyphs += u16::from(!blank(cx, cy));
+                Some(*glyphs)
+            }))
+        })
+        .collect();
+    let row_glyphs = |cy: u16, x: u16| {
+        let row = usize::from(cy - area.y) * band;
+        prefix[row + usize::from(x + w - x_lo)] - prefix[row + usize::from(x - x_lo)]
+    };
     // One pass over the wall-margin spots, rows before columns. The best spot's window
     // wins the most completely empty rows, then the most empty cells; the scan's
     // top-down, right-to-left order breaks an exact tie by the topmost, then the
@@ -371,12 +388,7 @@ pub fn floating_nav_box(area: Rect, w: u16, h: u16, blank: impl Fn(u16, u16) -> 
             let mut glyphs = 0u16;
             let mut empty_rows = 0u16;
             for cy in y..y + h {
-                let mut row_glyphs = 0u16;
-                for cx in x..x + w {
-                    if !blank(cx, cy) {
-                        row_glyphs += 1;
-                    }
-                }
+                let row_glyphs = row_glyphs(cy, x);
                 glyphs += row_glyphs;
                 if row_glyphs == 0 {
                     empty_rows += 1;
