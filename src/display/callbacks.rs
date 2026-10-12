@@ -1,14 +1,15 @@
-//! The terminal behaviour a session's client expects that the vt100 cell model does
-//! not keep: the answers to its terminal queries, the cursor shape it sets, the screen
-//! it last finished while it holds a synchronized update open, and the bells,
+//! The terminal behaviour a session's client expects that the emulator's cell model
+//! does not keep: the answers to its terminal queries, the cursor shape it sets, the
+//! screen it last finished while it holds a synchronized update open, and the bells,
 //! notifications, and window title it sends, which the grid keeps for the loop.
 //!
-//! The vt100 parser hands every sequence it does not model to these callbacks, at its
-//! place in the byte stream and whole however the reads split it, so each query the
-//! client sent is answered exactly once. A client that waits for an answer the grid
+//! The emulator hands every control sequence to these hooks, at its place in the byte
+//! stream and whole however the reads split it, so each query the client sent is
+//! answered exactly once. A client that waits for an answer the grid
 //! never gives waits until its own timeout, and a client that reads the answer to
 //! learn the terminal's features falls back to guessing from `TERM`.
 
+use crate::display::emulator::{Snapshot, View};
 use crate::display::outer::OuterTerminal;
 
 /// The grid's primary device attributes: a VT220 (62) with ANSI colour (22). The grid
@@ -41,7 +42,7 @@ pub struct GridCallbacks {
     cursor_shape: u8,
     /// While mode 2026 is set: the screen as it stood when the client began the
     /// update, and when that was.
-    sync: Option<(vt100::Screen, std::time::Instant)>,
+    sync: Option<(Snapshot, std::time::Instant)>,
 }
 
 impl GridCallbacks {
@@ -69,11 +70,11 @@ impl GridCallbacks {
 
     /// The screen a synchronized update holds on view, until the client ends the
     /// update or [`SYNC_HOLD`] passes.
-    pub fn held_screen(&self) -> Option<&vt100::Screen> {
+    pub fn held_screen(&self) -> Option<View<'_>> {
         self.sync
             .as_ref()
             .filter(|(_, since)| since.elapsed() < SYNC_HOLD)
-            .map(|(screen, _)| screen)
+            .map(|(screen, _)| screen.view())
     }
 
     /// Moves the open update's start `by` into the past.
@@ -94,14 +95,14 @@ impl GridCallbacks {
     }
 
     /// Mode 2026 set (`h`) or reset (`l`) among a DECSET or DECRST's modes.
-    fn set_sync(&mut self, screen: &vt100::Screen, params: &[&[u16]], set: bool) {
+    fn set_sync(&mut self, screen: View<'_>, params: &[&[u16]], set: bool) {
         if !params.iter().any(|p| p.first() == Some(&2026)) {
             return;
         }
         if !set {
             self.sync = None;
         } else if self.held_screen().is_none() {
-            self.sync = Some((screen.clone(), std::time::Instant::now()));
+            self.sync = Some((screen.snapshot(), std::time::Instant::now()));
         }
     }
 
@@ -121,18 +122,19 @@ impl GridCallbacks {
 
     /// The `DECRPM` value for a DEC private mode: 1 set, 2 reset, 0 a mode the grid
     /// does not keep.
-    fn private_mode(&self, screen: &vt100::Screen, mode: u16) -> u8 {
-        use vt100::{MouseProtocolEncoding as Enc, MouseProtocolMode as Mouse};
+    fn private_mode(&self, screen: View<'_>, mode: u16) -> u8 {
+        use crate::display::modes::MouseMode as Mouse;
+        let modes = &self.input_modes;
         let set = match mode {
             1 => screen.application_cursor(),
             25 => !screen.hide_cursor(),
-            47 | 1049 => screen.alternate_screen(),
-            9 => screen.mouse_protocol_mode() == Mouse::Press,
-            1000 => screen.mouse_protocol_mode() == Mouse::PressRelease,
-            1002 => screen.mouse_protocol_mode() == Mouse::ButtonMotion,
-            1003 => screen.mouse_protocol_mode() == Mouse::AnyMotion,
-            1005 => screen.mouse_protocol_encoding() == Enc::Utf8,
-            1006 => screen.mouse_protocol_encoding() == Enc::Sgr,
+            47 | 1049 => modes.alternate_screen,
+            9 => modes.mouse == Mouse::Press,
+            1000 => modes.mouse == Mouse::PressRelease,
+            1002 => modes.mouse == Mouse::ButtonMotion,
+            1003 => modes.mouse == Mouse::AnyMotion,
+            1005 => modes.mouse_utf8,
+            1006 => modes.mouse_sgr,
             1004 => self.input_modes.focus_events,
             2004 => self.input_modes.bracketed_paste,
             2026 => self.in_sync(),
@@ -145,7 +147,7 @@ impl GridCallbacks {
         }
     }
 
-    fn device_status(&mut self, screen: &vt100::Screen, private: bool, op: u16) {
+    fn device_status(&mut self, screen: View<'_>, private: bool, op: u16) {
         let (row, col) = screen.cursor_position();
         match (private, op) {
             (false, 5) => self.reply(b"\x1b[0n"),
@@ -163,7 +165,7 @@ impl GridCallbacks {
     /// `CSI Ps t` window reports the grid can make: the text area in pixels (14), the
     /// cell in pixels (16), and the text area in cells (18). Pixels come from the
     /// terminal's own cell size, so without it the pixel reports stay unanswered.
-    fn window_report(&mut self, screen: &vt100::Screen, op: u16) {
+    fn window_report(&mut self, screen: View<'_>, op: u16) {
         let (rows, cols) = screen.size();
         let cell = crate::display::outer::outer().cell_px;
         match (op, cell) {
@@ -219,10 +221,10 @@ fn param(params: &[&[u16]], n: usize) -> u16 {
     params.get(n).and_then(|p| p.first()).copied().unwrap_or(0)
 }
 
-impl vt100::Callbacks for GridCallbacks {
-    fn unhandled_csi(
+impl crate::display::emulator::Hooks for GridCallbacks {
+    fn csi(
         &mut self,
-        screen: &mut vt100::Screen,
+        screen: View<'_>,
         i1: Option<u8>,
         i2: Option<u8>,
         params: &[&[u16]],
@@ -280,17 +282,13 @@ impl vt100::Callbacks for GridCallbacks {
         }
     }
 
-    fn unhandled_osc(&mut self, screen: &mut vt100::Screen, params: &[&[u8]]) {
+    fn osc(&mut self, _: View<'_>, params: &[&[u8]]) {
         self.colour_query(params);
-        vt100::Callbacks::unhandled_osc(&mut self.sink, screen, params);
+        self.sink.osc(params);
     }
 
-    fn audible_bell(&mut self, screen: &mut vt100::Screen) {
-        vt100::Callbacks::audible_bell(&mut self.sink, screen);
-    }
-
-    fn set_window_title(&mut self, screen: &mut vt100::Screen, title: &[u8]) {
-        vt100::Callbacks::set_window_title(&mut self.sink, screen, title);
+    fn bell(&mut self, _: View<'_>) {
+        self.sink.bell();
     }
 }
 

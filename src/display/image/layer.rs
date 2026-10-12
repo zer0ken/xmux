@@ -13,6 +13,7 @@ use std::sync::Arc;
 use super::kitty_grid::KittyStore;
 use super::sixel::{self, Bitmap};
 use super::Caps;
+use crate::display::emulator::{Cell, Color, Hooks, Parser, View};
 
 /// The first private-use character a marker uses.
 const MARKER_BASE: u32 = 0xF0000;
@@ -45,16 +46,17 @@ pub struct Piece {
     pub col: u8,
 }
 
-/// The piece a vt100 cell holds, if it is a marker cell.
-pub fn marker(cell: &vt100::Cell) -> Option<Piece> {
+/// The piece a grid cell holds, if it is a marker cell.
+pub fn marker(cell: Cell<'_>) -> Option<Piece> {
     let (r, g, b) = MARKER_BG;
-    if cell.bgcolor() != vt100::Color::Rgb(r, g, b) {
+    if cell.bgcolor() != Color::Rgb(r, g, b) {
         return None;
     }
-    let vt100::Color::Rgb(i0, i1, i2) = cell.fgcolor() else {
+    let Color::Rgb(i0, i1, i2) = cell.fgcolor() else {
         return None;
     };
-    let mut chars = cell.contents().chars();
+    let text = cell.contents();
+    let mut chars = text.chars();
     let c = u32::from(chars.next()?);
     if chars.next().is_some() || !(MARKER_BASE..MARKER_BASE + 0x1_0000).contains(&c) {
         return None;
@@ -113,14 +115,14 @@ impl ImageLayer {
     }
 
     /// The piece a cell shows: a marker naming an image this grid holds.
-    pub fn piece(&self, cell: &vt100::Cell) -> Option<Piece> {
+    pub fn piece(&self, cell: Cell<'_>) -> Option<Piece> {
         marker(cell).filter(|p| self.images.contains_key(&p.id))
     }
 
     /// How the frame shows a cell of a kitty image; see [`KittyStore::cell`].
     pub fn kitty_cell(
         &self,
-        cell: &vt100::Cell,
+        cell: Cell<'_>,
         left: Option<super::kitty_grid::KittyCell>,
     ) -> Option<Option<super::kitty_grid::KittyCell>> {
         self.kitty.cell(cell, left)
@@ -128,7 +130,7 @@ impl ImageLayer {
 
     /// Every kitty image a cell of `screen` shows, by the id the outer terminal knows
     /// it under, with the cells its placement covers.
-    pub fn kitty_in_use(&self, screen: &vt100::Screen) -> Vec<(u32, super::kitty_grid::Placed)> {
+    pub fn kitty_in_use(&self, screen: View<'_>) -> Vec<(u32, super::kitty_grid::Placed)> {
         let (rows, cols) = screen.size();
         let mut ids = std::collections::BTreeSet::new();
         for r in 0..rows {
@@ -161,12 +163,7 @@ impl ImageLayer {
     /// the outer terminal can show and placing its image at the cursor where it ended.
     /// Whatever the outer terminal cannot show passes through untouched, and the parser
     /// discards it as it does any DCS or APC string.
-    pub fn feed<C: vt100::Callbacks + Replies>(
-        &mut self,
-        bytes: &[u8],
-        caps: Caps,
-        parser: &mut vt100::Parser<C>,
-    ) {
+    pub fn feed<C: Hooks + Replies>(&mut self, bytes: &[u8], caps: Caps, parser: &mut Parser<C>) {
         let sixel_px = caps.sixel_cell_px();
         if sixel_px.is_none() && !caps.kitty {
             parser.process(bytes);
@@ -298,12 +295,7 @@ impl ImageLayer {
 
     /// One complete APC string: a graphics command goes to the kitty store, anything
     /// else to the parser, which discards it.
-    fn apc<C: vt100::Callbacks + Replies>(
-        &mut self,
-        data: &[u8],
-        caps: Caps,
-        parser: &mut vt100::Parser<C>,
-    ) {
+    fn apc<C: Hooks + Replies>(&mut self, data: &[u8], caps: Caps, parser: &mut Parser<C>) {
         match data.split_first() {
             Some((b'G', body)) if data.len() < MAX_DATA => {
                 self.kitty.command(body, caps, parser);
@@ -321,12 +313,12 @@ impl ImageLayer {
     /// and moves the cursor as Windows Terminal does: the screen scrolls until the
     /// image's last sixel band fits, and the cursor ends on that band's top row, in
     /// the column it started in.
-    fn place<C: vt100::Callbacks>(
+    fn place<C: Hooks>(
         &mut self,
         params: &[u8],
         data: &[u8],
         (cell_h, cell_w): (u16, u16),
-        parser: &mut vt100::Parser<C>,
+        parser: &mut Parser<C>,
     ) {
         if data.len() >= MAX_DATA {
             return;
@@ -374,18 +366,18 @@ impl ImageLayer {
         parser.process(&out);
 
         self.images.insert(id, Arc::new(bmp));
-        self.retain_shown(parser.screen());
+        self.retain_shown(parser.screen().view());
     }
 
     /// Drops the images no cell of `screen` names any more.
-    fn retain_shown(&mut self, screen: &vt100::Screen) {
+    fn retain_shown(&mut self, screen: View<'_>) {
         let shown = marker_ids(screen);
         self.images.retain(|id, _| shown.contains(id));
     }
 }
 
 /// The ids every marker cell of `screen` names.
-pub(super) fn marker_ids(screen: &vt100::Screen) -> std::collections::HashSet<u32> {
+pub(super) fn marker_ids(screen: View<'_>) -> std::collections::HashSet<u32> {
     let (rows, cols) = screen.size();
     let mut shown = std::collections::HashSet::new();
     for r in 0..rows {
@@ -467,7 +459,7 @@ mod tests {
         s
     }
 
-    fn pieces(layer: &ImageLayer, parser: &vt100::Parser) -> Vec<(u16, u16, u8, u8)> {
+    fn pieces(layer: &ImageLayer, parser: &Parser<()>) -> Vec<(u16, u16, u8, u8)> {
         let (rows, cols) = parser.screen().size();
         let mut v = Vec::new();
         for r in 0..rows {
@@ -484,7 +476,7 @@ mod tests {
     /// around it stays, and the cursor ends on the last band's top row.
     #[test]
     fn a_sixel_becomes_marker_cells_at_the_cursor() {
-        let mut p = vt100::Parser::new(10, 40, 0);
+        let mut p = Parser::new(10, 40, ());
         let mut l = ImageLayer::default();
         let mut bytes = b"\x1b[31mhello\x1b[3;5H".to_vec();
         bytes.extend(sixel(25, 30));
@@ -503,14 +495,14 @@ mod tests {
         // The text attributes in force before the image still apply.
         let cell = p.screen().cell(3, 4).unwrap();
         assert_eq!(cell.contents(), "X");
-        assert_eq!(cell.fgcolor(), vt100::Color::Idx(1));
+        assert_eq!(cell.fgcolor(), Color::Idx(1));
     }
 
     /// Text written over part of an image removes those cells only; a clear removes
     /// the image, and the next placement drops it from the store.
     #[test]
     fn writes_and_clears_remove_image_cells() {
-        let mut p = vt100::Parser::new(10, 40, 0);
+        let mut p = Parser::new(10, 40, ());
         let mut l = ImageLayer::default();
         let mut bytes = b"\x1b[1;1H".to_vec();
         bytes.extend(sixel(30, 40));
@@ -529,7 +521,7 @@ mod tests {
     /// The marker cells scroll with the text.
     #[test]
     fn image_cells_scroll_with_the_text() {
-        let mut p = vt100::Parser::new(10, 40, 0);
+        let mut p = Parser::new(10, 40, ());
         let mut l = ImageLayer::default();
         let mut bytes = b"\x1b[5;1H".to_vec();
         bytes.extend(sixel(10, 20));
@@ -542,7 +534,7 @@ mod tests {
     /// band fits, as Windows Terminal does.
     #[test]
     fn an_image_at_the_bottom_scrolls_the_screen() {
-        let mut p = vt100::Parser::new(10, 40, 0);
+        let mut p = Parser::new(10, 40, ());
         let mut l = ImageLayer::default();
         let mut bytes = b"top\x1b[9;1H".to_vec();
         bytes.extend(sixel(10, 60));
@@ -563,11 +555,11 @@ mod tests {
         let mut bytes = b"a\x1bP$qm\x1b\\b\x1b[2;2H".to_vec();
         bytes.extend(sixel(20, 20));
         bytes.extend_from_slice(b"\x1b[31mc");
-        let mut whole = vt100::Parser::new(5, 20, 0);
+        let mut whole = Parser::new(5, 20, ());
         let mut lw = ImageLayer::default();
         lw.feed(&bytes, CELL, &mut whole);
         for cut in 1..bytes.len() {
-            let mut p = vt100::Parser::new(5, 20, 0);
+            let mut p = Parser::new(5, 20, ());
             let mut l = ImageLayer::default();
             l.feed(&bytes[..cut], CELL, &mut p);
             l.feed(&bytes[cut..], CELL, &mut p);
@@ -580,14 +572,17 @@ mod tests {
         }
         // The `c` written at the cursor afterwards takes the image's first cell.
         assert_eq!(pieces(&lw, &whole).len(), 1);
-        assert_eq!(whole.screen().cell(1, 1).map(|c| c.contents()), Some("c"));
+        assert_eq!(
+            whole.screen().cell(1, 1).map(|c| c.contents()),
+            Some("c".to_string())
+        );
     }
 
     /// Without a cell size the layer does nothing: no markers, the parser sees the
     /// sixel string as any DCS.
     #[test]
     fn without_a_cell_size_sixel_is_discarded() {
-        let mut p = vt100::Parser::new(5, 20, 0);
+        let mut p = Parser::new(5, 20, ());
         let mut l = ImageLayer::default();
         let mut bytes = b"a".to_vec();
         bytes.extend(sixel(20, 20));
@@ -599,7 +594,7 @@ mod tests {
     /// A private-use character drawn as text is not a marker.
     #[test]
     fn a_nerd_font_icon_is_not_a_marker() {
-        let mut p = vt100::Parser::new(2, 10, 0);
+        let mut p = Parser::new(2, 10, ());
         p.process("\x1b[38;2;0;0;1m\u{F0001}".as_bytes());
         assert_eq!(marker(p.screen().cell(0, 0).unwrap()), None);
     }

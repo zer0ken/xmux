@@ -18,18 +18,19 @@ state: the focus and modal state machine lives in `app`.
 
 - An attachment is one PTY client: its handle, events, commands, control thread, and
   output pump. It owns its command's authentication guard until its child is reaped.
-  The pump normalizes underline SGR before feeding the grid: underline colours and
-  their reset are consumed, underline styles become plain underline or its reset,
-  and surrounding bold and text colours survive. The normalizer carries incomplete
-  CSI sequences across reads and leaves control-string payloads untouched.
 - The worker spawns attachments on a dedicated OS thread and never owns the registry.
 - The registry maps display keys to live attachments, parks a fresh attachment while
   it paints, and serves a reaped attachment's last grid until a fresh one installs.
-- The grid owns the terminal-emulation cell state, a content fingerprint for detecting
-  a visible change, its last written line for naming why a child stopped, and the input
-  modes the child set, which outlive a wipe of the cells. It answers the terminal
-  queries the child sends, each once, with colours and pixel sizes taken from what the
-  outer terminal answered xmux at startup. A synchronized update holds the completed
+- The grid owns the terminal-emulation cell state, including the OSC 8 link, the
+  underline style, and the underline colour of each cell, a content fingerprint for
+  detecting a visible change, its last written line for naming why a child stopped, and
+  the input modes the child set, which outlive a wipe of the cells. The emulator
+  module is the only code that names the emulator library; the rest of the crate reads
+  cells through it. The emulator applies what draws, and hands every control sequence
+  and bell to the grid in stream order after the bytes before it are applied; replies
+  the emulator would make itself are discarded. The grid answers the terminal queries
+  the child sends, each once, with colours and pixel sizes taken from what the outer
+  terminal answered xmux at startup. A width is never below two columns. A synchronized update holds the completed
   screen on view until the client ends it or one second passes; a grid restart releases
   the held screen. The frame cadence keeps drawing while the screen is held so a
   silent client cannot leave its partial update hidden indefinitely.
@@ -68,6 +69,10 @@ state: the focus and modal state machine lives in `app`.
   through. The pump scans OSC 52 out of the raw stream; the grid's parser keeps the
   bells and notifications it consumes until the pump takes them, the cursor shape the
   child set, and the last title the child set until the grid clears for another session.
+  An OSC 8 link and an underline style are not exceptions: the grid writes them into
+  the frame's cell, around the cell's text, and the renderer's diff writes them with the
+  cell. An underline style and an underline colour are written only to an outer
+  terminal whose XTVERSION name is known to draw them; any other gets a plain underline.
 - The live child-environment read has two answers, a value or no signal; absence never
   stands in for a value, and a stale exec-time environment counts as no signal.
 

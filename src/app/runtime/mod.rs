@@ -1464,7 +1464,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         let log = env.xmux_dir.join("panic.log");
         let prev_hook = std::panic::take_hook();
         // How many times each panic SITE has fired. A recovered worker panic (a PTY pump's
-        // vt100 edge case) fires again on the next frame that hits it, so writing every one
+        // emulator edge case) fires again on the next frame that hits it, so writing every one
         // fills the file with one line repeated: the count is written at each power of two
         // instead, which keeps the first, keeps the scale, and turns thousands of lines into
         // a dozen. Keyed by the site, not the message, because a message carries the
@@ -1518,7 +1518,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 // - the terminal is restored above, so the print is safe and useful.
                 prev_hook(info);
             }
-            // A worker-thread panic (a PTY pump's vt100 edge case) is caught and
+            // A worker-thread panic (a PTY pump's emulator edge case) is caught and
             // recovered by Grid::feed; the log and panic.log above carry it, counted. Do
             // NOT forward it to the default hook - its stderr print lands on the live
             // TUI's terminal and corrupts the screen (the panic-spam bug).

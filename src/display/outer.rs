@@ -46,6 +46,19 @@ pub struct OuterTerminal {
 }
 
 impl OuterTerminal {
+    /// Whether the terminal draws an underline's style (`SGR 4:n`) and an underline
+    /// colour of its own (`SGR 58`), as its XTVERSION name tells. No query reports it,
+    /// and a terminal without them can read the fields as other attributes, so they are
+    /// written only to a terminal known to draw them.
+    pub fn styled_underlines(&self) -> bool {
+        self.name.as_deref().is_some_and(|n| {
+            let n = n.to_ascii_lowercase();
+            ["kitty", "ghostty", "wezterm", "foot"]
+                .iter()
+                .any(|known| n.starts_with(known))
+        })
+    }
+
     /// The colour scheme the terminal reported, or else the one its background colour
     /// implies.
     pub fn colour_scheme(&self) -> Option<u8> {

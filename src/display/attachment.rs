@@ -36,7 +36,7 @@ pub enum PtyEvent {
     DisplayTty { id: u64, tty: String },
     /// The child's output held a complete OSC 52 clipboard write
     /// (`ESC ] 52 ; <selection> ; <base64>` plus a BEL or ST terminator). The pump
-    /// scanned it out of the raw stream (the vt100 parser would otherwise eat it);
+    /// scanned it out of the raw stream (the grid's emulator would otherwise eat it);
     /// the loop re-emits the same sequence on xmux's stdout between frames so the
     /// terminal above sets the clipboard.
     Osc52 { seq: Vec<u8> },
@@ -343,7 +343,7 @@ impl PtySink for MasterSink {
 /// at. There is no raw-stdout passthrough here - ratatui owns stdout and renders
 /// every grid as a ratatui clip.
 pub struct Attachment {
-    /// The vt100 grid the pump feeds; the app renders it when selected.
+    /// The terminal grid the pump feeds; the app renders it when selected.
     pub grid: Arc<Mutex<Grid>>,
     /// Queue commands (input/resize) to the control thread (off the loop).
     pub control_tx: std::sync::mpsc::Sender<PtyCmd>,
@@ -603,7 +603,6 @@ pub fn spawn_attachment(
         let mut marker_acc: Vec<u8> = Vec::new();
         let mut marker_done = false;
         let mut painted = false;
-        let mut sgr = super::sgr::SgrNormalizer::default();
         // Holds OSC-in-progress between reads so an OSC 52 split at a read boundary
         // is still found (and a non-52 OSC's payload is skipped, not misread).
         let mut osc52 = Osc52Scanner::default();
@@ -617,7 +616,7 @@ pub fn spawn_attachment(
                             Ok(g) => g,
                             Err(_) => break,
                         };
-                        sgr.feed(&mut g, &buf[..n]);
+                        g.feed(&buf[..n]);
                         // Only checked until the first visible frame: after that every
                         // chunk counts, so a full-grid scan never runs per chunk. ssh's
                         // own authentication report is not a frame of the session, so
@@ -674,8 +673,8 @@ pub fn spawn_attachment(
                             let _ = events.send(PtyEvent::DisplayTty { id, tty });
                         }
                     }
-                    // Forward any OSC 52 clipboard writes the child emitted: the vt100
-                    // parser would eat them, so the pump scans the raw stream and carries
+                    // Forward any OSC 52 clipboard writes the child emitted: the grid's
+                    // emulator would eat them, so the pump scans the raw stream and carries
                     // each whole sequence to the loop, which re-emits it on xmux's stdout
                     // between frames (the terminal above sets the clipboard).
                     if !forward_osc52(&mut osc52, &buf[..n], &mut osc, &events) {
@@ -893,52 +892,6 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
-
-    fn sgr_cells(bytes: &[u8]) -> ratatui::buffer::Buffer {
-        let mut grid = Grid::new(1, 16);
-        super::super::sgr::SgrNormalizer::default().feed(&mut grid, bytes);
-        let area = ratatui::layout::Rect::new(0, 0, 16, 1);
-        let mut cells = ratatui::buffer::Buffer::empty(area);
-        grid.render_into(&mut cells, area);
-        cells
-    }
-
-    #[test]
-    fn underline_colour_sgr_preserves_bold_and_text_colours() {
-        use ratatui::style::{Color, Modifier};
-        let commands: &[&[u8]] = &[
-            b"\x1b[58;2;0;128;255m",
-            b"\x1b[58;5;0m",
-            b"\x1b[58:2::0:128:255m",
-            b"\x1b[58:5:0m",
-            b"\x1b[59m",
-        ];
-        for command in commands {
-            let mut bytes = b"\x1b[1;38;2;11;22;33;48;5;77m".to_vec();
-            bytes.extend_from_slice(command);
-            bytes.push(b'X');
-            let cells = sgr_cells(&bytes);
-            let cell = &cells[(0, 0)];
-            assert!(cell.modifier.contains(Modifier::BOLD), "{command:?}");
-            assert!(!cell.modifier.contains(Modifier::DIM), "{command:?}");
-            assert_eq!(cell.fg, Color::Rgb(11, 22, 33), "{command:?}");
-            assert_eq!(cell.bg, Color::Indexed(77), "{command:?}");
-        }
-    }
-
-    #[test]
-    fn underline_style_sgr_uses_plain_underline_without_resetting_attributes() {
-        use ratatui::style::{Color, Modifier};
-        for style in 0..=5 {
-            let bytes = format!("\x1b[1;31;44;4m\x1b[4:{style}mX");
-            let cells = sgr_cells(bytes.as_bytes());
-            let cell = &cells[(0, 0)];
-            assert_eq!(cell.modifier.contains(Modifier::UNDERLINED), style != 0);
-            assert!(cell.modifier.contains(Modifier::BOLD));
-            assert_eq!(cell.fg, Color::Indexed(1));
-            assert_eq!(cell.bg, Color::Indexed(4));
-        }
-    }
 
     #[test]
     fn attach_auth_watch_reports_its_own_method() {

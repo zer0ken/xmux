@@ -22,6 +22,8 @@ pub struct InputModes {
     pub mouse_sgr: bool,
     pub mouse_urxvt: bool,
     pub mouse_utf8: bool,
+    /// `?1049`, `?1047`, and `?47`: the client is on the alternate screen.
+    pub alternate_screen: bool,
 }
 
 /// The mouse events a client asked for; the last mode set is the one in force.
@@ -63,7 +65,6 @@ pub struct ModeScanner {
     /// The keyboard flag stacks of the main and the alternate screen, which the protocol
     /// keeps apart.
     keyboard: [Vec<u8>; 2],
-    alternate: bool,
 }
 
 impl ModeScanner {
@@ -88,7 +89,6 @@ impl ModeScanner {
                     b'c' => {
                         self.modes = InputModes::default();
                         self.keyboard = Default::default();
-                        self.alternate = false;
                         self.state = State::Ground;
                     }
                     0x1b => {}
@@ -120,7 +120,7 @@ impl ModeScanner {
                 .and_then(|p| p.parse::<u32>().ok())
         });
         let mut number = |default: u32| numbers.next().flatten().unwrap_or(default);
-        let screen = usize::from(self.alternate);
+        let screen = usize::from(self.modes.alternate_screen);
         match (marker, final_byte) {
             (b'?', b'h' | b'l') => {
                 let set = final_byte == b'h';
@@ -128,7 +128,7 @@ impl ModeScanner {
                     match param {
                         b"2004" => self.modes.bracketed_paste = set,
                         b"1004" => self.modes.focus_events = set,
-                        b"1049" | b"1047" | b"47" => self.alternate = set,
+                        b"1049" | b"1047" | b"47" => self.modes.alternate_screen = set,
                         b"9" => set_mouse(&mut self.modes, MouseMode::Press, set),
                         b"1000" => set_mouse(&mut self.modes, MouseMode::PressRelease, set),
                         b"1002" => set_mouse(&mut self.modes, MouseMode::ButtonMotion, set),
@@ -170,7 +170,7 @@ impl ModeScanner {
             }
             _ => return,
         }
-        self.modes.keyboard_flags = self.keyboard[usize::from(self.alternate)]
+        self.modes.keyboard_flags = self.keyboard[usize::from(self.modes.alternate_screen)]
             .last()
             .copied()
             .unwrap_or(0);

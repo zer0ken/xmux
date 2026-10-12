@@ -1403,8 +1403,9 @@ pub(crate) fn blank_bisected_wide_glyph(frame: &mut Frame, rect: Rect) {
     let buf = frame.buffer_mut();
     for y in rect.y..rect.bottom() {
         let cell = &mut buf[(x, y)];
-        if cell.symbol().width() > 1 {
-            cell.set_symbol(" ");
+        if crate::display::grid::cell_width(cell) > 1 {
+            cell.set_symbol(" ")
+                .set_diff_option(ratatui::buffer::CellDiffOption::None);
         }
     }
 }
