@@ -21,7 +21,10 @@ use crate::transport::Transport;
 use tokio::sync::mpsc;
 
 const SCAN_CONCURRENCY: usize = 8;
-const SSH_PROFILE_CONCURRENCY: usize = 8;
+/// `ssh -G` is purely local config resolution, a short-lived process per alias: the
+/// concurrency only bounds how many spawn at once, and a wide ssh config still resolves
+/// in a fraction of a second.
+const SSH_PROFILE_CONCURRENCY: usize = 32;
 const SSH_PROFILE_TIMEOUT: Duration = Duration::from_secs(3);
 pub(crate) const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 const DETAIL_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
@@ -336,15 +339,16 @@ fn local_socket(tmux: Option<&str>) -> Option<String> {
 /// malformed config); the [`Roster`] is still usable with defaults so `doctor` can
 /// report the problem instead of dying on it.
 ///
-/// A launch and a re-scan both come from this ONE answer, so neither can disagree with
-/// the other about which machines exist.
+/// A launch's full answer and a re-scan's full answer both come from this ONE shape, so
+/// neither can disagree with the other about which machines exist.
 pub async fn resolve_roster() -> (Roster, Option<anyhow::Error>) {
     resolve_roster_with(true).await
 }
 
-/// [`resolve_roster`] with the neighbor provider optional. Launch resolves the roster
-/// once without it, because the neighbor scan waits out every silent address while the
-/// other providers answer in milliseconds, and once with it.
+/// [`resolve_roster`] with the neighbor provider optional. A launch and a re-scan both
+/// resolve the roster once without it, because the neighbor scan waits out every silent
+/// address while the other providers answer in milliseconds, and once with it: the
+/// machines ssh config names land while the slow scan is still running.
 pub async fn resolve_roster_with(with_neighbors: bool) -> (Roster, Option<anyhow::Error>) {
     let (cfg, cfg_warnings, cfg_err) = load_roster_config();
     let os = current_os();
