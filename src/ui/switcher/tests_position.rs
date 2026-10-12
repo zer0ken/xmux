@@ -607,6 +607,32 @@ fn a_toast_floats_in_the_top_right_corner_at_every_position() {
 }
 
 #[test]
+fn a_toast_stands_to_the_left_of_the_floating_nav() {
+    // The floating nav owns its corner: the toast ends where the nav begins.
+    let mut shot = Shot::new(two_groups(), nav_at(NavPosition::Floating), true);
+    shot.state.notify.toast(
+        "gpu-02",
+        vec![crate::state::notify::Note::new(
+            crate::state::notify::Level::Success,
+            "logged in",
+        )],
+    );
+    shot.draw(true);
+    let nav = shot.plan.regions.nav_border;
+    assert!(!shot.plan.toasts.is_empty(), "the toast was placed");
+    assert!(
+        shot.plan.toasts.iter().all(|(_, r)| !r.intersects(nav)),
+        "{} against the floating nav {nav:?}",
+        shot.plan
+            .toasts
+            .iter()
+            .map(|(_, r)| r.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
+#[test]
 fn no_toast_covers_the_prefix_key_list() {
     for position in ALL {
         let mut shot = Shot::new(two_groups(), nav_at(position), false);
