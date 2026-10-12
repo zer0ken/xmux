@@ -379,14 +379,22 @@ impl Grid {
                     let text = vcell.contents();
                     let link = vcell.hyperlink().filter(|uri| uri.len() <= LINK_MAX);
                     let underline = styled.then(|| underline_style(vcell.underline())).flatten();
-                    if link.is_none() && underline.is_none() {
+                    let vs16 = vcell.is_wide() && text.contains('\u{fe0f}');
+                    if link.is_none() && underline.is_none() && !vs16 {
                         cell.set_symbol(&text);
                     } else {
-                        // The cell carries its link and its underline style inside its
-                        // symbol, so the diff sees a change of either as a change of the
-                        // cell. The forced width tells the diff how many columns the cell
-                        // covers, which the escape text would otherwise inflate.
-                        cell.set_symbol(&decorated_symbol(&text, link.as_deref(), underline));
+                        // The cell carries its link, its underline style, and the writes a
+                        // wide VS16 emoji needs inside its symbol, so the diff sees a change
+                        // of any as a change of the cell. The forced width tells the diff
+                        // how many columns the cell covers, which the escape text would
+                        // otherwise inflate, and keeps the diff from writing a blank over
+                        // the right half of a VS16 emoji, which erases the emoji.
+                        let mut symbol = String::new();
+                        if vs16 {
+                            symbol.push_str(&vs16_clearing(area.x + c));
+                        }
+                        symbol.push_str(&decorated_symbol(&text, link.as_deref(), underline));
+                        cell.set_symbol(&symbol);
                         cell.set_diff_option(ratatui::buffer::CellDiffOption::ForcedWidth(
                             if vcell.is_wide() {
                                 std::num::NonZeroU16::MIN.saturating_add(1)
@@ -423,6 +431,15 @@ const LINK_MAX: usize = 2048;
 
 /// The OSC 8 sequence that ends a link.
 const LINK_CLOSE: &str = "\x1b]8;;\x1b\\";
+
+/// What a wide VS16 emoji at column `x` writes before itself: a blank in the column to
+/// its right, then the cursor back to `x`. A terminal makes the emoji two columns wide
+/// only once its VS16 arrives, and tmux then leaves a wide glyph that held the column to
+/// the right half in place, so a later write over that glyph's remains erases the emoji.
+/// A plain blank written there first clears that glyph whole.
+fn vs16_clearing(x: u16) -> String {
+    format!("\x1b[{}G \x1b[{}G", u32::from(x) + 2, u32::from(x) + 1)
+}
 
 /// The `SGR 4:n` style digit of an underline that a plain underline does not draw.
 fn underline_style(underline: Underline) -> Option<char> {
@@ -475,10 +492,14 @@ pub fn visible_symbol(symbol: &str) -> std::borrow::Cow<'_, str> {
             continue;
         }
         match chars.next() {
-            // A CSI ends at its final byte.
+            // A CSI ends at its final byte. A cursor move to a column puts what was
+            // written before it outside the cell's text.
             Some('[') => {
                 for c in chars.by_ref() {
                     if ('\x40'..='\x7e').contains(&c) {
+                        if c == 'G' {
+                            text.clear();
+                        }
                         break;
                     }
                 }
@@ -1348,6 +1369,39 @@ Connection to host closed.
             ..OuterTerminal::default()
         });
         lock
+    }
+
+    #[test]
+    fn a_border_beside_a_half_erased_wide_char_is_drawn() {
+        let _g = plain_outer_terminal();
+        let area = Rect::new(0, 0, 6, 1);
+        for erase in ["\x1b[X", "\x1b[K"] {
+            let buf = rendered(format!("가\x1b[1;2H{erase}\x1b[1;2H│").as_bytes(), area);
+            let out = flushed(&Buffer::empty(area), &buf);
+            assert_eq!(buf[(1, 0)].symbol(), "│", "{erase:?}");
+            assert!(out.contains('│'), "{erase:?}: {out:?}");
+            assert!(
+                !out.contains('가'),
+                "the erased glyph is not drawn: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wide_vs16_emoji_is_written_without_a_blank_over_its_right_half() {
+        let _g = plain_outer_terminal();
+        let area = Rect::new(0, 0, 6, 1);
+        let prev = rendered(b"abcdef", area);
+        let next = rendered("❤️cd".as_bytes(), area);
+        assert_eq!(cell_width(&next[(0, 0)]), 2);
+        let written: Vec<(u16, u16)> = prev.diff(&next).iter().map(|&(x, y, _)| (x, y)).collect();
+        assert!(written.contains(&(0, 0)), "{written:?}");
+        assert!(
+            !written.contains(&(1, 0)),
+            "the emoji's right half is not written over: {written:?}"
+        );
+        assert_eq!(next[(0, 0)].symbol(), "\x1b[2G \x1b[1G❤️");
+        assert_eq!(visible_symbol(next[(0, 0)].symbol()), "❤️");
     }
 
     #[test]

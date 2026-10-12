@@ -24,6 +24,11 @@ const MIN_COLS: u16 = 2;
 /// The fewest rows the emulator is sized to.
 const MIN_ROWS: u16 = 1;
 
+/// The most UTF-8 bytes one cell's text joins, the limit tmux keeps a cell to
+/// (`UTF8_SIZE`). A character that would pass it starts a cell of its own there, so it
+/// does here.
+const CELL_BYTES: usize = 21;
+
 /// What the grid does with the sequences the emulator leaves to it. Each call comes after
 /// the emulator has applied every byte before the sequence, and the sequence itself.
 pub trait Hooks {
@@ -70,6 +75,12 @@ pub struct Parser<H> {
     observer: vte::Parser,
     seen: Seen,
     hooks: H,
+    /// The start of a UTF-8 character the last read cut off, held until the rest
+    /// arrives so the character reaches the emulator, or is joined, whole.
+    partial: Vec<u8>,
+    /// Whether the last read ended on a zero-width joiner, so the next one's first
+    /// character ends a piece of its own.
+    zwj_tail: bool,
 }
 
 impl<H: Hooks> Parser<H> {
@@ -80,25 +91,68 @@ impl<H: Hooks> Parser<H> {
             observer: vte::Parser::new(),
             seen: Seen::default(),
             hooks,
+            partial: Vec::new(),
+            zwj_tail: false,
         }
     }
 
     /// Applies `bytes`, calling the hooks at each sequence they hold.
     pub fn process(&mut self, bytes: &[u8]) {
-        let mut rest = bytes;
+        let mut joined = std::mem::take(&mut self.partial);
+        joined.extend_from_slice(bytes);
+        let cut = joined.len() - incomplete_utf8(&joined);
+        self.partial = joined.split_off(cut);
+        let mut points = join_points(&joined);
+        if std::mem::take(&mut self.zwj_tail) {
+            if let Some(&lead) = joined.first() {
+                points.insert(0, utf8_len(lead).min(joined.len()));
+            }
+        }
+        self.zwj_tail = joined.ends_with(ZWJ);
+        let mut start = 0;
+        for end in points {
+            self.process_piece(&joined[start..end]);
+            start = end;
+        }
+        self.process_piece(&joined[start..]);
+    }
+
+    /// Applies a piece of the stream. The observer prints a run of text in one go, so a
+    /// character the grid places itself has to end the piece it is in.
+    fn process_piece(&mut self, piece: &[u8]) {
+        let mut rest = piece;
         while !rest.is_empty() {
             let n = self.observer.advance_until_terminated(&mut self.seen, rest);
-            self.processor.advance(&mut self.screen.term, &rest[..n]);
+            let mut buf = [0; 4];
+            let (applied, held) = match self.seen.event {
+                // The character is the last thing the observer read; the emulator gets
+                // what came before it, and the character is placed here.
+                Some(Event::Join(c)) if rest[..n].ends_with(c.encode_utf8(&mut buf).as_bytes()) => {
+                    rest[..n].split_at(n - c.len_utf8())
+                }
+                Some(Event::Join(_)) => {
+                    self.seen.event = None;
+                    (&rest[..n], &[][..])
+                }
+                _ => (&rest[..n], &[][..]),
+            };
+            self.processor.advance(&mut self.screen.term, applied);
             rest = &rest[n..];
             if let Some(event) = self.seen.event.take() {
-                self.dispatch(event);
+                self.dispatch(event, held);
             }
         }
     }
 
-    fn dispatch(&mut self, event: Event) {
+    fn dispatch(&mut self, event: Event, held: &[u8]) {
         let view = self.screen.view();
         match event {
+            Event::Join(c) => {
+                if !self.screen.join(c) {
+                    self.processor.advance(&mut self.screen.term, held);
+                }
+            }
+            Event::Widen => self.screen.widen(),
             Event::Bell => self.hooks.bell(view),
             Event::Csi {
                 i1,
@@ -133,9 +187,14 @@ impl<H: Hooks> Parser<H> {
     }
 }
 
-/// The sequence the observing parser stopped at.
+/// What the observing parser stopped at.
 enum Event {
     Bell,
+    /// A character tmux joins into the cell before it: a skin tone modifier, or a
+    /// character after a zero-width joiner.
+    Join(char),
+    /// A VS16, which tmux takes as asking for the character before it two columns wide.
+    Widen,
     Csi {
         i1: Option<u8>,
         i2: Option<u8>,
@@ -152,16 +211,35 @@ enum Event {
 #[derive(Default)]
 struct Seen {
     event: Option<Event>,
+    /// Whether the last character printed was a zero-width joiner.
+    after_zwj: bool,
 }
 
 impl vte::Perform for Seen {
+    fn print(&mut self, c: char) {
+        use unicode_width::UnicodeWidthChar;
+        let wide = c.width().is_some_and(|w| w > 0);
+        if ('\u{1f3fb}'..='\u{1f3ff}').contains(&c) || (self.after_zwj && wide) {
+            self.event = Some(Event::Join(c));
+        } else if c == '\u{fe0f}' {
+            self.event = Some(Event::Widen);
+        }
+        self.after_zwj = c == '\u{200d}';
+    }
+
     fn execute(&mut self, byte: u8) {
+        self.after_zwj = false;
         if byte == 0x07 {
             self.event = Some(Event::Bell);
         }
     }
 
+    fn esc_dispatch(&mut self, _: &[u8], _: bool, _: u8) {
+        self.after_zwj = false;
+    }
+
     fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], ignore: bool, c: char) {
+        self.after_zwj = false;
         if ignore {
             return;
         }
@@ -174,6 +252,7 @@ impl vte::Perform for Seen {
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        self.after_zwj = false;
         self.event = Some(Event::Osc {
             params: params.iter().map(|p| p.to_vec()).collect(),
         });
@@ -199,6 +278,82 @@ impl Screen {
         };
         Self {
             term: Term::new(config, &size(rows, cols), VoidListener),
+        }
+    }
+
+    /// The column of the cell the last character went into, on the cursor's line.
+    fn last_written(&self) -> Option<Column> {
+        let grid = self.term.grid();
+        let cursor = &grid.cursor;
+        let mut col = cursor.point.column;
+        if !cursor.input_needs_wrap {
+            col = Column(col.0.checked_sub(1)?);
+        }
+        if grid[cursor.point.line][col]
+            .flags
+            .contains(Flags::WIDE_CHAR_SPACER)
+        {
+            col = Column(col.0.checked_sub(1)?);
+        }
+        Some(col)
+    }
+
+    /// Joins `c` into the cell the last character went into, while that cell's text
+    /// stays within [`CELL_BYTES`]. False when there is no such cell or no room.
+    fn join(&mut self, c: char) -> bool {
+        let Some(col) = self.last_written() else {
+            return false;
+        };
+        let line = self.term.grid().cursor.point.line;
+        let cell = &mut self.term.grid_mut()[line][col];
+        let bytes = cell.c.len_utf8()
+            + cell
+                .zerowidth()
+                .into_iter()
+                .flatten()
+                .map(|z| z.len_utf8())
+                .sum::<usize>();
+        if cell.c == ' ' || bytes + c.len_utf8() > CELL_BYTES {
+            return false;
+        }
+        cell.push_zerowidth(c);
+        true
+    }
+
+    /// Makes the one-column character the cursor just passed two columns wide, the
+    /// cursor moving past both, when the row has a column left for it.
+    fn widen(&mut self) {
+        let grid = self.term.grid_mut();
+        let cursor = &grid.cursor;
+        if cursor.input_needs_wrap || cursor.point.column.0 == 0 {
+            return;
+        }
+        let line = cursor.point.line;
+        let col = cursor.point.column.0 - 1;
+        let columns = grid.columns();
+        if col + 1 >= columns {
+            return;
+        }
+        let row = &mut grid[line];
+        if row[Column(col)]
+            .flags
+            .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER)
+        {
+            return;
+        }
+        row[Column(col)].flags.insert(Flags::WIDE_CHAR);
+        let mut spacer = TermCell {
+            bg: row[Column(col)].bg,
+            ..TermCell::default()
+        };
+        spacer.flags = Flags::WIDE_CHAR_SPACER;
+        row[Column(col + 1)] = spacer;
+        let cursor = &mut grid.cursor;
+        if col + 2 < columns {
+            cursor.point.column = Column(col + 2);
+        } else {
+            cursor.point.column = Column(col + 1);
+            cursor.input_needs_wrap = true;
         }
     }
 
@@ -259,6 +414,57 @@ impl Screen {
     pub fn contents(&self) -> String {
         self.view().contents()
     }
+}
+
+const ZWJ: &[u8] = "\u{200d}".as_bytes();
+const VS16: &[u8] = "\u{fe0f}".as_bytes();
+
+/// The length of the UTF-8 character `lead` starts, 1 for a byte that starts none.
+fn utf8_len(lead: u8) -> usize {
+    match lead {
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf7 => 4,
+        _ => 1,
+    }
+}
+
+/// Where the characters the grid places itself end: a skin tone modifier, a VS16, and
+/// the character after a zero-width joiner. Wherever they are, inside a control string
+/// too, a piece ending there changes nothing but where the stream is split.
+fn join_points(bytes: &[u8]) -> Vec<usize> {
+    let mut points = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &bytes[i..];
+        if rest.starts_with(VS16) || matches!(rest, [0xf0, 0x9f, 0x8f, 0xbb..=0xbf, ..]) {
+            i += utf8_len(rest[0]);
+            points.push(i);
+        } else if rest.starts_with(ZWJ) && i + ZWJ.len() < bytes.len() {
+            i += ZWJ.len();
+            i = (i + utf8_len(bytes[i])).min(bytes.len());
+            points.push(i);
+        } else {
+            i += 1;
+        }
+    }
+    points
+}
+
+/// How many bytes at the end of `bytes` start a UTF-8 character that is not complete.
+fn incomplete_utf8(bytes: &[u8]) -> usize {
+    for back in 1..=bytes.len().min(3) {
+        let b = bytes[bytes.len() - back];
+        let len = match b {
+            0x80..=0xbf => continue,
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf7 => 4,
+            _ => return 0,
+        };
+        return if back < len { back } else { 0 };
+    }
+    0
 }
 
 fn size(rows: u16, cols: u16) -> TermSize {
@@ -346,10 +552,30 @@ impl<'a> View<'a> {
         self.mode.contains(TermMode::APP_CURSOR)
     }
 
+    /// The cell at `(row, col)`. A wide character and its right half are read as such
+    /// only while both are there: an erase or a shift that took one half leaves the other
+    /// as a blank cell, which is what a terminal and the client's mux hold there.
     pub fn cell(&self, row: u16, col: u16) -> Option<Cell<'a>> {
         let (rows, cols) = self.size();
-        (row < rows && col < cols)
-            .then(|| Cell(&self.grid[Line(i32::from(row))][Column(usize::from(col))]))
+        if row >= rows || col >= cols {
+            return None;
+        }
+        let line = &self.grid[Line(i32::from(row))];
+        let col = usize::from(col);
+        let flags = |c: usize| line[Column(c)].flags;
+        let wide = flags(col).contains(Flags::WIDE_CHAR)
+            && col + 1 < usize::from(cols)
+            && flags(col + 1).contains(Flags::WIDE_CHAR_SPACER);
+        let continuation = flags(col).contains(Flags::WIDE_CHAR_SPACER)
+            && col > 0
+            && flags(col - 1).contains(Flags::WIDE_CHAR);
+        let orphan = flags(col).contains(Flags::WIDE_CHAR) && !wide;
+        Some(Cell {
+            cell: &line[Column(col)],
+            wide,
+            continuation,
+            orphan,
+        })
     }
 
     /// The text on screen, one line per row with the trailing blanks of each row left
@@ -435,7 +661,15 @@ impl Underline {
 
 /// One cell of a screen.
 #[derive(Clone, Copy)]
-pub struct Cell<'a>(&'a TermCell);
+pub struct Cell<'a> {
+    cell: &'a TermCell,
+    /// A wide character whose right half is there.
+    wide: bool,
+    /// The right half of a wide character that is there.
+    continuation: bool,
+    /// A wide character whose right half is gone, read as blank.
+    orphan: bool,
+}
 
 impl Cell<'_> {
     /// The cell's text: its character and the zero-width characters written after it,
@@ -448,57 +682,57 @@ impl Cell<'_> {
 
     fn push_contents(&self, text: &mut String) {
         if self.has_contents() {
-            text.push(self.0.c);
-            text.extend(self.0.zerowidth().into_iter().flatten());
+            text.push(self.cell.c);
+            text.extend(self.cell.zerowidth().into_iter().flatten());
         }
     }
 
     pub fn has_contents(&self) -> bool {
-        self.0.c != ' ' || self.0.zerowidth().is_some()
+        !self.orphan && (self.cell.c != ' ' || self.cell.zerowidth().is_some())
     }
 
     pub fn fgcolor(&self) -> Color {
-        self.0.fg.into()
+        self.cell.fg.into()
     }
 
     pub fn bgcolor(&self) -> Color {
-        self.0.bg.into()
+        self.cell.bg.into()
     }
 
     pub fn bold(&self) -> bool {
-        self.0.flags.contains(Flags::BOLD)
+        self.cell.flags.contains(Flags::BOLD)
     }
 
     pub fn italic(&self) -> bool {
-        self.0.flags.contains(Flags::ITALIC)
+        self.cell.flags.contains(Flags::ITALIC)
     }
 
     pub fn inverse(&self) -> bool {
-        self.0.flags.contains(Flags::INVERSE)
+        self.cell.flags.contains(Flags::INVERSE)
     }
 
     pub fn underline(&self) -> Underline {
-        Underline::of(self.0.flags)
+        Underline::of(self.cell.flags)
     }
 
     /// The underline's own colour, when the client set one apart from the text's.
     pub fn underline_color(&self) -> Option<Color> {
-        self.0.underline_color().map(Color::from)
+        self.cell.underline_color().map(Color::from)
     }
 
     /// The URI of the OSC 8 link the cell was written under.
     pub fn hyperlink(&self) -> Option<String> {
-        self.0.hyperlink().map(|link| link.uri().to_string())
+        self.cell.hyperlink().map(|link| link.uri().to_string())
     }
 
     /// Whether the cell holds a character two columns wide.
     pub fn is_wide(&self) -> bool {
-        self.0.flags.contains(Flags::WIDE_CHAR)
+        self.wide
     }
 
     /// Whether the cell is the right half of a wide character.
     pub fn is_wide_continuation(&self) -> bool {
-        self.0.flags.contains(Flags::WIDE_CHAR_SPACER)
+        self.continuation
     }
 }
 
@@ -659,6 +893,105 @@ mod tests {
         p.process(b"\x1b[2J\x1b[Hnew");
         assert_eq!(snap.view().contents().lines().next(), Some("old"));
         assert_eq!(p.screen().contents().lines().next(), Some("new"));
+    }
+
+    /// The columns tmux 3.5a advances for each string, which the grid follows so the
+    /// text tmux writes after it lands where tmux drew it.
+    const TMUX_WIDTHS: &[(&str, u16)] = &[
+        ("a", 1),
+        ("한", 2),
+        ("👍", 2),
+        ("👍🏽", 2),
+        ("🇰🇷", 2),
+        ("👨‍👩‍👧‍👦", 4),
+        ("❤️", 2),
+        ("❤", 1),
+        ("✅", 2),
+        ("é", 1),
+        ("ｱ", 1),
+    ];
+
+    #[test]
+    fn emoji_clusters_take_the_columns_tmux_gives_them() {
+        for &(s, width) in TMUX_WIDTHS {
+            let mut whole = Parser::new(2, 20, ());
+            whole.process(format!("{s}x").as_bytes());
+            assert_eq!(whole.screen().cursor_position(), (0, width + 1), "{s:?}");
+            assert_eq!(
+                whole.screen().cell(0, width).unwrap().contents(),
+                "x",
+                "{s:?}"
+            );
+            let mut split = Parser::new(2, 20, ());
+            for b in format!("{s}x").as_bytes() {
+                split.process(&[*b]);
+            }
+            assert_eq!(
+                split.screen().cursor_position(),
+                (0, width + 1),
+                "{s:?} split"
+            );
+            assert_eq!(
+                split.screen().contents(),
+                whole.screen().contents(),
+                "{s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_joined_cluster_is_one_cell() {
+        let mut p = Parser::new(2, 20, ());
+        p.process("👍🏽❤️👨‍👩‍👧‍👦".as_bytes());
+        let s = p.screen();
+        assert_eq!(s.cell(0, 0).unwrap().contents(), "👍🏽");
+        assert!(s.cell(0, 0).unwrap().is_wide());
+        assert_eq!(s.cell(0, 2).unwrap().contents(), "❤️");
+        assert!(s.cell(0, 2).unwrap().is_wide());
+        assert!(s.cell(0, 3).unwrap().is_wide_continuation());
+        assert_eq!(
+            s.cell(0, 4).unwrap().contents(),
+            "👨\u{200d}👩\u{200d}👧\u{200d}",
+            "a cell holds 21 bytes, as tmux keeps it"
+        );
+        assert_eq!(s.cell(0, 6).unwrap().contents(), "👦");
+    }
+
+    #[test]
+    fn a_vs16_at_the_last_column_stays_one_column() {
+        let mut p = Parser::new(2, 4, ());
+        p.process("abc❤️".as_bytes());
+        assert!(!p.screen().cell(0, 3).unwrap().is_wide());
+        assert_eq!(p.screen().cell(0, 3).unwrap().contents(), "❤️");
+    }
+
+    #[test]
+    fn clusters_inside_a_control_string_reach_the_hooks_whole() {
+        let mut p = Parser::new(2, 20, Log::default());
+        p.process("\x1b]2;👍🏽❤️👨‍👩\x07ok".as_bytes());
+        assert_eq!(
+            p.callbacks().osc,
+            vec![vec![b"2".to_vec(), "👍🏽❤️👨‍👩".as_bytes().to_vec()]]
+        );
+        assert_eq!(p.screen().contents().lines().next(), Some("ok"));
+    }
+
+    #[test]
+    fn a_half_erased_wide_char_reads_as_blank() {
+        for erase in ["\x1b[1;2H\x1b[X", "\x1b[1;2H\x1b[K"] {
+            let mut p = Parser::new(1, 6, ());
+            p.process(format!("가b{erase}").as_bytes());
+            let s = p.screen();
+            assert!(!s.cell(0, 0).unwrap().is_wide(), "{erase:?}");
+            assert!(!s.cell(0, 0).unwrap().has_contents(), "{erase:?}");
+            assert!(!s.cell(0, 1).unwrap().is_wide_continuation(), "{erase:?}");
+        }
+        let mut p = Parser::new(1, 6, ());
+        p.process("가\x1b[1;1H\x1b[X".as_bytes());
+        assert!(
+            !p.screen().cell(0, 1).unwrap().is_wide_continuation(),
+            "a right half whose wide char is gone is a blank cell"
+        );
     }
 
     #[test]
