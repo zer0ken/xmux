@@ -72,7 +72,9 @@ state: the focus and modal state machine lives in `app`.
   An OSC 8 link and an underline style are not exceptions: the grid writes them into
   the frame's cell, around the cell's text, and the renderer's diff writes them with the
   cell. An underline style and an underline colour are written only to an outer
-  terminal whose XTVERSION name is known to draw them; any other gets a plain underline.
+  terminal whose XTVERSION name is known to draw them, or, on a Windows host, to
+  Windows Terminal, which answers no XTVERSION and is told by `WT_SESSION`; any other
+  gets a plain underline.
 - The live child-environment read has two answers, a value or no signal; absence never
   stands in for a value, and a stale exec-time environment counts as no signal.
 

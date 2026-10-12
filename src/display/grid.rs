@@ -1503,7 +1503,14 @@ Connection to host closed.
 
     #[test]
     fn a_terminal_without_underline_styles_gets_a_plain_underline() {
-        let _g = plain_outer_terminal();
+        // A named terminal outside the known list, so the host's own environment
+        // cannot make it one that draws underline styles.
+        use crate::display::outer::{set_outer_for_test, OuterTerminal, TEST_LOCK};
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_outer_for_test(OuterTerminal {
+            name: Some("tmux 3.5a".to_string()),
+            ..OuterTerminal::default()
+        });
         let area = Rect::new(0, 0, 4, 1);
         let buf = rendered(b"\x1b[4:3;58;2;1;2;3mX", area);
         assert_eq!(buf[(0, 0)].symbol(), "X");

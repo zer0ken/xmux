@@ -47,16 +47,11 @@ pub struct OuterTerminal {
 
 impl OuterTerminal {
     /// Whether the terminal draws an underline's style (`SGR 4:n`) and an underline
-    /// colour of its own (`SGR 58`), as its XTVERSION name tells. No query reports it,
-    /// and a terminal without them can read the fields as other attributes, so they are
-    /// written only to a terminal known to draw them.
+    /// colour of its own (`SGR 58`). No query reports it, and a terminal without them can
+    /// read the fields as other attributes, so they are written only to a terminal known
+    /// to draw them.
     pub fn styled_underlines(&self) -> bool {
-        self.name.as_deref().is_some_and(|n| {
-            let n = n.to_ascii_lowercase();
-            ["kitty", "ghostty", "wezterm", "foot"]
-                .iter()
-                .any(|known| n.starts_with(known))
-        })
+        draws_styled_underlines(self.name.as_deref(), in_windows_terminal())
     }
 
     /// The colour scheme the terminal reported, or else the one its background colour
@@ -88,6 +83,29 @@ fn outer_mut() -> MutexGuard<'static, OuterTerminal> {
 /// A copy of what the terminal has answered so far.
 pub fn outer() -> OuterTerminal {
     outer_mut().clone()
+}
+
+/// Whether a terminal draws underline styles and colours: one whose XTVERSION name is
+/// known to, or, when it gave no name, Windows Terminal. Windows Terminal answers no
+/// XTVERSION, so a terminal that names itself is never taken for it.
+fn draws_styled_underlines(name: Option<&str>, windows_terminal: bool) -> bool {
+    match name {
+        Some(n) => {
+            let n = n.to_ascii_lowercase();
+            ["kitty", "ghostty", "wezterm", "foot"]
+                .iter()
+                .any(|known| n.starts_with(known))
+        }
+        None => windows_terminal,
+    }
+}
+
+/// Whether xmux runs on a Windows host inside Windows Terminal, which sets `WT_SESSION`
+/// for the programs it starts. Over ssh the variable does not reach the remote host, so
+/// this holds only for a local Windows run.
+fn in_windows_terminal() -> bool {
+    static WT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WT.get_or_init(|| cfg!(windows) && std::env::var_os("WT_SESSION").is_some())
 }
 
 /// An `rgb:R/G/B` spec (1 to 4 hex digits per channel) as channel fractions.
@@ -361,6 +379,22 @@ pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn underline_styles_go_to_known_names_and_to_an_unnamed_windows_terminal() {
+        assert!(draws_styled_underlines(Some("WezTerm 20240203"), false));
+        assert!(draws_styled_underlines(Some("kitty(0.41.1)"), false));
+        assert!(!draws_styled_underlines(Some("tmux 3.5a"), false));
+        assert!(!draws_styled_underlines(None, false));
+        assert!(
+            draws_styled_underlines(None, true),
+            "Windows Terminal gives no name"
+        );
+        assert!(
+            !draws_styled_underlines(Some("tmux 3.5a"), true),
+            "a named terminal inside Windows Terminal is what xmux writes to"
+        );
+    }
 
     fn lock() -> MutexGuard<'static, ()> {
         TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
