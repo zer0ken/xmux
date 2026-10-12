@@ -195,6 +195,12 @@ against, naming no source file, function, or test.
 - **FR-B48** - A herdr card attaches only to an existing running or saved stopped
   session; a missing session fails with a notification, and explicit new-session
   actions complete server creation before selecting the new session.
+- **FR-B49** - Text a session's client writes inside an OSC 8 hyperlink keeps the link in
+  the terminal view, so the terminal xmux runs in opens it as it would for the client
+  itself.
+- **FR-B50** - An underline a session's client draws keeps its style (double, curly,
+  dotted, dashed) and its own colour in the terminal view when the terminal xmux runs in
+  draws them; any other terminal shows a plain underline in the text's colour.
 
 ## C. Switching (the keystone)
 

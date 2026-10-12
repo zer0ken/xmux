@@ -1,7 +1,6 @@
-//! A one-pane vt100 grid the display layer tees child output into, used ONLY to repaint
-//! the live pane after a transient modal. Not a multiplexer: one grid, no
+//! A one-pane terminal grid the display layer tees child output into, used ONLY to
+//! repaint the live pane after a transient modal. Not a multiplexer: one grid, no
 //! layouts, no input routing. It also reads the input modes the child sets, which the
-//! input path shapes forwarded input by. It also reads the input modes the child sets, which the
 //! input path shapes forwarded input by.
 use std::hash::{Hash, Hasher};
 
@@ -10,6 +9,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color as RColor, Modifier, Style};
 
 use crate::display::callbacks::GridCallbacks;
+use crate::display::emulator::{Cell, Color, Parser, Underline, View};
 use crate::display::image::layer::ImageLayer;
 
 /// What a child's output asked of the terminal around the screen: a bell, or a desktop
@@ -64,14 +64,26 @@ impl ParserSink {
     }
 }
 
-impl vt100::Callbacks for ParserSink {
-    fn audible_bell(&mut self, _: &mut vt100::Screen) {
+impl ParserSink {
+    pub(crate) fn bell(&mut self) {
         self.push(Alert::Bell);
+    }
+
+    /// An OSC the child sent: a window title, or a notification.
+    pub(crate) fn osc(&mut self, params: &[&[u8]]) {
+        match params {
+            [b"0" | b"2", title] => self.set_title(title),
+            _ => {
+                if let Some(alert) = notification(params) {
+                    self.push(alert);
+                }
+            }
+        }
     }
 
     /// OSC 0 and OSC 2. An empty title takes the child's title back, and control
     /// characters are dropped so a title is only ever text when it is re-emitted.
-    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
+    fn set_title(&mut self, title: &[u8]) {
         let title: String = String::from_utf8_lossy(title)
             .chars()
             .filter(|c| !c.is_control())
@@ -83,12 +95,6 @@ impl vt100::Callbacks for ParserSink {
             .last()
             .unwrap_or(0);
         self.title = Some(title[..end].to_string()).filter(|t| !t.is_empty());
-    }
-
-    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
-        if let Some(alert) = notification(params) {
-            self.push(alert);
-        }
     }
 }
 
@@ -125,7 +131,7 @@ fn notification(params: &[&[u8]]) -> Option<Alert> {
 }
 
 pub struct Grid {
-    parser: vt100::Parser<GridCallbacks>,
+    parser: Parser<GridCallbacks>,
     /// Set by a session switch: the next `feed` wipes the grid before applying the
     /// chunk, so the prior session's content stays on screen until the mux's fresh
     /// repaint arrives (no blank window between the switch and the repaint) and the
@@ -153,7 +159,7 @@ impl Grid {
     fn reset_parser(&mut self, rows: u16, cols: u16) {
         self.parser.callbacks_mut().clear_sync();
         let sink = std::mem::take(self.parser.callbacks_mut());
-        self.parser = vt100::Parser::new_with_callbacks(rows, cols, 0, sink);
+        self.parser = Parser::new(rows, cols, sink);
     }
 
     /// The window title the child set with OSC 0 or OSC 2, if it set one.
@@ -177,11 +183,9 @@ impl Grid {
         self.parser
             .callbacks_mut()
             .set_input_modes(self.modes.modes());
-        // vt100 0.16.2 panics (screen.rs `Screen::text` unwrap on None) when a wide
-        // (CJK) glyph lands on the last column in some cursor states - common after a
-        // grid shrink. Catch it so the PTY pump thread survives; reset the parser so
-        // the next mux repaint refills the grid cleanly instead of re-panicking on the
-        // same stale cursor.
+        // A panic inside the emulator must not take the PTY pump thread with it. The
+        // parser is reset so the next mux repaint refills the grid cleanly instead of
+        // panicking again on the same state.
         let caps = crate::display::image::Caps::current();
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.images.feed(bytes, caps, &mut self.parser);
@@ -233,7 +237,7 @@ impl Grid {
         self.parser.screen_mut().set_size(rows, cols);
     }
 
-    /// The vt100 cursor as ratatui `(x, y)` (col, row), clamped to the grid.
+    /// The cursor as ratatui `(x, y)` (col, row), clamped to the grid.
     pub fn cursor(&self) -> (u16, u16) {
         let screen = self.visible();
         let (rows, cols) = screen.size();
@@ -263,11 +267,11 @@ impl Grid {
     /// The screen on view: the one a synchronized update holds while the child redraws,
     /// else the live one. Painting the live screen mid-update would show a frame the
     /// child has half written.
-    fn visible(&self) -> &vt100::Screen {
+    fn visible(&self) -> View<'_> {
         self.parser
             .callbacks()
             .held_screen()
-            .unwrap_or(self.parser.screen())
+            .unwrap_or_else(|| self.parser.screen().view())
     }
 
     /// Whether a synchronized update holds the screen on view. The view is redrawn
@@ -336,7 +340,7 @@ impl Grid {
     }
 
     /// Writes a top-left clip of the grid into `area` of `buf`, mapping each
-    /// vt100 cell's symbol + colours + attrs to a ratatui cell. Cells past the
+    /// emulator cell's symbol + colours + attrs to a ratatui cell. Cells past the
     /// grid size or `area` are skipped (the terminal view in Focus::Nav is narrower
     /// than the grid, so it shows a top-left clip).
     pub fn render_into(&self, buf: &mut Buffer, area: Rect) {
@@ -345,6 +349,7 @@ impl Grid {
         let rows = area.height.min(grid_rows);
         let cols = area.width.min(grid_cols);
         let kitty = crate::display::image::Caps::current().kitty;
+        let styled = crate::display::outer::outer().styled_underlines();
         for r in 0..rows {
             let mut left = None;
             for c in 0..cols {
@@ -364,17 +369,35 @@ impl Grid {
                     }
                     left = None;
                 }
+                cell.set_style(cell_style(vcell, styled));
                 if vcell.is_wide() && c + 1 >= cols {
                     // A double-width char whose second half falls outside the
                     // clipped pane would overflow the right edge and wrap to col 0
                     // of the next line; blank it so the pane stays aligned.
                     cell.set_symbol(" ");
                 } else if vcell.has_contents() {
-                    cell.set_symbol(vcell.contents());
+                    let text = vcell.contents();
+                    let link = vcell.hyperlink().filter(|uri| uri.len() <= LINK_MAX);
+                    let underline = styled.then(|| underline_style(vcell.underline())).flatten();
+                    if link.is_none() && underline.is_none() {
+                        cell.set_symbol(&text);
+                    } else {
+                        // The cell carries its link and its underline style inside its
+                        // symbol, so the diff sees a change of either as a change of the
+                        // cell. The forced width tells the diff how many columns the cell
+                        // covers, which the escape text would otherwise inflate.
+                        cell.set_symbol(&decorated_symbol(&text, link.as_deref(), underline));
+                        cell.set_diff_option(ratatui::buffer::CellDiffOption::ForcedWidth(
+                            if vcell.is_wide() {
+                                std::num::NonZeroU16::MIN.saturating_add(1)
+                            } else {
+                                std::num::NonZeroU16::MIN
+                            },
+                        ));
+                    }
                 } else {
                     cell.set_symbol(" ");
                 }
-                cell.set_style(vt_cell_style(vcell));
                 if vcell.is_wide_continuation() {
                     // ratatui's incremental diff skips the trailing cell of a
                     // standard wide (CJK) glyph, so a wide→narrow transition leaves
@@ -391,22 +414,112 @@ impl Grid {
     }
 }
 
-fn new_parser(rows: u16, cols: u16) -> vt100::Parser<GridCallbacks> {
-    vt100::Parser::new_with_callbacks(rows, cols, 0, GridCallbacks::default())
+fn new_parser(rows: u16, cols: u16) -> Parser<GridCallbacks> {
+    Parser::new(rows, cols, GridCallbacks::default())
 }
 
-/// Maps a vt100 colour to a ratatui colour. `Default` → `Reset` (terminal
-/// default), `Idx` → 256-colour index, `Rgb` → true colour.
-pub fn vt_color_to_ratatui(c: vt100::Color) -> RColor {
-    match c {
-        vt100::Color::Default => RColor::Reset,
-        vt100::Color::Idx(i) => RColor::Indexed(i),
-        vt100::Color::Rgb(r, g, b) => RColor::Rgb(r, g, b),
+/// The longest link URI written; a cell with a longer one is drawn without its link.
+const LINK_MAX: usize = 2048;
+
+/// The OSC 8 sequence that ends a link.
+const LINK_CLOSE: &str = "\x1b]8;;\x1b\\";
+
+/// The `SGR 4:n` style digit of an underline that a plain underline does not draw.
+fn underline_style(underline: Underline) -> Option<char> {
+    match underline {
+        Underline::None | Underline::Single => None,
+        Underline::Double => Some('2'),
+        Underline::Curly => Some('3'),
+        Underline::Dotted => Some('4'),
+        Underline::Dashed => Some('5'),
     }
 }
 
-/// Maps a vt100 cell's colours and attributes to a ratatui `Style`.
-fn vt_cell_style(cell: &vt100::Cell) -> Style {
+/// `text` inside an OSC 8 hyperlink to `link` and drawn with the underline `style`.
+/// Every linked cell opens and closes its own link, so a cell drawn alone by the diff is
+/// still linked; the `id` derived from the URI lets the terminal treat the cells of one
+/// link as one. Control characters are left out of the URI so the sequence cannot end
+/// early. The style is set back to a plain underline after the text, which is what the
+/// cell's own attributes left the terminal with.
+fn decorated_symbol(text: &str, link: Option<&str>, style: Option<char>) -> String {
+    use std::fmt::Write;
+    let mut symbol = String::new();
+    if let Some(uri) = link {
+        let uri: String = uri.chars().filter(|c| !c.is_control()).collect();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        uri.hash(&mut h);
+        let _ = write!(symbol, "\x1b]8;id=xmux-{:x};{uri}\x1b\\", h.finish());
+    }
+    if let Some(style) = style {
+        let _ = write!(symbol, "\x1b[4:{style}m{text}\x1b[4m");
+    } else {
+        symbol.push_str(text);
+    }
+    if link.is_some() {
+        symbol.push_str(LINK_CLOSE);
+    }
+    symbol
+}
+
+/// The text a buffer cell shows: its symbol without the escape sequences around it, for
+/// readers of the buffer that want what is on screen rather than what is written.
+pub fn visible_symbol(symbol: &str) -> std::borrow::Cow<'_, str> {
+    if !symbol.contains('\x1b') {
+        return symbol.into();
+    }
+    let mut text = String::new();
+    let mut chars = symbol.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            text.push(c);
+            continue;
+        }
+        match chars.next() {
+            // A CSI ends at its final byte.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // An OSC ends at ST.
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x1b' {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    text.into()
+}
+
+/// How many columns a buffer cell covers: its forced width when it carries a link or an
+/// underline style, the width of its symbol otherwise.
+pub fn cell_width(cell: &ratatui::buffer::Cell) -> usize {
+    match cell.diff_option {
+        ratatui::buffer::CellDiffOption::ForcedWidth(width) => usize::from(width.get()),
+        _ => unicode_width::UnicodeWidthStr::width(cell.symbol()),
+    }
+}
+
+/// Maps an emulator colour to a ratatui colour. `Default` → `Reset` (terminal
+/// default), `Idx` → 256-colour index, `Rgb` → true colour.
+pub fn vt_color_to_ratatui(c: Color) -> RColor {
+    match c {
+        Color::Default => RColor::Reset,
+        Color::Idx(i) => RColor::Indexed(i),
+        Color::Rgb(r, g, b) => RColor::Rgb(r, g, b),
+    }
+}
+
+/// Maps a cell's colours and attributes to a ratatui `Style`. The underline's own colour
+/// is drawn only when `styled`, the outer terminal drawing it.
+fn cell_style(cell: Cell<'_>, styled: bool) -> Style {
     let mut style = Style::default()
         .fg(vt_color_to_ratatui(cell.fgcolor()))
         .bg(vt_color_to_ratatui(cell.bgcolor()));
@@ -417,8 +530,11 @@ fn vt_cell_style(cell: &vt100::Cell) -> Style {
     if cell.italic() {
         m |= Modifier::ITALIC;
     }
-    if cell.underline() {
+    if cell.underline() != Underline::None {
         m |= Modifier::UNDERLINED;
+        if let Some(colour) = cell.underline_color().filter(|_| styled) {
+            style = style.underline_color(vt_color_to_ratatui(colour));
+        }
     }
     if cell.inverse() {
         m |= Modifier::REVERSED;
@@ -736,6 +852,16 @@ Connection to host closed.
             b"\x1b[?1004;1$y"
         );
         assert_eq!(replies(&mut g, b"\x1b[?25l\x1b[?25$p"), b"\x1b[?25;2$y");
+        assert_eq!(replies(&mut g, b"\x1b[?1h\x1b[?1$p"), b"\x1b[?1;1$y");
+        assert_eq!(
+            replies(&mut g, b"\x1b[?1049l\x1b[?47h\x1b[?47$p"),
+            b"\x1b[?47;1$y",
+            "a screen switch the cells do not model is still the client's mode"
+        );
+        assert_eq!(
+            replies(&mut g, b"\x1b[?9h\x1b[?9$p\x1b[?1000$p"),
+            b"\x1b[?9;1$y\x1b[?1000;2$y"
+        );
         assert_eq!(replies(&mut g, b"\x1b[?7727$p"), b"\x1b[?7727;0$y");
         assert_eq!(replies(&mut g, b"\x1b[4$p"), b"\x1b[4;0$y");
     }
@@ -859,8 +985,8 @@ Connection to host closed.
         assert_eq!(g.cursor_shape(), 0);
     }
 
-    /// A parser reset after a vt100 panic keeps the answers owed for the queries it
-    /// parsed before the panic.
+    /// The answers owed for the queries a chunk held stay owed whatever the bytes after
+    /// them do to the cells.
     #[test]
     fn replies_survive_a_parser_reset() {
         let mut g = Grid::new(1, 4);
@@ -959,13 +1085,10 @@ Connection to host closed.
 
     #[test]
     fn color_mapping_covers_default_idx_rgb() {
-        assert_eq!(vt_color_to_ratatui(vt100::Color::Default), RColor::Reset);
+        assert_eq!(vt_color_to_ratatui(Color::Default), RColor::Reset);
+        assert_eq!(vt_color_to_ratatui(Color::Idx(4)), RColor::Indexed(4));
         assert_eq!(
-            vt_color_to_ratatui(vt100::Color::Idx(4)),
-            RColor::Indexed(4)
-        );
-        assert_eq!(
-            vt_color_to_ratatui(vt100::Color::Rgb(10, 20, 30)),
+            vt_color_to_ratatui(Color::Rgb(10, 20, 30)),
             RColor::Rgb(10, 20, 30)
         );
     }
@@ -991,10 +1114,6 @@ Connection to host closed.
         assert!(g.is_blank(), "clear wipes all visible content");
     }
 
-    // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
-    // `cargo test` prints one "thread panicked at vt100 ... screen.rs" line to stderr -
-    // expected, not a failure. (The hook is not silenced here because it is process-
-    // global and tests run in parallel.)
     #[test]
     fn streamed_full_width_lines_keep_their_first_char() {
         // A mux draws a full-width row and lets auto-wrap carry into the next row
@@ -1017,24 +1136,15 @@ Connection to host closed.
     }
 
     #[test]
-    fn feed_survives_wide_char_at_last_column() {
-        // Regression: vt100 0.16.2 panics (drawing_cell_mut(col+1).unwrap() on None) when
-        // a wide CJK glyph prints on the last column - observed crashing the PTY pump
-        // thread. Grid::feed must catch+recover so the pump survives and the grid stays
-        // usable (a subsequent repaint lands).
-        let mut g = Grid::new(1, 4);
-        g.feed(b"\x1b[1;3H"); // cursor to 0-based col 2
-        g.feed("한".as_bytes()); // wide glyph occupies cols 2-3 (the right edge)
-        g.resize(1, 3); // shrink → the wide glyph's second half (col 3) is truncated
-        g.feed(b"\x1b[1;3HX"); // overwrite the now-edge wide glyph → vt100 panics here
-        g.feed(b"\x1b[H\x1b[2JOK"); // recovered grid still repaints
-        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
-        g.render_into(&mut buf, Rect::new(0, 0, 3, 1));
-        assert_eq!(
-            buf[(0, 0)].symbol(),
-            "O",
-            "grid usable after the wide-char edge case"
-        );
+    fn a_width_shrink_through_a_wide_char_keeps_the_screen() {
+        // Shrinking the width so the last column cuts a wide (CJK) glyph in half moves
+        // the glyph whole to the next row, and the screen keeps what the child wrote:
+        // the grid is not reset. With no scrollback, the row the glyph left scrolls off.
+        let mut g = Grid::new(2, 4);
+        g.feed("ab한".as_bytes());
+        g.resize(2, 3);
+        g.feed(b"\x1b[1;3HX");
+        assert_eq!(g.parser.screen().contents().lines().next(), Some("한X"));
     }
 
     #[test]
@@ -1171,33 +1281,15 @@ Connection to host closed.
         );
     }
 
-    // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
-    // `cargo test` prints one "thread panicked at vt100 ..." line to stderr - expected,
-    // not a failure. (The hook is not silenced here because it is process-global and
-    // tests run in parallel.)
     #[test]
-    fn feed_survives_clear_wide_panic_at_last_column() {
-        // Regression: vt100 0.16.2's `Row::clear_wide` (row.rs:89/91) panics when an
-        // erase/remove lands on the boundary of a wide (CJK) glyph - most often a
-        // double-width char whose first half sits at the last column (col+1 OOB, the
-        // row.rs:89 the panic.log shows as "len is 130 but the index is 130") or whose
-        // continuation wraps to column 0 (col-1 underflow). Both are the same code path
-        // and are caught by Grid::feed's catch_unwind; this pins the survival so a
-        // change to the catch does not silently re-expose the PTY pump to it.
-        let mut g = Grid::new(1, 4);
-        g.feed(b"\x1b[1;4H"); // cursor to 0-based col 3 (the right edge)
-        g.feed("한".as_bytes()); // wide glyph straddles/overflows the last column
-        g.feed(b"\x1b[K"); // erase-in-line on the dangling wide boundary → vt100 panics
-                           // Recovered grid must still repaint: a later clear+redraw lands cleanly.
-        g.clear();
-        g.feed(b"OK");
-        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
-        g.render_into(&mut buf, Rect::new(0, 0, 3, 1));
-        assert_eq!(
-            buf[(0, 0)].symbol(),
-            "O",
-            "grid usable after the clear_wide edge case"
-        );
+    fn an_erase_over_a_wide_char_at_the_last_column_keeps_the_screen() {
+        // A wide glyph written at the last column wraps to the next row, and an erase
+        // there clears it without touching the row above.
+        let mut g = Grid::new(2, 4);
+        g.feed(b"ab\x1b[1;4H");
+        g.feed("한".as_bytes());
+        g.feed(b"\x1b[K");
+        assert_eq!(g.parser.screen().contents().lines().next(), Some("ab"));
     }
 
     #[test]
@@ -1226,6 +1318,217 @@ Connection to host closed.
         );
         assert!(!g.cell_blank(0, 2), "a narrow char is taken");
         assert!(g.cell_blank(0, 3), "a truly blank cell is blank");
+    }
+
+    /// What the terminal receives when ratatui flushes `next` over `prev`: the same diff
+    /// and backend calls a frame's flush makes.
+    fn flushed(prev: &Buffer, next: &Buffer) -> String {
+        use ratatui::backend::Backend;
+        let mut out = Vec::new();
+        ratatui::backend::CrosstermBackend::new(&mut out)
+            .draw(prev.diff(next).into_iter())
+            .unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    fn rendered(bytes: &[u8], area: Rect) -> Buffer {
+        let mut g = Grid::new(area.height, area.width);
+        g.feed(bytes);
+        let mut buf = Buffer::empty(area);
+        g.render_into(&mut buf, area);
+        buf
+    }
+
+    /// Holds the terminal facts of a terminal that draws underline styles and colours.
+    fn styled_outer_terminal() -> std::sync::MutexGuard<'static, ()> {
+        use crate::display::outer::{set_outer_for_test, OuterTerminal, TEST_LOCK};
+        let lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_outer_for_test(OuterTerminal {
+            name: Some("WezTerm 20240203".to_string()),
+            ..OuterTerminal::default()
+        });
+        lock
+    }
+
+    #[test]
+    fn a_linked_cell_carries_its_link_and_its_width() {
+        let _g = plain_outer_terminal();
+        let area = Rect::new(0, 0, 8, 1);
+        let buf = rendered(
+            b"a\x1b]8;;https://example.com\x07L\xed\x95\x9c\x1b]8;;\x07b",
+            area,
+        );
+        let open = decorated_symbol("", Some("https://example.com"), None);
+        let open = open.strip_suffix(LINK_CLOSE).unwrap();
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            "a",
+            "a cell outside the link is plain"
+        );
+        assert_eq!(buf[(1, 0)].symbol(), format!("{open}L{LINK_CLOSE}"));
+        assert_eq!(buf[(2, 0)].symbol(), format!("{open}\u{d55c}{LINK_CLOSE}"));
+        assert_eq!(
+            buf[(4, 0)].symbol(),
+            "b",
+            "the link ends where the child ended it"
+        );
+        assert_eq!(cell_width(&buf[(1, 0)]), 1);
+        assert_eq!(
+            cell_width(&buf[(2, 0)]),
+            2,
+            "a wide glyph keeps both columns"
+        );
+        assert_eq!(visible_symbol(buf[(2, 0)].symbol()), "\u{d55c}");
+        assert_eq!(visible_symbol("x"), "x");
+    }
+
+    #[test]
+    fn the_diffing_renderer_writes_links_and_their_changes_only() {
+        let _g = plain_outer_terminal();
+        let area = Rect::new(0, 0, 8, 1);
+        let blank = Buffer::empty(area);
+        let linked = rendered(b"\x1b]8;;https://a.example\x07AB\x1b]8;;\x07C", area);
+        let out = flushed(&blank, &linked);
+        let open = "\x1b]8;id=xmux-";
+        assert_eq!(
+            out.matches(open).count(),
+            2,
+            "each linked cell opens its link: {out:?}"
+        );
+        assert!(
+            out.contains(";https://a.example\x1b\\A\x1b]8;;\x1b\\"),
+            "{out:?}"
+        );
+        assert!(
+            out.contains(";https://a.example\x1b\\B\x1b]8;;\x1b\\C"),
+            "{out:?}"
+        );
+
+        let out = flushed(&linked, &linked.clone());
+        assert!(
+            !out.contains("\x1b]8;") && !out.contains('A'),
+            "an unchanged linked frame writes no cell: {out:?}"
+        );
+
+        let relinked = rendered(b"\x1b]8;;https://b.example\x07AB\x1b]8;;\x07C", area);
+        let out = flushed(&linked, &relinked);
+        assert_eq!(out.matches("https://b.example").count(), 2, "{out:?}");
+        assert!(
+            !out.contains('C'),
+            "a cell whose link did not change is not written"
+        );
+
+        let unlinked = rendered(b"ABC", area);
+        let out = flushed(&linked, &unlinked);
+        assert!(
+            !out.contains("\x1b]8;"),
+            "a cell that lost its link is written plain: {out:?}"
+        );
+        assert!(out.contains('A') && out.contains('B'), "{out:?}");
+    }
+
+    #[test]
+    fn a_linked_wide_glyph_moves_the_cursor_past_both_columns() {
+        let _g = plain_outer_terminal();
+        let area = Rect::new(0, 0, 6, 1);
+        let blank = Buffer::empty(area);
+        let next = rendered(
+            b"\x1b]8;;https://a.example\x07\xed\x95\x9c\x1b]8;;\x07z",
+            area,
+        );
+        let out = flushed(&blank, &next);
+        let glyph = out.find('\u{d55c}').unwrap();
+        let z = out.find('z').unwrap();
+        assert!(
+            out[glyph..z].contains("\x1b[1;3H"),
+            "z is placed after the two columns the linked glyph covers: {out:?}"
+        );
+    }
+
+    /// The link each cell was written under, by column.
+    fn links(g: &Grid, row: u16, cols: u16) -> Vec<Option<String>> {
+        (0..cols)
+            .map(|c| g.parser.screen().cell(row, c)?.hyperlink())
+            .collect()
+    }
+
+    #[test]
+    fn a_link_outlives_an_sgr_reset_and_rides_a_scroll() {
+        let mut g = Grid::new(3, 6);
+        g.feed(b"\x1b]8;id=x;https://a.example/p;q\x07A\x1b[1mB\x1b[0mC\x1b]8;;\x07D");
+        let a = Some("https://a.example/p;q".to_string());
+        assert_eq!(
+            links(&g, 0, 4),
+            vec![a.clone(), a.clone(), a.clone(), None],
+            "an SGR reset leaves the link open, and a `;` in the URI is kept"
+        );
+        g.feed(b"\x1b[3;1H\x1b]8;;https://b.example\x07Z\x1b]8;;\x07\r\n");
+        assert_eq!(
+            links(&g, 1, 1),
+            vec![Some("https://b.example".to_string())],
+            "a linked cell keeps its link as the screen scrolls"
+        );
+    }
+
+    #[test]
+    fn underline_colours_and_styles_keep_the_other_attributes() {
+        use ratatui::style::Modifier;
+        let _g = plain_outer_terminal();
+        let area = Rect::new(0, 0, 4, 1);
+        for command in [
+            "58;2;0;128;255",
+            "58;5;0",
+            "58:2::0:128:255",
+            "58:5:0",
+            "59",
+            "4:2",
+            "4:3",
+        ] {
+            let buf = rendered(
+                format!("\x1b[1;38;2;11;22;33;48;5;77;4m\x1b[{command}mX").as_bytes(),
+                area,
+            );
+            let cell = &buf[(0, 0)];
+            assert!(cell.modifier.contains(Modifier::BOLD), "{command}");
+            assert!(cell.modifier.contains(Modifier::UNDERLINED), "{command}");
+            assert_eq!(cell.fg, RColor::Rgb(11, 22, 33), "{command}");
+            assert_eq!(cell.bg, RColor::Indexed(77), "{command}");
+        }
+        let buf = rendered(b"\x1b[4m\x1b[4:0mX", area);
+        assert!(
+            !buf[(0, 0)].modifier.contains(Modifier::UNDERLINED),
+            "4:0 ends it"
+        );
+    }
+
+    #[test]
+    fn a_terminal_without_underline_styles_gets_a_plain_underline() {
+        let _g = plain_outer_terminal();
+        let area = Rect::new(0, 0, 4, 1);
+        let buf = rendered(b"\x1b[4:3;58;2;1;2;3mX", area);
+        assert_eq!(buf[(0, 0)].symbol(), "X");
+        assert_eq!(buf[(0, 0)].underline_color, RColor::Reset);
+        let out = flushed(&Buffer::empty(area), &buf);
+        assert!(!out.contains("4:3") && !out.contains("58;"), "{out:?}");
+    }
+
+    #[test]
+    fn a_terminal_with_underline_styles_draws_the_style_and_colour() {
+        let _g = styled_outer_terminal();
+        let area = Rect::new(0, 0, 4, 1);
+        let buf = rendered(b"\x1b[4:3;58;2;1;2;3mX\x1b[4:1mY", area);
+        assert_eq!(buf[(0, 0)].symbol(), "\x1b[4:3mX\x1b[4m");
+        assert_eq!(cell_width(&buf[(0, 0)]), 1);
+        assert_eq!(visible_symbol(buf[(0, 0)].symbol()), "X");
+        assert_eq!(buf[(0, 0)].underline_color, RColor::Rgb(1, 2, 3));
+        assert_eq!(
+            buf[(1, 0)].symbol(),
+            "Y",
+            "a single underline needs no style"
+        );
+        let out = flushed(&Buffer::empty(area), &buf);
+        assert!(out.contains("\x1b[4:3mX\x1b[4m"), "{out:?}");
+        assert!(out.contains("58;2;1;2;3"), "{out:?}");
     }
 }
 

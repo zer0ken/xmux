@@ -12,6 +12,7 @@ use std::sync::Arc;
 use super::kitty::{Command, KittyImage};
 use super::layer::{self, Area, Replies};
 use super::Caps;
+use crate::display::emulator::{Cell, Color, Hooks, Parser, View};
 
 /// The most images one grid keeps. Past it the oldest transmission is forgotten.
 const MAX_IMAGES: usize = 64;
@@ -54,12 +55,7 @@ impl KittyStore {
     }
 
     /// Handles one graphics command (`body` follows the `G`).
-    pub fn command<C: vt100::Callbacks + Replies>(
-        &mut self,
-        body: &[u8],
-        caps: Caps,
-        parser: &mut vt100::Parser<C>,
-    ) {
+    pub fn command<C: Hooks + Replies>(&mut self, body: &[u8], caps: Caps, parser: &mut Parser<C>) {
         let mut cmd = Command::parse(body);
         if let Some(mut first) = self.pending.take() {
             // A later chunk carries only `m` (and perhaps `q`); the first chunk's keys
@@ -150,12 +146,12 @@ impl KittyStore {
     /// Places the child's image `client`: a virtual placement records its size in
     /// cells; a direct placement writes marker cells at the cursor and moves the
     /// cursor past them unless `C=1`.
-    fn place<C: vt100::Callbacks + Replies>(
+    fn place<C: Hooks + Replies>(
         &mut self,
         cmd: &Command,
         client: u32,
         caps: Caps,
-        parser: &mut vt100::Parser<C>,
+        parser: &mut Parser<C>,
     ) -> Result<Option<String>, &'static str> {
         let id = self.by_client(client).ok_or("ENOENT:image not found")?;
         let image = self.placed[&id].image.clone();
@@ -229,12 +225,12 @@ impl KittyStore {
             &restore,
         );
         parser.process(&out);
-        self.retain_shown(parser.screen());
+        self.retain_shown(parser.screen().view());
         Ok(None)
     }
 
     /// Drops the direct placements no marker cell names any more.
-    fn retain_shown(&mut self, screen: &vt100::Screen) {
+    fn retain_shown(&mut self, screen: View<'_>) {
         let shown = layer::marker_ids(screen);
         let by_client = &self.by_client;
         self.placed
@@ -244,7 +240,7 @@ impl KittyStore {
     /// `a=d`: removes all placements (`d=a`) or one image's (`d=i`), and with the
     /// uppercase form the image data too. A direct placement's marker cells are
     /// erased; a virtual placement stops showing its placeholder cells.
-    fn delete<C: vt100::Callbacks>(&mut self, cmd: &Command, parser: &mut vt100::Parser<C>) {
+    fn delete<C: Hooks>(&mut self, cmd: &Command, parser: &mut Parser<C>) {
         let what = cmd.char(b'd', 'a');
         let client = match what.to_ascii_lowercase() {
             'a' => None,
@@ -279,11 +275,11 @@ impl KittyStore {
 
     /// Answers a command the child did not quiet: `q=1` keeps only errors, `q=2` keeps
     /// nothing, and a command naming no image gets no answer.
-    fn answer<C: vt100::Callbacks + Replies>(
+    fn answer<C: Hooks + Replies>(
         &self,
         cmd: &Command,
         result: Result<Option<String>, &'static str>,
-        parser: &mut vt100::Parser<C>,
+        parser: &mut Parser<C>,
     ) {
         let quiet = cmd.num(b'q');
         let (i, n) = (cmd.num(b'i'), cmd.num(b'I'));
@@ -309,10 +305,7 @@ impl KittyStore {
 }
 
 /// Blanks every marker cell of the images `ids` names.
-fn erase_markers<C: vt100::Callbacks>(
-    ids: &std::collections::HashSet<u32>,
-    parser: &mut vt100::Parser<C>,
-) {
+fn erase_markers<C: Hooks>(ids: &std::collections::HashSet<u32>, parser: &mut Parser<C>) {
     if ids.is_empty() {
         return;
     }
@@ -356,7 +349,7 @@ impl KittyStore {
     /// for a placeholder cell naming nothing the grid can show, which stays blank as
     /// kitty leaves it. `left` is the cell to its left, from which a placeholder cell
     /// without a row or column diacritic takes them, as kitty infers them.
-    pub fn cell(&self, cell: &vt100::Cell, left: Option<KittyCell>) -> Option<Option<KittyCell>> {
+    pub fn cell(&self, cell: Cell<'_>, left: Option<KittyCell>) -> Option<Option<KittyCell>> {
         if let Some(p) = layer::marker(cell) {
             return self.placed.contains_key(&p.id).then_some(Some(KittyCell {
                 id: p.id,
@@ -364,11 +357,11 @@ impl KittyStore {
                 col: u16::from(p.col),
             }));
         }
-        let text = super::kitty::read_placeholder(cell.contents())?;
+        let text = super::kitty::read_placeholder(&cell.contents())?;
         let low = match cell.fgcolor() {
-            vt100::Color::Rgb(r, g, b) => u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b),
-            vt100::Color::Idx(i) => u32::from(i),
-            vt100::Color::Default => 0,
+            Color::Rgb(r, g, b) => u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b),
+            Color::Idx(i) => u32::from(i),
+            Color::Default => 0,
         };
         let client = low | u32::from(text.id_high.unwrap_or(0)) << 24;
         let Some(id) = self

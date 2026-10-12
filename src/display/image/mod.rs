@@ -2,7 +2,7 @@
 //! the outer terminal.
 //!
 //! The grid keeps an image as marker cells, one per cell the image covers, written
-//! through its own vt100 parser. The parser then scrolls, overwrites and clears them
+//! through its own emulator. The parser then scrolls, overwrites and clears them
 //! exactly as it does text, which is what a sixel terminal does with an image's cells,
 //! so the grid needs no image tracking of its own. A sixel image's marker cell shows in
 //! the frame as a cell ratatui never writes, and after each frame the painter draws

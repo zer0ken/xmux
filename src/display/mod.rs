@@ -4,6 +4,7 @@ pub mod callbacks;
 pub mod child_env;
 pub mod decode;
 pub mod dispatch;
+pub mod emulator;
 pub mod grid;
 pub mod image;
 pub mod input;
@@ -13,7 +14,6 @@ pub mod mouse;
 pub mod outer;
 pub mod paste;
 pub mod registry;
-mod sgr;
 pub mod term;
 pub mod worker;
 
