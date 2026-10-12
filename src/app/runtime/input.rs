@@ -145,6 +145,14 @@ impl Runtime {
             x: ev.col.saturating_sub(1),
             y: ev.row.saturating_sub(1),
         };
+        // Every mouse event reports the pointer's position: the reference the floating
+        // box's relocation is measured against. A motion event means the pointer moved,
+        // so wherever the box now sits, the pointer's presence in it is the pointer's
+        // doing and coordinate routing applies again.
+        self.last_pointer = Some(at);
+        if (ev.cb & 0x20) != 0 {
+            self.floating_moved_under_pointer = false;
+        }
         let grabs_key_list = self.model.switcher.popup_drag_active()
             || (ev.pressed
                 && (ev.cb & 0x63) == 0
@@ -171,7 +179,9 @@ impl Runtime {
         // A pointer over the floating nav's box is over the nav, not the mux: the wheel
         // scrolls the box's card list in the nav's focus and is inert in the terminal's,
         // like the side nav. The box's press and release are the popup drag's, handled
-        // below.
+        // below. The exception is a box that relocated under a resting pointer: the
+        // pointer never moved onto it, so wheel events there pass through to the
+        // terminal until a motion event restores coordinate routing.
         let in_mux = if self.model.render_plan.nav_position
             == crate::ui::switcher::NavPosition::Floating
             && self
@@ -180,6 +190,7 @@ impl Runtime {
                 .regions
                 .nav_border
                 .contains(ratatui::layout::Position { x: at.x, y: at.y })
+            && !self.floating_moved_under_pointer
         {
             None
         } else {

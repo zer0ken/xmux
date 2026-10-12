@@ -2490,6 +2490,8 @@ fn test_rt(env: Env) -> Runtime {
         paste: Default::default(),
         pending_mouse: Vec::new(),
         floating_frozen_at: None,
+        last_pointer: None,
+        floating_moved_under_pointer: false,
         window_focused: true,
         child_focus: None,
         keyboard_pushed: false,
@@ -4796,6 +4798,89 @@ fn a_floating_box_grows_with_its_content_while_the_pointer_rests_on_it() {
     assert!(
         grown.height > first.height,
         "the box grows to fit its taller content"
+    );
+}
+
+#[test]
+fn a_box_relocated_under_a_resting_pointer_passes_the_wheel_to_the_terminal() {
+    use crate::display::grid::Grid;
+    use crate::ui::switcher::{NavPosition, Scan, Switcher};
+    // The user scrolls the terminal, the grid changes, and the box re-places over the
+    // resting pointer: the wheel there is the terminal's, not the box's list, until a
+    // motion event says the pointer moved onto the box itself.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Floating;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let mut top = Grid::new(24, 80);
+    top.feed(&b"top text\n".repeat(10));
+    let nav = rt.place_floating_nav(area, Some(&top), rt.model.nav_size());
+    rt.cols = 80;
+    rt.body_rows = 23;
+    sync_test_render_plan(&mut rt);
+
+    // The grid scrolls: the box re-places, and the pointer rests inside the new spot
+    // without having ever moved there.
+    let mut covered = Grid::new(24, 80);
+    covered.feed(&b"X".repeat(80));
+    covered.feed(b"\n");
+    let _ = rt.place_floating_nav(area, Some(&covered), nav);
+    let relocated = rt.model.floating_rect.unwrap();
+    let p = ratatui::layout::Position {
+        x: relocated.x + 1,
+        y: relocated.y + 1,
+    };
+    rt.last_pointer = Some(p);
+    let _ = rt.place_floating_nav(area, Some(&covered), nav);
+    assert!(
+        rt.floating_moved_under_pointer,
+        "a relocation under a resting pointer is recorded"
+    );
+    sync_test_render_plan(&mut rt);
+
+    // The wheel at the resting pointer is the terminal's, not the box's list.
+    let mut wheel = false;
+    rt.handle_mouse_event(
+        &mouse(64, p.x + 1, p.y + 1, true),
+        &Selection::default(),
+        &mut false,
+        &mut wheel,
+        &mut false,
+        &mut false,
+    );
+    assert!(
+        !wheel,
+        "the wheel at a pointer the box covered passes to the terminal"
+    );
+
+    // A motion event restores coordinate routing: the wheel scrolls the box again.
+    rt.handle_mouse_event(
+        &mouse(35, p.x + 1, p.y + 1, true),
+        &Selection::default(),
+        &mut false,
+        &mut wheel,
+        &mut false,
+        &mut false,
+    );
+    assert!(
+        !rt.floating_moved_under_pointer,
+        "a motion event clears the relocation record"
+    );
+    let mut wheel = false;
+    rt.handle_mouse_event(
+        &mouse(64, p.x + 1, p.y + 1, true),
+        &Selection::default(),
+        &mut false,
+        &mut wheel,
+        &mut false,
+        &mut false,
+    );
+    assert!(
+        wheel,
+        "after the pointer moves, the box's wheel routing applies again"
     );
 }
 

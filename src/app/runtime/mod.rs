@@ -1804,6 +1804,15 @@ struct Runtime {
     /// holds for 10 seconds from here, then the position is forgotten and the scan
     /// resumes. `None` means no drag holds the box.
     floating_frozen_at: Option<std::time::Instant>,
+    /// The pointer position the last mouse event reported, in grid coordinates. The
+    /// reference the floating box's relocation is measured against, so a box that moved
+    /// under a resting pointer is distinguishable from a pointer that moved onto the
+    /// box.
+    last_pointer: Option<ratatui::layout::Position>,
+    /// True while the floating box covers a pointer position the pointer never moved
+    /// to: the box relocated under a resting pointer, so wheel events there pass
+    /// through to the terminal until a motion event restores coordinate routing.
+    floating_moved_under_pointer: bool,
     /// Whether xmux's window holds the focus, as its terminal last reported.
     window_focused: bool,
     /// The attachment last told it holds the focus. See [`Runtime::sync_child_focus`].
