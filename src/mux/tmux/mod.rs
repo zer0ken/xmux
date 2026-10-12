@@ -174,6 +174,12 @@ impl Mux for Tmux {
         mux::attach(&self.bin, session)
     }
 
+    /// tmux drops one client by its own tty: the teardown asks the server to release
+    /// xmux's client before the child is killed.
+    fn detach_client_plan(&self, tty: &str) -> Option<Vec<String>> {
+        Some(mux::detach_client(&self.bin, tty))
+    }
+
     /// `ignore-size` leaves the display client out of window sizing while any client
     /// without the flag is attached, so xmux's narrower view never resizes the user's own
     /// client, and a session only xmux shows still takes xmux's size. The flag rides a
@@ -648,6 +654,27 @@ mod display_identity_tests {
         assert_ne!(
             a, shared,
             "the instance key extends, never reuses, the bare host key"
+        );
+    }
+}
+
+#[cfg(test)]
+mod detach_tests {
+    use super::*;
+
+    /// The teardown asks the server to drop xmux's client by its own tty, so a child
+    /// whose process outlives the kill never keeps holding the session.
+    #[test]
+    fn the_teardown_drops_one_client_by_its_tty() {
+        let tmux = Tmux { bin: "tmux".into() };
+        assert_eq!(
+            tmux.detach_client_plan("/dev/pts/3"),
+            Some(vec![
+                "tmux".to_string(),
+                "detach-client".to_string(),
+                "-t".to_string(),
+                "/dev/pts/3".to_string(),
+            ])
         );
     }
 }

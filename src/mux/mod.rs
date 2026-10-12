@@ -370,6 +370,14 @@ pub trait Mux: Send + Sync {
         self.attach_plan(session)
     }
 
+    /// The argv of a command that detaches one client from its session's server, named
+    /// by the client's own tty. The teardown asks the server to drop xmux's client before
+    /// killing the child. `None` (the default) for a mux with no per-client detach, so a
+    /// teardown has nothing to ask the server.
+    fn detach_client_plan(&self, _tty: &str) -> Option<Vec<String>> {
+        None
+    }
+
     /// An opaque plan that moves xmux's OWN display client to `session` IN PLACE (no
     /// teardown). The driver runs the returned [`SwitchPlan`] blind through the transport,
     /// never inspecting the variant; the `tty >file` / read-back mechanism a shared mux
@@ -1659,5 +1667,54 @@ Usage: zellij [OPTIONS]",
         // No socket to hand on stays no socket, whoever the mux is.
         assert_eq!(server_socket_for("tmux", None), None);
         assert_eq!(server_socket_for("zellij", None), None);
+    }
+}
+
+#[cfg(test)]
+mod detach_tests {
+    use super::*;
+
+    /// The muxes that name no client from outside their own session answer no detach
+    /// plan, so the teardown asks their servers nothing.
+    #[test]
+    fn a_mux_with_no_per_client_detach_answers_no_plan() {
+        for (mux, bin) in [
+            (
+                &crate::mux::Abduco {
+                    bin: "abduco".into(),
+                } as &dyn Mux,
+                "abduco",
+            ),
+            (
+                &crate::mux::Herdr {
+                    bin: "herdr".into(),
+                } as &dyn Mux,
+                "herdr",
+            ),
+            (
+                &crate::mux::Screen {
+                    bin: "screen".into(),
+                } as &dyn Mux,
+                "screen",
+            ),
+            (
+                &crate::mux::Tuios {
+                    bin: "tuios".into(),
+                } as &dyn Mux,
+                "tuios",
+            ),
+            (
+                &crate::mux::Zellij {
+                    bin: "zellij".into(),
+                } as &dyn Mux,
+                "zellij",
+            ),
+        ] {
+            assert_eq!(
+                mux.detach_client_plan("/dev/pts/3"),
+                None,
+                "{bin} answers no detach plan"
+            );
+        }
     }
 }

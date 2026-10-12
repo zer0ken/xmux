@@ -72,6 +72,11 @@ HERDR_FORGET = ("herdr machine list --json | sed -n 's/.*\"id\": *\"\\([0-9a-f]*
 DIRECT_ATTACH = {"tmux": "tmux attach -t {s}", "screen": "screen -x {s}",
                  "zellij": "zellij attach {s}", "abduco": "abduco -a {s}",
                  "tuios": "tuios attach {s}", "herdr": "herdr session attach {s}"}
+# The display attach child xmux's own attach runs on the host: each mux's attach_plan
+# shape, which the residual-client scenario greps the host's process table for.
+ATTACH_CHILD = {"tmux": "tmux attach -t {s}", "screen": "screen attach -t {s}",
+                "zellij": "zellij attach {s}", "abduco": "abduco -a {s}",
+                "tuios": "tuios attach {s}", "herdr": "herdr --session {s} client"}
 LISTING = {"tmux": "tmux ls -F '#S'", "screen": "screen -ls", "zellij": "zellij ls -n",
            "abduco": "abduco", "tuios": "tuios ls --json", "herdr": "herdr session list --json"}
 
@@ -668,6 +673,30 @@ def wait_regex(app, pattern, what, timeout=15):
                       what, timeout)
 
 
+def residual_client(c):
+    # Quitting xmux leaves no client holding its session: a client whose process
+    # outlives the teardown keeps the session attached, and the next run's client hits
+    # it in a size negotiation. The host runs no attach child of a quit xmux, and the
+    # mux that can answer it holds no client on the session at all.
+    m = c.mux
+    pattern = ATTACH_CHILD[m].format(s=f"{m}1")
+    app = c.launch(c.h1)
+    app.open(f"{c.h1}/{m}", f"{m}1")
+    app.whereami(c.path(c.h1, f"{m}1"))
+    if not c.hosts.sh(c.h1, f"pgrep -f '[x]{pattern}'"):
+        raise Failure(f"{c.h1} did not run the attach child while xmux was alive; "
+                      "the after-quit check answers nothing")
+    app.t.send("C-g", gap=0.3)
+    app.t.send("q", gap=0.5)
+    time.sleep(3)
+    if c.hosts.sh(c.h1, f"pgrep -f '[x]{pattern}'"):
+        raise Failure(f"{c.h1} still runs the attach child of a quit xmux")
+    if m == "tmux":
+        out = c.hosts.sh(c.h1, f"tmux list-clients -t {m}1", check=False)
+        if out.strip():
+            raise Failure(f"a client still holds {m}1 after quit:\n{out}")
+
+
 def click(app, x, y):
     """A left click at screen cell (x, y), counted from 0, as the terminal reports it."""
     app.t.send(f"\x1b[<0;{x + 1};{y + 1}M", f"\x1b[<0;{x + 1};{y + 1}m", gap=0.5)
@@ -733,6 +762,7 @@ GROUPS = {
         "new-session": new_session,
         "password-login": password_login,
         "unreachable": unreachable,
+        "residual-client": residual_client,
     },
     "native workflow": {
         "native-keys": native_keys,
