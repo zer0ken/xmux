@@ -1133,15 +1133,7 @@ impl Switcher {
         }
         // A wide char whose right half the box covers would keep painting its left
         // half over the box's border: blank the orphan half.
-        if box_rect.x > 0 {
-            let buf = frame.buffer_mut();
-            for y in box_rect.y..box_rect.bottom() {
-                let cell = &mut buf[(box_rect.x - 1, y)];
-                if UnicodeWidthStr::width(cell.symbol()) > 1 {
-                    cell.set_symbol(" ");
-                }
-            }
-        }
+        modal::blank_bisected_wide_glyph(frame, box_rect);
         // The card content, identical to a right nav.
         self.render_nav(frame, plan, palette);
         // The prefix hint rests on the box's top border, like a title.

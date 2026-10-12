@@ -425,6 +425,9 @@ pub(crate) fn render(
         block = block.title_bottom(version_line(version, update, avail, palette).right_aligned());
     }
     frame.render_widget(block, rect);
+    // A wide glyph straddling the box's left edge would keep painting its lead over
+    // the border; blank the orphan half so the edge reads cleanly.
+    crate::ui::modal::blank_bisected_wide_glyph(frame, rect);
     let key_style = key_cell_style(palette);
     let title_style = title_style(palette);
     let x0 = rect.x + 1 + PAD;
@@ -496,6 +499,8 @@ fn version_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     fn titles(list: &KeyList) -> Vec<String> {
         list.columns
@@ -674,6 +679,43 @@ mod tests {
         assert_eq!(
             desc_of(&right, "←/↑").as_deref(),
             Some("focus terminal view")
+        );
+    }
+
+    #[test]
+    fn a_key_list_blanks_a_wide_glyph_bisected_by_its_left_border() {
+        let list = key_list("C-g", NavPosition::Left, 40, 10).expect("a list fits");
+        let (w, h) = list.size();
+        let rect = Rect::new(5, 1, w, h);
+        let mut term = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        term.draw(|f| {
+            f.buffer_mut()[(4u16, 2u16)].set_symbol("한"); // wide; right half under the border at x=5
+            f.buffer_mut()[(4u16, 3u16)].set_symbol("Y"); // half-width at the same edge column
+            render(
+                f,
+                rect,
+                &list,
+                Border {
+                    title: "C-g",
+                    status: "",
+                    hints: &[],
+                    version: "",
+                    update: None,
+                },
+                &palette::Palette::default(),
+            );
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        assert_eq!(
+            buf[(4u16, 2u16)].symbol(),
+            " ",
+            "wide glyph bisected by the key list's left border is blanked"
+        );
+        assert_eq!(
+            buf[(4u16, 3u16)].symbol(),
+            "Y",
+            "a half-width char at the edge stays flush"
         );
     }
 }
