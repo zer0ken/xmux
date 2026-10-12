@@ -860,6 +860,8 @@ impl Runtime {
             paste: Default::default(),
             pending_mouse: Vec::new(),
             floating_frozen_at: None,
+            last_pointer: None,
+            floating_moved_under_pointer: false,
             window_focused: true,
             child_focus: None,
             keyboard_pushed: false,
@@ -959,6 +961,14 @@ impl Runtime {
             |x, y| grid.is_some_and(|g| g.cell_blank(y, x)),
         );
         self.model.floating_rect = Some(rect);
+        // The box covers the pointer by the pointer's own doing only: a genuine hover
+        // moved the pointer onto it. A relocation that lands on a resting pointer is
+        // recorded instead, so wheel events there pass through to the terminal until a
+        // motion event restores coordinate routing.
+        let hovering = self.model.mouse_state.hovering_floating_nav;
+        self.floating_moved_under_pointer = self
+            .last_pointer
+            .is_some_and(|p| rect.contains(p) && !hovering);
         self.model.nav_size()
     }
 
