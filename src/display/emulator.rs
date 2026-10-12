@@ -8,6 +8,10 @@
 //! emulator has applied every byte before it, so a reply reads the cursor and modes as
 //! the client left them at that point of the stream, and each query is seen once however
 //! the reads split it.
+//!
+//! Scrolls inside left and right margins (DECLRMM, DECSLRM) and rectangle fills
+//! (DECFRA) are applied here, since the emulator has neither: tmux uses them to scroll
+//! and clear one pane of a split window when the terminal it draws to reports them.
 
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::{Dimensions, Grid};
@@ -122,7 +126,19 @@ impl<H: Hooks> Parser<H> {
     fn process_piece(&mut self, piece: &[u8]) {
         let mut rest = piece;
         while !rest.is_empty() {
-            let n = self.observer.advance_until_terminated(&mut self.seen, rest);
+            // While margins are set a line feed has to end its piece too: the observer
+            // prints a run of text and the controls in it in one go.
+            self.seen.margins = self.screen.margins().is_some();
+            let end = if self.seen.margins {
+                rest.iter()
+                    .position(|b| (0x0a..=0x0c).contains(b))
+                    .map_or(rest.len(), |i| i + 1)
+            } else {
+                rest.len()
+            };
+            let n = self
+                .observer
+                .advance_until_terminated(&mut self.seen, &rest[..end]);
             let mut buf = [0; 4];
             let (applied, held) = match self.seen.event {
                 // The character is the last thing the observer read; the emulator gets
@@ -134,6 +150,15 @@ impl<H: Hooks> Parser<H> {
                     self.seen.event = None;
                     (&rest[..n], &[][..])
                 }
+                // The sequence is the last thing the observer read, from its ESC, or its
+                // control byte; the emulator gets what came before it, and the sequence is
+                // applied around the margins. A sequence an earlier read started is all of
+                // what this read holds up to it.
+                Some(Event::Scroll { control: true, .. }) => rest[..n].split_at(n - 1),
+                Some(ref event) if self.holds(event) => {
+                    let start = rest[..n].iter().rposition(|&b| b == 0x1b).unwrap_or(0);
+                    rest[..n].split_at(start)
+                }
                 _ => (&rest[..n], &[][..]),
             };
             self.processor.advance(&mut self.screen.term, applied);
@@ -144,16 +169,51 @@ impl<H: Hooks> Parser<H> {
         }
     }
 
+    /// Whether the sequence `event` ends is held back from the emulator, to be applied
+    /// around the margins.
+    fn holds(&self, event: &Event) -> bool {
+        match event {
+            Event::Scroll { .. } | Event::Reset => true,
+            Event::Csi {
+                i1: None,
+                i2: None,
+                c: 'S' | 'T',
+                ..
+            } => self.screen.margins().is_some(),
+            Event::Csi {
+                i1: None,
+                i2: None,
+                c: 's',
+                ..
+            } => self.screen.lrmm,
+            _ => false,
+        }
+    }
+
     fn dispatch(&mut self, event: Event, held: &[u8]) {
-        let view = self.screen.view();
+        let processor = &mut self.processor;
         match event {
             Event::Join(c) => {
                 if !self.screen.join(c) {
-                    self.processor.advance(&mut self.screen.term, held);
+                    processor.advance(&mut self.screen.term, held);
                 }
             }
             Event::Widen => self.screen.widen(),
-            Event::Bell => self.hooks.bell(view),
+            Event::Bell => self.hooks.bell(self.screen.view()),
+            Event::Scroll { next_line, .. } => {
+                self.screen
+                    .inside_margins(|term| processor.advance(term, held));
+                if next_line {
+                    if let Some((left, _)) = self.screen.margins() {
+                        self.screen.term.grid_mut().cursor.point.column = Column(left);
+                    }
+                }
+            }
+            Event::Reset => {
+                processor.advance(&mut self.screen.term, held);
+                self.screen.lrmm = false;
+                self.screen.lr_margins = None;
+            }
             Event::Csi {
                 i1,
                 i2,
@@ -161,11 +221,32 @@ impl<H: Hooks> Parser<H> {
                 c,
             } => {
                 let params: Vec<&[u16]> = params.iter().map(Vec::as_slice).collect();
-                self.hooks.csi(view, i1, i2, &params, c);
+                let modes = || params.iter().filter_map(|p| p.first().copied());
+                match (i1, i2, c) {
+                    (None, None, 'S' | 'T') => self
+                        .screen
+                        .inside_margins(|term| processor.advance(term, held)),
+                    (None, None, 's') if self.screen.lrmm => {
+                        // CSI s sets the margins while DECLRMM is on, and saves the
+                        // cursor only while it is off; the emulator knows the latter.
+                        let saved = self.screen.term.grid().saved_cursor.clone();
+                        processor.advance(&mut self.screen.term, held);
+                        self.screen.term.grid_mut().saved_cursor = saved;
+                        self.screen.set_margins(&params);
+                    }
+                    (Some(b'?'), None, 'h' | 'l') if modes().any(|m| m == 69) => {
+                        self.screen.lrmm = c == 'h';
+                        self.screen.lr_margins = None;
+                    }
+                    (Some(b'!'), None, 'p') => self.screen.lr_margins = None,
+                    (Some(b'$'), None, 'x') => self.screen.fill(&params),
+                    _ => processor.advance(&mut self.screen.term, held),
+                }
+                self.hooks.csi(self.screen.view(), i1, i2, &params, c);
             }
             Event::Osc { ref params } => {
                 let params: Vec<&[u8]> = params.iter().map(Vec::as_slice).collect();
-                self.hooks.osc(view, &params);
+                self.hooks.osc(self.screen.view(), &params);
             }
         }
     }
@@ -195,6 +276,14 @@ enum Event {
     Join(char),
     /// A VS16, which tmux takes as asking for the character before it two columns wide.
     Widen,
+    /// A line feed, index, next line, or reverse index while margins are set. `control`
+    /// tells a control byte from an ESC sequence.
+    Scroll {
+        next_line: bool,
+        control: bool,
+    },
+    /// A full reset, which clears the margins too.
+    Reset,
     Csi {
         i1: Option<u8>,
         i2: Option<u8>,
@@ -213,6 +302,8 @@ struct Seen {
     event: Option<Event>,
     /// Whether the last character printed was a zero-width joiner.
     after_zwj: bool,
+    /// Whether left and right margins are set, so a line feed has to stop the observer.
+    margins: bool,
 }
 
 impl vte::Perform for Seen {
@@ -231,11 +322,29 @@ impl vte::Perform for Seen {
         self.after_zwj = false;
         if byte == 0x07 {
             self.event = Some(Event::Bell);
+        } else if self.margins && (0x0a..=0x0c).contains(&byte) {
+            self.event = Some(Event::Scroll {
+                next_line: false,
+                control: true,
+            });
         }
     }
 
-    fn esc_dispatch(&mut self, _: &[u8], _: bool, _: u8) {
+    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
         self.after_zwj = false;
+        if ignore || !intermediates.is_empty() {
+            return;
+        }
+        match byte {
+            b'D' | b'M' | b'E' if self.margins => {
+                self.event = Some(Event::Scroll {
+                    next_line: byte == b'E',
+                    control: false,
+                });
+            }
+            b'c' => self.event = Some(Event::Reset),
+            _ => {}
+        }
     }
 
     fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], ignore: bool, c: char) {
@@ -266,6 +375,10 @@ impl vte::Perform for Seen {
 /// The live screen.
 pub struct Screen {
     term: Term<VoidListener>,
+    /// Whether DECLRMM lets CSI s set left and right margins.
+    lrmm: bool,
+    /// The left and right margin columns DECSLRM set, `None` for the whole width.
+    lr_margins: Option<(usize, usize)>,
 }
 
 impl Screen {
@@ -278,6 +391,93 @@ impl Screen {
         };
         Self {
             term: Term::new(config, &size(rows, cols), VoidListener),
+            lrmm: false,
+            lr_margins: None,
+        }
+    }
+
+    /// The left and right margin columns while they narrow the screen.
+    fn margins(&self) -> Option<(usize, usize)> {
+        let (left, right) = self.lr_margins.filter(|_| self.lrmm)?;
+        let last = self.term.grid().columns() - 1;
+        let right = right.min(last);
+        (left < right && (left > 0 || right < last)).then_some((left, right))
+    }
+
+    /// DECSLRM: sets the margins from 1-based left and right columns and homes the
+    /// cursor. A left column not before the right one leaves the margins as they are.
+    fn set_margins(&mut self, params: &[&[u16]]) {
+        let columns = self.term.grid().columns();
+        let left = param(params, 0, 1);
+        let right = param(params, 1, columns).min(columns);
+        if left >= right {
+            return;
+        }
+        self.lr_margins = Some((left - 1, right - 1));
+        let cursor = &mut self.term.grid_mut().cursor;
+        cursor.point = alacritty_terminal::index::Point::new(Line(0), Column(0));
+        cursor.input_needs_wrap = false;
+    }
+
+    /// Applies a scroll the emulator makes across whole rows inside the margins only:
+    /// the columns outside them keep the cells they had.
+    fn inside_margins(&mut self, apply: impl FnOnce(&mut Term<VoidListener>)) {
+        let Some((left, right)) = self.margins() else {
+            apply(&mut self.term);
+            return;
+        };
+        let grid = self.term.grid();
+        let columns = grid.columns();
+        let outside = || (0..left).chain(right + 1..columns);
+        let kept: Vec<Vec<TermCell>> = (0..grid.screen_lines())
+            .map(|y| {
+                let row = &grid[Line(y as i32)];
+                outside().map(|x| row[Column(x)].clone()).collect()
+            })
+            .collect();
+        apply(&mut self.term);
+        let grid = self.term.grid_mut();
+        for (y, cells) in kept.into_iter().enumerate() {
+            let row = &mut grid[Line(y as i32)];
+            for (x, cell) in outside().zip(cells) {
+                row[Column(x)] = cell;
+            }
+        }
+    }
+
+    /// DECFRA: fills the rectangle between 1-based top, left, bottom, and right with
+    /// the character `Pc`, written with the client's current attributes.
+    fn fill(&mut self, params: &[&[u16]]) {
+        let Some(c) = params
+            .first()
+            .and_then(|p| p.first())
+            .and_then(|&code| char::from_u32(u32::from(code)))
+            .filter(|c| matches!(*c as u32, 32..=126 | 160..=255))
+        else {
+            return;
+        };
+        let grid = self.term.grid_mut();
+        let (rows, columns) = (grid.screen_lines(), grid.columns());
+        let top = param(params, 1, 1);
+        let left = param(params, 2, 1);
+        let bottom = param(params, 3, rows).min(rows);
+        let right = param(params, 4, columns).min(columns);
+        if top > bottom || left > right {
+            return;
+        }
+        let mut cell = grid.cursor.template.clone();
+        cell.c = c;
+        cell.flags.remove(
+            Flags::WIDE_CHAR
+                | Flags::WIDE_CHAR_SPACER
+                | Flags::LEADING_WIDE_CHAR_SPACER
+                | Flags::WRAPLINE,
+        );
+        for y in top - 1..bottom {
+            let row = &mut grid[Line(y as i32)];
+            for x in left - 1..right {
+                row[Column(x)] = cell.clone();
+            }
         }
     }
 
@@ -367,6 +567,7 @@ impl Screen {
     /// Resizes to `rows` x `cols`, no smaller than the emulator can reflow.
     pub fn set_size(&mut self, rows: u16, cols: u16) {
         self.term.resize(size(rows, cols));
+        self.lr_margins = None;
     }
 
     /// The SGR sequence that restores the attributes the client is writing with.
@@ -465,6 +666,15 @@ fn incomplete_utf8(bytes: &[u8]) -> usize {
         return if back < len { back } else { 0 };
     }
     0
+}
+
+/// The 1-based parameter at `index`, `default` when it is missing or zero.
+fn param(params: &[&[u16]], index: usize, default: usize) -> usize {
+    params
+        .get(index)
+        .and_then(|p| p.first())
+        .filter(|&&v| v != 0)
+        .map_or(default, |&v| usize::from(v))
 }
 
 fn size(rows: u16, cols: u16) -> TermSize {
@@ -992,6 +1202,90 @@ mod tests {
             !p.screen().cell(0, 1).unwrap().is_wide_continuation(),
             "a right half whose wide char is gone is a blank cell"
         );
+    }
+
+    /// A 3x6 screen of rows `abcdef`, `ghijkl`, and `mnopqr`, with left and right
+    /// margins on columns 2 to 4.
+    fn margined() -> Parser<Log> {
+        let mut p = Parser::new(3, 6, Log::default());
+        p.process(b"abcdef\r\nghijkl\r\nmnopqr\x1b[?69h\x1b[2;4s");
+        p
+    }
+
+    fn rows(p: &Parser<Log>) -> Vec<String> {
+        (0..p.screen().size().0).map(|r| row(p, r)).collect()
+    }
+
+    #[test]
+    fn scrolls_stay_inside_the_margins() {
+        for (input, want) in [
+            (&b"\x1b[3;3H\n"[..], ["ahijef", "gnopkl", "m   qr"]),
+            (b"\x1b[3;3H\x1bD", ["ahijef", "gnopkl", "m   qr"]),
+            (b"\x1b[2S", ["anopef", "g   kl", "m   qr"]),
+            (b"\x1b[1;3H\x1bM", ["a   ef", "gbcdkl", "mhijqr"]),
+            (b"\x1b[T", ["a   ef", "gbcdkl", "mhijqr"]),
+            (b"\x1b[1;3H\n", ["abcdef", "ghijkl", "mnopqr"]),
+            (b"\x1b[3;3H\nZ", ["ahijef", "gnopkl", "m Z qr"]),
+        ] {
+            let mut p = margined();
+            p.process(input);
+            assert_eq!(rows(&p), want, "{input:?}");
+            let mut split = margined();
+            for b in input {
+                split.process(&[*b]);
+            }
+            assert_eq!(rows(&split), want, "{input:?} split");
+        }
+    }
+
+    #[test]
+    fn a_next_line_inside_the_margins_returns_to_the_left_margin() {
+        let mut p = margined();
+        p.process(b"\x1b[3;4H\x1bE");
+        assert_eq!(p.screen().cursor_position(), (2, 1));
+        assert_eq!(rows(&p), ["ahijef", "gnopkl", "m   qr"]);
+    }
+
+    #[test]
+    fn margins_set_only_while_declrmm_is_on() {
+        let mut p = Parser::new(3, 6, Log::default());
+        p.process(b"abcdef\r\nghijkl\r\nmnopqr\x1b[2;4s\x1b[3;3H\n");
+        assert_eq!(rows(&p), ["ghijkl", "mnopqr", "      "]);
+        p.process(b"\x1b[u");
+        assert_eq!(
+            p.screen().cursor_position(),
+            (2, 5),
+            "CSI s saves the cursor without DECLRMM"
+        );
+        let mut p = margined();
+        p.process(b"\x1b[?69l\x1b[3;3H\n");
+        assert_eq!(rows(&p), ["ghijkl", "mnopqr", "      "]);
+        let mut p = margined();
+        p.process(b"\x1bc\x1b[3;1Habcdef\r\n");
+        assert_eq!(rows(&p)[1], "abcdef", "a full reset clears the margins");
+    }
+
+    #[test]
+    fn setting_margins_keeps_the_saved_cursor() {
+        let mut p = Parser::new(3, 6, Log::default());
+        p.process(b"\x1b[2;2H\x1b7\x1b[?69h\x1b[2;4s");
+        assert_eq!(
+            p.screen().cursor_position(),
+            (0, 0),
+            "DECSLRM homes the cursor"
+        );
+        p.process(b"\x1b8");
+        assert_eq!(p.screen().cursor_position(), (1, 1));
+    }
+
+    #[test]
+    fn a_rectangle_fill_writes_its_character_with_the_current_attributes() {
+        let mut p = margined();
+        p.process(b"\x1b[44m\x1b[32;1;2;2;3$x\x1b[0m");
+        assert_eq!(rows(&p), ["a  def", "g  jkl", "mnopqr"]);
+        let cell = p.screen().cell(1, 2).unwrap();
+        assert_eq!(cell.bgcolor(), Color::Idx(4));
+        assert_eq!(p.screen().cell(1, 3).unwrap().bgcolor(), Color::Default);
     }
 
     #[test]
