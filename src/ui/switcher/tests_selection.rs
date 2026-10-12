@@ -152,7 +152,10 @@ fn a_selected_empty_hosts_machine_half_has_no_highlight_padding() {
 #[test]
 fn hovering_a_shared_items_part_has_no_padding() {
     let mut h = fleet();
-    h.select("web", "api");
+    // The selection parks without a user move, so the host band shows and the hover
+    // reads the band's card; parking off the hovered parts keeps the hover unselected.
+    let api = h.card_row(|r| matches!(r, RowRef::Session { sess } if sess.name == "api"));
+    h.sw.set_selected(api);
     let title = h.title_row("web");
     let idle = h.card_row(|r| matches!(r, RowRef::Host { host, .. } if host == "idle"));
     for (row, part) in [(title, Part::Host), (idle, Part::Machine)] {
@@ -401,9 +404,13 @@ fn selecting_a_nav_card_or_a_title_half_moves_no_text() {
     h.select("web", "deploy");
     assert_eq!(text(&h, nav), on_api, "a card selected");
     h.ctrl(KeyCode::Up);
-    assert_eq!(text(&h, nav), on_api, "a title's host half selected");
+    // The title's host half shows the host band, whose cards are a text change of
+    // their own; the comparison restarts from the state the title holds.
+    let on_title = text(&h, nav);
     h.ctrl(KeyCode::Up);
-    assert_eq!(text(&h, nav), on_api, "a title's machine half selected");
+    assert_eq!(text(&h, nav), on_title, "a title's machine half selected");
+    h.ctrl(KeyCode::Down);
+    assert_eq!(text(&h, nav), on_title, "the title's host half again");
 }
 
 #[test]
@@ -515,7 +522,10 @@ fn shared_nav_parts_have_no_selection_or_hover_padding_at_every_position() {
     for position in NAV_POSITIONS {
         for target in 0..3 {
             let mut h = fleet();
-            h.select("web", "api");
+            // The selection parks without a user move, so the host band shows and the
+            // hover and the select read the band's card, off the hovered parts.
+            let api = h.card_row(|r| matches!(r, RowRef::Session { sess } if sess.name == "api"));
+            h.sw.set_selected(api);
             h.draw_at(nav_at(position));
             let (row, part) = match target {
                 0 => (h.title_row("web"), Part::Machine),

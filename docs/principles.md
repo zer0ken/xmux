@@ -60,9 +60,9 @@ only while acting has a surface that appears while they act.
 ## Space for What Shows
 
 xmux reserves a row or a cell only for an element it paints; an element hidden by state
-takes no space until it is shown. The host band, hidden when the move into the terminal
-view comes from a session card, leaves its rows to the session cards, and the parting
-row that would sit above it disappears with it.
+takes no space until it is shown. The host band, hidden by a user move onto a session
+card or by the move into the terminal view from one, leaves its rows to the session
+cards, and the parting row that would sit above it disappears with it.
 
 The nav is read between tasks, so a space held for something off screen reads as a gap
 in the list the user is scanning: it is not a card, it never scrolls like one, and it
