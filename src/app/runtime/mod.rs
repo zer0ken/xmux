@@ -953,13 +953,19 @@ fn spawn_mux_discovery(
     });
 }
 
-/// Re-resolves the ROSTER off the loop and hands the answer back as
+/// Re-resolves the ROSTER off the loop and hands the answers back as
 /// `HostEvent::RosterResolved`.
 ///
 /// Off the loop for the same reason mux discovery is: resolving reads the config and asks
 /// each roster provider, and a provider is a subprocess (`tailscale status`, `wsl.exe -l`).
 /// Running that on the loop would freeze rendering and input for its whole duration.
 /// Bounded by the shared scan pool, like every other piece of discovery work.
+///
+/// The roster lands in two answers, ssh config first: the fast one leaves out the neighbor
+/// scan, so a machine the user wrote down joins or leaves the nav while the slow scan is
+/// still waiting out silent addresses. The full one follows with the neighbors, applied
+/// with the rescan flag: the re-scan's one toast states every change when the whole
+/// answer has landed.
 ///
 /// A config that stopped PARSING resolves to defaults, which would silently narrow the
 /// roster to this machine. That answer is dropped rather than applied: a typo must cost the
@@ -968,11 +974,45 @@ fn spawn_roster_resolve(
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
     gate: std::sync::Arc<tokio::sync::Semaphore>,
 ) {
+    spawn_roster_resolve_with(
+        tx,
+        gate,
+        crate::provision::env::resolve_roster_with(false),
+        crate::provision::env::resolve_roster(),
+    );
+}
+
+/// The re-scan's two roster answers on ONE task, injected so tests can feed fakes:
+/// `fast` is the ssh-config answer, applied silently, and `full` is applied with the
+/// rescan flag.
+fn spawn_roster_resolve_with<F, G>(
+    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
+    fast: F,
+    full: G,
+) where
+    F: std::future::Future<Output = (crate::provision::env::Roster, Option<anyhow::Error>)>
+        + Send
+        + 'static,
+    G: std::future::Future<Output = (crate::provision::env::Roster, Option<anyhow::Error>)>
+        + Send
+        + 'static,
+{
     tokio::spawn(async move {
         let Ok(_permit) = gate.acquire().await else {
             return;
         };
-        let (roster, err) = crate::provision::env::resolve_roster().await;
+        let (roster, err) = fast.await;
+        if let Some(e) = err {
+            tracing::warn!(error = %e, "config did not parse; keeping the roster as it stands");
+            let _ = tx.send(HostEvent::RosterKept);
+            return;
+        }
+        let _ = tx.send(HostEvent::RosterResolved {
+            roster: Box::new(roster),
+            rescan: false,
+        });
+        let (roster, err) = full.await;
         if let Some(e) = err {
             tracing::warn!(error = %e, "config did not parse; keeping the roster as it stands");
             let _ = tx.send(HostEvent::RosterKept);

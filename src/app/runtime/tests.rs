@@ -1677,6 +1677,71 @@ async fn first_frame_does_not_wait_for_startup_roster_and_applies_its_answer() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn a_re_scan_applies_the_ssh_config_answer_before_the_full_one() {
+    // The re-scan's roster lands in two answers, ssh config first: a machine the user
+    // wrote down joins the nav while the slow neighbor scan is still waiting out silent
+    // addresses, and the fast answer applies silently so the re-scan's one toast states
+    // every change when the whole answer has landed.
+    let env = std::sync::Arc::new(fake_env_with_machines(&["prod"]));
+    let (mut rt, mut io) = Runtime::new(env);
+    spawn_roster_resolve_with(
+        rt.mgr.events(),
+        rt.scan_pool.clone(),
+        async { (fake_roster(&["prod", "stage"]), None) },
+        async { (fake_roster(&["prod", "stage", "neighbor"]), None) },
+    );
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), io.host_rx.recv())
+        .await
+        .expect("fast roster completed")
+        .expect("fast roster event");
+    let crate::link::HostEvent::RosterResolved { roster, rescan } = event else {
+        panic!("the fast answer is a roster resolution");
+    };
+    assert!(!rescan, "the fast answer applies silently");
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), io.host_rx.recv())
+        .await
+        .expect("full roster completed")
+        .expect("full roster event");
+    let crate::link::HostEvent::RosterResolved {
+        roster: full_roster,
+        rescan: full_rescan,
+    } = event
+    else {
+        panic!("the full answer is a roster resolution");
+    };
+    assert!(full_rescan, "the full answer carries the rescan flag");
+    let full_roster_names_neighbor = full_roster
+        .ssh_aliases
+        .iter()
+        .any(|alias| alias == "neighbor");
+    assert!(
+        full_roster_names_neighbor,
+        "only the full answer names the neighbor"
+    );
+
+    // Both answers applied in order: the fast one first, the full one after.
+    rt.on_host_event(
+        crate::link::HostEvent::RosterResolved { roster, rescan },
+        &mut io.host_rx,
+    );
+    rt.on_host_event(
+        crate::link::HostEvent::RosterResolved {
+            roster: full_roster,
+            rescan: full_rescan,
+        },
+        &mut io.host_rx,
+    );
+    assert!(
+        rt.hosts.def("stage").is_some(),
+        "the ssh config machine joined"
+    );
+    assert!(rt.hosts.def("neighbor").is_some(), "the neighbor joined");
+    assert!(rt.hosts.def("prod").is_some(), "and prod stands");
+}
+
 #[tokio::test]
 async fn a_re_scan_roster_adds_a_machine_it_now_names() {
     // The point of re-resolving on a re-scan: a machine that was not reachable at launch
