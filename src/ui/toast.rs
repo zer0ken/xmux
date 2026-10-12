@@ -82,14 +82,16 @@ fn toast_size(toast: &Toast, max_w: u16) -> (u16, u16) {
 }
 
 /// Toasts float in the terminal's top-right corner and stack downward, newest first,
-/// whatever position the nav or the hint is in. If the prefix key list or a popup
-/// occupies that corner, a toast starts beyond it. A toast that cannot fit stays in the
-/// history. Width is capped at 40% of the window.
+/// whatever position the nav or the hint is in. The floating nav owns its corner: a toast
+/// that would overlap it stands to its left, or below it when nothing fits there. If the
+/// prefix key list or a popup occupies that corner, a toast starts beyond it. A toast that
+/// cannot fit stays in the history. Width is capped at 40% of the window.
 pub(crate) fn place_toasts(
     notify: &Notifications,
     terminal: Rect,
     window: Rect,
     keep: Rect,
+    beside: Rect,
 ) -> Vec<(u64, Rect)> {
     let share = u32::from(window.width) * u32::from(TOAST_MAX_PERCENT) / 100;
     let max_w = u16::try_from(share).unwrap_or(u16::MAX).min(terminal.width);
@@ -103,8 +105,16 @@ pub(crate) fn place_toasts(
         if u32::from(used) + u32::from(h) > u32::from(terminal.height) {
             continue;
         }
-        let x = terminal.right() - w;
+        let mut x = terminal.right() - w;
         let mut y = terminal.y + used;
+        // The floating nav outranks the toast: the toast stands to its left, or below it
+        // when the nav is too wide for anything to fit at its side.
+        if !beside.is_empty() && Rect::new(x, y, w, h).intersects(beside) {
+            match beside.x.checked_sub(w) {
+                Some(left) if left >= terminal.x => x = left,
+                _ => y = beside.bottom(),
+            }
+        }
         if !keep.is_empty() && Rect::new(x, y, w, h).intersects(keep) {
             y = keep.bottom();
         }
@@ -299,7 +309,7 @@ mod tests {
         let window = Rect::new(0, 0, 100, 30);
         let n = notify_with(&["gpu-02"]);
         for terminal in terminals() {
-            let placed = place_toasts(&n, terminal, window, Rect::default());
+            let placed = place_toasts(&n, terminal, window, Rect::default(), Rect::default());
             assert_eq!(placed.len(), 1, "{terminal:?}");
             let r = placed[0].1;
             assert_eq!(r.right(), terminal.right(), "{terminal:?}");
@@ -313,7 +323,7 @@ mod tests {
         let window = Rect::new(0, 0, 100, 30);
         let n = notify_with(&["old", "new"]);
         let terminal = Rect::new(31, 0, 69, 30);
-        let placed = place_toasts(&n, terminal, window, Rect::default());
+        let placed = place_toasts(&n, terminal, window, Rect::default(), Rect::default());
         let new_id = n.toasts[1].id;
         assert_eq!(placed[0].0, new_id, "the newest is placed first");
         assert_eq!(placed[0].1.y, terminal.y, "the newest takes the top");
@@ -331,10 +341,40 @@ mod tests {
         let terminal = Rect::new(31, 0, 69, 30);
         // The key list at the top-right corner: the toast starts below it.
         let keep = Rect::new(70, 0, 30, 6);
-        let placed = place_toasts(&n, terminal, window, keep);
+        let placed = place_toasts(&n, terminal, window, keep, Rect::default());
         assert_eq!(placed.len(), 1);
         assert_eq!(placed[0].1.y, keep.bottom());
         assert!(!placed[0].1.intersects(keep));
+    }
+
+    #[test]
+    fn a_toast_stands_to_the_left_of_the_floating_nav() {
+        let window = Rect::new(0, 0, 100, 30);
+        let n = notify_with(&["gpu-02"]);
+        let terminal = Rect::new(0, 0, 100, 30);
+        // The floating nav near the right wall, overlapping the toast's rows: the toast
+        // ends where the nav begins.
+        let nav = Rect::new(72, 2, 26, 10);
+        let placed = place_toasts(&n, terminal, window, Rect::default(), nav);
+        assert_eq!(placed.len(), 1);
+        let r = placed[0].1;
+        assert_eq!(r.right(), nav.x);
+        assert!(!r.intersects(nav));
+    }
+
+    #[test]
+    fn a_toast_with_no_room_left_of_the_nav_stands_below_it() {
+        let window = Rect::new(0, 0, 100, 30);
+        let n = notify_with(&["gpu-02"]);
+        let terminal = Rect::new(0, 0, 100, 30);
+        // A nav as wide as the terminal, overlapping the toast's rows: nothing fits at
+        // its side, so the toast starts below it.
+        let nav = Rect::new(0, 2, 100, 6);
+        let placed = place_toasts(&n, terminal, window, Rect::default(), nav);
+        assert_eq!(placed.len(), 1);
+        let r = placed[0].1;
+        assert_eq!(r.y, nav.bottom());
+        assert!(!r.intersects(nav));
     }
 
     #[test]
@@ -342,7 +382,13 @@ mod tests {
         let window = Rect::new(0, 0, 100, 30);
         let mut n = Notifications::default();
         n.toast("gpu-02", vec![Note::new(Level::Error, "x ".repeat(60))]);
-        let placed = place_toasts(&n, Rect::new(31, 0, 69, 30), window, Rect::default());
+        let placed = place_toasts(
+            &n,
+            Rect::new(31, 0, 69, 30),
+            window,
+            Rect::default(),
+            Rect::default(),
+        );
         let r = placed[0].1;
         assert_eq!(r.width, 40);
         assert!(r.height > 3, "the reason wraps rather than clipping: {r:?}");
@@ -353,7 +399,7 @@ mod tests {
         let n = notify_with(&["gpu-02"]);
         let window = Rect::new(0, 0, 2000, 30);
         let terminal = Rect::new(0, 0, 1990, 30);
-        let placed = place_toasts(&n, terminal, window, Rect::default());
+        let placed = place_toasts(&n, terminal, window, Rect::default(), Rect::default());
         assert_eq!(placed.len(), 1);
         assert!(placed[0].1.width <= 800, "{:?}", placed[0].1);
     }
@@ -369,7 +415,13 @@ mod tests {
             vec![Note::new(Level::Error, vec!["denied"; 20].join("\n"))],
         );
         let terminal = Rect::new(31, 0, 69, 10);
-        let placed = place_toasts(&n, terminal, Rect::new(0, 0, 100, 10), Rect::default());
+        let placed = place_toasts(
+            &n,
+            terminal,
+            Rect::new(0, 0, 100, 10),
+            Rect::default(),
+            Rect::default(),
+        );
         assert_eq!(
             placed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             [n.toasts[0].id],
@@ -385,6 +437,7 @@ mod tests {
             &n,
             Rect::new(0, 0, 10, 10),
             Rect::new(0, 0, 100, 10),
+            Rect::default(),
             Rect::default(),
         );
         assert!(placed.is_empty());

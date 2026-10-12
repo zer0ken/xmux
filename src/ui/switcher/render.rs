@@ -364,7 +364,8 @@ impl Switcher {
             nav_col_offset: previous.nav_col_offset,
             popup_rect,
             // A toast never covers the prefix key list (the list is what a live prefix
-            // reads its next key from).
+            // reads its next key from), and a floating nav owns its corner: the toast
+            // stands to the nav's left.
             toasts: crate::ui::toast::place_toasts(
                 &state.notify,
                 regions.terminal,
@@ -373,6 +374,10 @@ impl Switcher {
                     Some((rect, _)) => *rect,
                     None if !popup_rect.is_empty() => popup_rect,
                     None => Rect::default(),
+                },
+                match nav.position == NavPosition::Floating && nav.width != 0 {
+                    true => regions.nav_border,
+                    false => Rect::default(),
                 },
             ),
             key_list,
