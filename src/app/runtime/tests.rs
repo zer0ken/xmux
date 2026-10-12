@@ -2423,6 +2423,7 @@ fn test_rt(env: Env) -> Runtime {
         term_input: crate::display::input::TermInput::new(prefix),
         nav_decoder: crate::display::decode::KeyDecoder::new(),
         paste: Default::default(),
+        pending_mouse: Vec::new(),
         floating_frozen_at: None,
         window_focused: true,
         child_focus: None,
@@ -9026,6 +9027,47 @@ fn a_session_gets_only_the_mouse_reports_its_client_asked_for() {
     let (mut rt, sel, log) = rt_mouse_over_session(b"\x1b[?1003h\x1b[?1006h");
     send_mouse(&mut rt, &sel, 35, x + 2, 2, true);
     assert_eq!(logged(&log), b"\x1b[<35;2;2M");
+}
+
+#[test]
+fn a_mouse_report_split_across_reads_is_held_then_forwarded_as_one_event() {
+    // The terminal emits an SGR mouse report as one burst, but the stdin reader reads
+    // 256-byte chunks, so a burst can cut a report mid-sequence. The partial must be
+    // held for the next read and never forwarded to the session as literal keys, which
+    // would echo `<0;5;3M` text into the shell.
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    let key = display_key(&rt.hosts, &rt.model.state.selection);
+    rt.registry
+        .grid(&key)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .feed(b"\x1b[?1000h\x1b[?1006h");
+    // A press over the terminal view, split across two reads at a 256-byte chunk edge.
+    let t = rt.model.render_plan.regions.terminal;
+    let partial = format!("\x1b[<0;{};{}", t.x + 2, t.y + 2);
+    // The first read ends inside the report: nothing reaches the session yet, and the
+    // partial waits for the rest instead of leaking as literal keys.
+    rt.on_stdin(partial.as_bytes());
+    assert!(
+        logged(&log).is_empty(),
+        "the incomplete report is held, not forwarded as text"
+    );
+    assert_eq!(
+        rt.pending_mouse.as_slice(),
+        partial.as_bytes(),
+        "the incomplete report is held for the next read"
+    );
+    // The next read completes it; the whole thing is one mouse event, not text.
+    rt.on_stdin(b"M");
+    assert!(
+        logged(&log).starts_with(b"\x1b[<0;"),
+        "the completed report is forwarded as a mouse event"
+    );
+    assert!(
+        rt.pending_mouse.is_empty(),
+        "the held prefix was consumed into the completed event"
+    );
 }
 
 #[test]

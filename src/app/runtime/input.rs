@@ -625,14 +625,22 @@ impl Runtime {
         // Mouse capture is global, so mouse bytes arrive in both states; scanning here
         // prevents them from reaching handle_nav_bytes (which would mis-decode them)
         // or TermInput's prefix logic. Split into: mouse events + non-mouse byte stream.
-        // Edge case: a sequence split across reads parses as None and falls into
-        // non_mouse - rare in practice; no cross-read buffering in v1.
-        let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
+        // A report split across reads (the stdin reader chunks at 256 bytes, and a fast
+        // mouse burst can cut a report) ends the previous read with an incomplete prefix:
+        // that prefix is prepended here so the report parses as one event, and any new
+        // trailing incomplete prefix is held for the next read. Without the hold, the
+        // parts would fall into the non-mouse stream and reach a session as literal keys.
+        let mut buf = std::mem::take(&mut self.pending_mouse);
+        buf.extend_from_slice(bytes);
+        let bytes = &buf[..];
+        let mouse_tail = crate::display::mouse::trailing_mouse_prefix(bytes);
+        let parse_end = bytes.len() - mouse_tail;
+        let mut non_mouse: Vec<u8> = Vec::with_capacity(parse_end);
         let mut mouse_focus_toggle = false;
         let mut wheel_scrolled = false;
         {
             let mut i = 0;
-            while i < bytes.len() {
+            while i < parse_end {
                 // A focus report says what happened to xmux's window, not what the user
                 // typed: it is taken out here like a mouse report, and the loop tells the
                 // session about it.
@@ -661,6 +669,9 @@ impl Runtime {
                     i += 1;
                 }
             }
+        }
+        if mouse_tail > 0 {
+            self.pending_mouse = bytes[parse_end..].to_vec();
         }
         // Watchdog: a nav border drag is normally ended by the button-up event, but a
         // release can be lost (split across reads, released off-window, or a terminal

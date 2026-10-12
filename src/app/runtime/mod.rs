@@ -1722,6 +1722,11 @@ struct Runtime {
     term_input: crate::display::input::TermInput,
     nav_decoder: crate::display::decode::KeyDecoder,
     paste: crate::display::paste::PasteSplitter,
+    /// An incomplete SGR mouse report at the end of the last stdin read, held until the
+    /// next read completes it. A report split across reads would otherwise leak its parts
+    /// to the non-mouse stream and reach a session as literal keys. See
+    /// [`Runtime::handle_stdin_bytes`].
+    pending_mouse: Vec<u8>,
     /// When the user last dropped a drag of the floating nav's box: the auto-relocation
     /// holds for 10 seconds from here, then the position is forgotten and the scan
     /// resumes. `None` means no drag holds the box.

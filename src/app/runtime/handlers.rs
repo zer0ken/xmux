@@ -858,6 +858,7 @@ impl Runtime {
             term_input,
             nav_decoder,
             paste: Default::default(),
+            pending_mouse: Vec::new(),
             floating_frozen_at: None,
             window_focused: true,
             child_focus: None,

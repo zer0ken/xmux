@@ -127,6 +127,49 @@ fn parse_decimal(data: &[u8]) -> Option<(u16, usize)> {
     Some((n as u16, i))
 }
 
+/// The length of the longest suffix of `data` that is a strict (incomplete) prefix of
+/// an SGR mouse report `ESC [ < cb ; col ; row (M|m)`, or 0 when `data` ends with no
+/// such prefix. A report split across reads ends the first read with such a suffix; the
+/// caller holds it and prepends it to the next read, so the parts never reach the
+/// non-mouse stream as literal keys.
+pub(crate) fn trailing_mouse_prefix(data: &[u8]) -> usize {
+    // Only a suffix starting at the last `ESC [ <` can be an incomplete report.
+    let mut start = None;
+    let mut i = 0;
+    while i + 3 <= data.len() {
+        if data[i] == 0x1b && data[i + 1] == b'[' && data[i + 2] == b'<' {
+            start = Some(i);
+        }
+        i += 1;
+    }
+    let Some(k) = start else {
+        return 0;
+    };
+    let rest = &data[k + 3..];
+    // An incomplete report holds only digits and `;`: no final M/m (that would make it
+    // complete), no leading or doubled `;` (a report has no empty field), and at most
+    // two `;` (a report is exactly three fields before the final byte).
+    let mut semis = 0;
+    let mut prev_semi = rest.starts_with(b";");
+    for &b in rest {
+        if b == b';' {
+            if prev_semi {
+                return 0;
+            }
+            prev_semi = true;
+            semis += 1;
+            if semis > 2 {
+                return 0;
+            }
+        } else if b.is_ascii_digit() {
+            prev_semi = false;
+        } else {
+            return 0;
+        }
+    }
+    data.len() - k
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +331,37 @@ mod tests {
         };
         let encoded = encode_sgr_mouse(&ev, 5, 3);
         assert_eq!(encoded, b"\x1b[<0;5;3m");
+    }
+
+    #[test]
+    fn a_trailing_incomplete_report_is_a_held_prefix() {
+        // The parts a report splits into across reads: only the strict prefixes hold.
+        assert_eq!(trailing_mouse_prefix(b"\x1b[<"), 3);
+        assert_eq!(trailing_mouse_prefix(b"\x1b[<0"), 4);
+        assert_eq!(trailing_mouse_prefix(b"\x1b[<0;5"), 6);
+        assert_eq!(trailing_mouse_prefix(b"\x1b[<0;5;3"), 8);
+        assert_eq!(
+            trailing_mouse_prefix(b"x\x1b[<0;5"),
+            6,
+            "keys before it pass"
+        );
+    }
+
+    #[test]
+    fn a_complete_report_is_not_a_held_prefix() {
+        // A complete report ends in M/m and parses whole; it is never held.
+        assert_eq!(trailing_mouse_prefix(b"\x1b[<0;5;3M"), 0);
+        assert_eq!(trailing_mouse_prefix(b"\x1b[<0;5;3m"), 0);
+    }
+
+    #[test]
+    fn a_non_mouse_tail_is_not_a_held_prefix() {
+        // A leading or doubled `;`, a non-digit, a fourth field, or no `ESC [ <` at all
+        // cannot be the start of an incomplete report.
+        assert_eq!(trailing_mouse_prefix(b"abc"), 0);
+        assert_eq!(trailing_mouse_prefix(b"\x1b[<;5"), 0, "empty first field");
+        assert_eq!(trailing_mouse_prefix(b"\x1b[<0;;5"), 0, "doubled `;`");
+        assert_eq!(trailing_mouse_prefix(b"\x1b[<0;5;3;"), 0, "a fourth field");
+        assert_eq!(trailing_mouse_prefix(b"\x1b[<0;5x"), 0, "a non-digit");
     }
 }
