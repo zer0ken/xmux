@@ -74,8 +74,8 @@ DIRECT_ATTACH = {"tmux": "tmux attach -t {s}", "screen": "screen -x {s}",
                  "tuios": "tuios attach {s}", "herdr": "herdr session attach {s}"}
 # The display attach child xmux's own attach runs on the host: each mux's attach_plan
 # shape, which the residual-client scenario greps the host's process table for.
-ATTACH_CHILD = {"tmux": "tmux attach -t {s}", "screen": "screen attach -t {s}",
-                "zellij": "zellij attach {s}", "abduco": "abduco -a {s}",
+ATTACH_CHILD = {"tmux": "tmux attach -t {s}", "screen": "screen -x {s}",
+                "zellij": "zellij attach {s}", "abduco": "abduco -l -a {s}",
                 "tuios": "tuios attach {s}", "herdr": "herdr --session {s} client"}
 LISTING = {"tmux": "tmux ls -F '#S'", "screen": "screen -ls", "zellij": "zellij ls -n",
            "abduco": "abduco", "tuios": "tuios ls --json", "herdr": "herdr session list --json"}
@@ -680,17 +680,32 @@ def residual_client(c):
     # mux that can answer it holds no client on the session at all.
     m = c.mux
     pattern = ATTACH_CHILD[m].format(s=f"{m}1")
+    # Bracket the pattern's first character so pgrep never matches its own
+    # command line, the same idiom every other scenario uses.
+    needle = f"[{pattern[0]}]{pattern[1:]}"
+
+    def attach_child_running():
+        return c.hosts.sh(c.h1, f"pgrep -f '{needle}'", check=False).strip() != ""
+
     app = c.launch(c.h1)
     app.open(f"{c.h1}/{m}", f"{m}1")
     app.whereami(c.path(c.h1, f"{m}1"))
-    if not c.hosts.sh(c.h1, f"pgrep -f '[x]{pattern}'"):
-        raise Failure(f"{c.h1} did not run the attach child while xmux was alive; "
-                      "the after-quit check answers nothing")
+    # The attach child takes a moment to appear on the host (an ssh attach establishes
+    # its connection first), so wait for it: the after-quit check answers something.
+    end = time.monotonic() + 15
+    while not attach_child_running():
+        if time.monotonic() > end:
+            raise Failure(f"{c.h1} never ran the attach child while xmux was alive; "
+                          "the after-quit check answers nothing")
+        time.sleep(0.2)
     app.t.send("C-g", gap=0.3)
     app.t.send("q", gap=0.5)
-    time.sleep(3)
-    if c.hosts.sh(c.h1, f"pgrep -f '[x]{pattern}'"):
-        raise Failure(f"{c.h1} still runs the attach child of a quit xmux")
+    # The teardown kills the child and detaches the client; wait for the child to leave.
+    end = time.monotonic() + 10
+    while attach_child_running():
+        if time.monotonic() > end:
+            raise Failure(f"{c.h1} still runs the attach child of a quit xmux")
+        time.sleep(0.2)
     if m == "tmux":
         out = c.hosts.sh(c.h1, f"tmux list-clients -t {m}1", check=False)
         if out.strip():
