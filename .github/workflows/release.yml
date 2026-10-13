@@ -76,6 +76,20 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: prepare
     runs-on: ${{ matrix.os }}
+    # `id-token` lets the Windows job authenticate to Azure Artifact Signing
+    # through OIDC; job-level permissions replace the workflow-level grant.
+    permissions:
+      contents: read
+      id-token: write
+    # Assigned at job level because `secrets` is not available in `if`
+    # conditions, so the signing steps gate on `env.AZURE_CLIENT_ID`.
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+      AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+      AZURE_SIGNING_CERTIFICATE_PROFILE: ${{ secrets.AZURE_SIGNING_CERTIFICATE_PROFILE }}
     strategy:
       fail-fast: false
       matrix:
@@ -145,6 +159,32 @@ jobs:
             tar -C "target/${{ matrix.target }}/release" \
               -czf "dist/xmux-v${VERSION}-${{ matrix.target }}.tar.gz" xmux
           fi
+      # The signed hash is the one packaging reads later: update-packaging
+      # downloads these artifacts, so checksums and the winget manifest describe
+      # the signed binary. An unsigned binary keeps shipping while the Azure
+      # signing account is not configured, but the warning keeps that visible.
+      - name: Azure login for signing
+        if: matrix.ext == '.exe' && env.AZURE_CLIENT_ID != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign the Windows release binary
+        if: matrix.ext == '.exe' && env.AZURE_CLIENT_ID != ''
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_CERTIFICATE_PROFILE }}
+          files-folder: ${{ github.workspace }}/dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Warn on an unsigned Windows binary
+        if: matrix.ext == '.exe' && env.AZURE_CLIENT_ID == ''
+        run: echo "::warning::Azure Artifact Signing is not configured (AZURE_CLIENT_ID is unset); shipping the Windows binary unsigned"
       - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}

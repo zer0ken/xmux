@@ -14,6 +14,8 @@ The GitHub Actions workflows.
   metadata, and atomically pushes a release commit and tag before building and
   publishing. A pushed version tag verifies matching metadata before publication.
   Every binary and the crate use the verified commit; packaging uses its tag.
+  The Windows release binary is signed through Azure Artifact Signing when the
+  signing secrets are configured, and ships unsigned with a warning otherwise.
 - `winget-sync.yml` is the daily backstop for the winget submission.
 - `issue-label-gate.yml` closes an issue that does not carry exactly one of the
   `ai-generated` and `handmade` labels.
