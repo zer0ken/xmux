@@ -1617,6 +1617,8 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut cursor_shape = crate::display::term::CursorShape::default();
+    let pointer_shapes = crate::display::term::PointerShapes::of_terminal();
+    let mut pointer_shape = crate::display::term::PointerShape::default();
     loop {
         rt.flush_held_input();
         rt.sync_child_focus();
@@ -1626,6 +1628,10 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         rt.flush_passthrough();
         rt.prepare_and_draw(&mut term);
         let _ = cursor_shape.apply(rt.cursor_shape, term.backend_mut());
+        let _ = pointer_shape.apply(
+            pointer_role(&rt.model).and_then(|r| pointer_shapes.role(r)),
+            term.backend_mut(),
+        );
 
         // NOT biased: a biased select polls host_rx first every iteration, so a
         // sustained output flood would starve stdin, the control socket, ops,
@@ -1705,6 +1711,24 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     rt.registry.teardown_all();
     rt.mgr.teardown_all();
     0
+}
+
+/// The pointer role the cell under the cursor plays, `None` when the default pointer is
+/// right. A resize border outranks a draggable box, which outranks a clickable link.
+fn pointer_role(model: &AppModel) -> Option<crate::display::term::PointerRole> {
+    use crate::display::term::PointerRole;
+    if model.mouse_state.hovered_nav_border {
+        return Some(PointerRole::Resize {
+            horizontal: model.render_plan.layout == crate::ui::switcher::ViewLayout::Horizontal,
+        });
+    }
+    if model.mouse_state.hovering_floating_nav {
+        return Some(PointerRole::Grab);
+    }
+    if model.switcher.hover_targets().1.is_some() {
+        return Some(PointerRole::Link);
+    }
+    None
 }
 
 /// How long the shutdown's mux-side detach waits: one deadline shared by every host, so
