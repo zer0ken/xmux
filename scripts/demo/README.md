@@ -5,8 +5,8 @@ release or from a build of the checkout:
 
 | GIF | Shows |
 | --- | --- |
-| `docs/assets/xmux-demo.gif` | the same remote tmux session reached by hand (`ssh`, `tmux ls`, `tmux attach`) and from the xmux landing screen with the arrow keys and `Enter`, side by side |
-| `docs/assets/xmux-landing.gif` | the landing screen filling as the hosts answer, and a session opened from it |
+| `docs/assets/xmux-demo.gif` | the same remote tmux session reached by hand (`ssh`, `tmux ls`, `tmux attach`) and from the xmux start screen with the arrow keys and `Enter`, side by side |
+| `docs/assets/xmux-start.gif` | the start screen filling as the hosts answer, and a session opened from it |
 | `docs/assets/xmux-nav-switch.gif` | moving between sessions, by arrow and by number |
 | `docs/assets/xmux-hierarchy.gif` | walking up from a session to its host and machine screens with `Ctrl-↑`, and back down with `Ctrl-↓` |
 | `docs/assets/xmux-login.gif` | logging in to a password-only machine, registering the key, and opening one of its sessions through the machine screen's host link |
@@ -51,7 +51,7 @@ expected text, so the recording keeps the real latency of ssh, tmux, and xmux.
 Both sides of the comparison type at the same pace. Every xmux scenario starts
 with no remembered selection or placement, the first-key introduction already
 seen, and a nav wide enough to show each demo card whole. The comparison and the
-feature tour reach their first session from the landing screen with the arrow keys
+feature tour reach their first session from the start screen with the arrow keys
 and `Enter`. The pacing constants and the nav size sit at the top of `record.py`.
 
 The recordings are replayed in a terminal emulator in a headless browser, one

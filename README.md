@@ -6,14 +6,14 @@ English · [한국어](README.ko.md)
 
 ![Two terminals recorded side by side at the same typing speed. On the left,
 ssh gpu-01, tmux ls and tmux attach reach a remote tmux session in 7.3
-seconds; on the right, xmux opens the same session from its landing screen with
+seconds; on the right, xmux opens the same session from its start screen with
 two arrow keys and Enter in 2.6 seconds.](docs/assets/xmux-demo.gif)
 
-**Open a session from the landing screen**
+**Open a session from the start screen**
 
-![xmux starts on the landing screen, which lists every session it finds under its
+![xmux starts on the start screen, which lists every session it finds under its
 number while the machines answer; two arrow keys and Enter open a session on
-gpu-01.](docs/assets/xmux-landing.gif)
+gpu-01.](docs/assets/xmux-start.gif)
 
 **Switch sessions**
 
@@ -89,7 +89,7 @@ updating, and removing xmux.
 xmux
 ```
 
-The landing screen lists every session as the machines answer. In the nav:
+The start screen lists every session as the machines answer. In the nav:
 
 - `↑` / `↓` move the selection.
 - `Enter` sends the keyboard to the selected session.

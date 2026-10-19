@@ -715,7 +715,10 @@ pub(crate) fn terminal_view_size(
     // so the full area is `body_rows + 1` tall. A portrait area stacks the nav on top and shrinks the terminal view
     // height accordingly; a hidden nav gives the full area.
     let area = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
-    let t = crate::ui::switcher::compute_regions(area, nav).terminal;
+    let mut t = crate::ui::switcher::compute_regions(area, nav).terminal;
+    if nav.start_preview {
+        t = crate::ui::switcher::start_preview_inner(t);
+    }
     (t.width.max(1), t.height.max(1))
 }
 
@@ -1597,6 +1600,8 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         let keep = instance_name.clone();
         tokio::spawn(async move { crate::link::control::prune_stale(&dir, &keep).await });
     }
+
+    rt.model.state.chrome.local_name = crate::provision::env::local_name();
 
     // The startup check records the version before the app takes the terminal.
     {

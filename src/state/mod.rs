@@ -679,18 +679,22 @@ impl State {
     }
 
     pub(crate) fn session_label(&self, address: &crate::session::Address) -> String {
+        crate::session::session_label(
+            crate::session::machine_of(&address.host),
+            &self.session_mux(address),
+            &address.session,
+        )
+    }
+
+    /// The mux the session at `address` is named under, as its path writes it.
+    pub(crate) fn session_mux(&self, address: &crate::session::Address) -> String {
         let host_mux = self.chrome.host_mux(&address.host);
-        let mux = self
-            .groups
+        self.groups
             .iter()
             .flat_map(|g| &g.sessions)
             .find(|s| s.host == address.host && s.name == address.session)
-            .map_or(host_mux, |s| crate::session::session_mux(s, host_mux));
-        crate::session::session_label(
-            crate::session::machine_of(&address.host),
-            mux,
-            &address.session,
-        )
+            .map_or(host_mux, |s| crate::session::session_mux(s, host_mux))
+            .to_string()
     }
 
     /// Resolves a `switch` target against the current inventory - the set the nav

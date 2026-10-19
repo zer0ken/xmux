@@ -169,12 +169,12 @@ fn a_vanished_host_goes_to_its_machine_on_the_machines_remaining_title() {
     assert!(on_section(&sw, "mars:tmux"), "{}", picked(&sw));
 }
 
-/// Whether the selection names nothing and the terminal view shows the landing list,
+/// Whether the selection names nothing and the terminal view shows the start list,
 /// attaching nothing.
 fn names_nothing(sw: &Switcher, state: &State) -> bool {
     sw.selected_node().is_none()
         && sw.selection_row().is_none()
-        && sw.current_view_screen(state) == Some(ViewScreen::Landing)
+        && sw.current_view_screen(state) == Some(ViewScreen::Start)
         && sw.current_attach_target(state).is_none()
 }
 
@@ -332,7 +332,9 @@ fn context(sw: &Switcher, state: &State) -> (Option<Node>, Option<Node>, Option<
             .clone()
             .and_then(|target| match target {
                 crate::ui::chrome::LinkTarget::Node(node) => Some(node),
-                crate::ui::chrome::LinkTarget::Action(_) => None,
+                crate::ui::chrome::LinkTarget::Action(_) | crate::ui::chrome::LinkTarget::Start => {
+                    None
+                }
             }),
         sw.current_view_screen(state),
     )

@@ -1145,7 +1145,7 @@ fn a_scanning_host_screen_states_its_headline_word_and_facts() {
     let lines: Vec<&str> = view.lines().map(str::trim).collect();
     let headline = lines
         .iter()
-        .position(|l| l.starts_with("host prod"))
+        .position(|l| l.starts_with("Host:"))
         .unwrap_or_else(|| {
             panic!(
                 "the headline:
@@ -2752,8 +2752,8 @@ async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
     // The host names no mux before its reach resolves, but the session's listing does,
     // and the headline names the mux the session's card names.
     assert!(
-        out.contains("local/psmux/xmus"),
-        "headlined by its path:\n{out}"
+        out.contains("Host:    psmux") && out.contains("Session: xmus"),
+        "headed by its host and its name:\n{out}"
     );
     assert!(out.contains("running xmux"), "and by its state:\n{out}");
     assert!(out.contains("refused"), "and says it is refused:\n{out}");
@@ -2782,8 +2782,8 @@ async fn the_self_session_screen_headline_carries_the_mux_too() {
     h.draw();
     let out = h.view_text();
     assert!(
-        out.contains("local/psmux/xmus"),
-        "machine, mux, session:\n{out}"
+        out.contains("Host:    psmux") && out.contains("Session: xmus"),
+        "its mux and its name:\n{out}"
     );
 }
 
@@ -2860,14 +2860,15 @@ async fn an_unreachable_screen_offers_its_actions_and_its_details_toggle_as_link
         &mut h.state,
     );
     h.draw();
-    let actions: Vec<_> =
-        h.sw.shown_links(&h.state)
-            .into_iter()
-            .filter_map(|l| match l.target {
-                crate::ui::chrome::LinkTarget::Action(action) => Some((action, l.label)),
-                crate::ui::chrome::LinkTarget::Node(_) => None,
-            })
-            .collect();
+    let actions: Vec<_> = h
+        .sw
+        .shown_links(&h.state)
+        .into_iter()
+        .filter_map(|l| match l.target {
+            crate::ui::chrome::LinkTarget::Action(action) => Some((action, l.label)),
+            crate::ui::chrome::LinkTarget::Node(_) | crate::ui::chrome::LinkTarget::Start => None,
+        })
+        .collect();
     assert_eq!(
         actions,
         vec![
@@ -4184,7 +4185,7 @@ async fn a_host_screen_counts_its_sessions_under_its_headline() {
         }
         let screen = h.view_text();
         let lines: Vec<&str> = screen.lines().map(str::trim).collect();
-        let headline = lines.iter().position(|l| l.starts_with("host ")).unwrap();
+        let headline = lines.iter().position(|l| l.starts_with("Host:")).unwrap();
         assert_eq!(lines[headline + 1], word, "{screen}");
     }
     assert_eq!(
@@ -4207,7 +4208,7 @@ async fn a_section_opens_host_freshness_by_key_and_click_without_numbering_it() 
     let screen = h.view_text();
     assert!(screen.contains("sessions"), "{screen}");
     let lines: Vec<&str> = screen.lines().map(str::trim).collect();
-    let headline = lines.iter().position(|l| l.starts_with("host ")).unwrap();
+    let headline = lines.iter().position(|l| l.starts_with("Host:")).unwrap();
     assert_eq!(
         lines[headline + 1],
         "2 sessions",
@@ -4305,29 +4306,34 @@ async fn both_host_screens_share_one_grammar() {
             sessions: vec![],
         }],
     });
-    for (label, view, name, word) in [
+    for (label, view, header, word) in [
         (
             "unreachable",
             dead.view_text(),
-            "machine prod",
+            ["Local:   local", "Machine: prod"],
             "unreachable",
         ),
-        ("empty", empty.view_text(), "host fresh", "no sessions"),
+        (
+            "empty",
+            empty.view_text(),
+            ["Machine: fresh", "Host:    fresh"],
+            "no sessions",
+        ),
     ] {
         let lines: Vec<&str> = view.lines().collect();
         assert_eq!(lines[0].trim(), "", "{label}: opens on a blank row");
         assert_eq!(
-            lines[1].trim_end(),
-            format!(" {name}"),
-            "{label}: the host name is the headline"
+            [lines[1].trim(), lines[2].trim()],
+            header,
+            "{label}: the header names the level above, then its own"
         );
         assert_eq!(
-            lines[2].trim_end(),
+            lines[3].trim_end(),
             format!(" {word}"),
-            "{label}: its state word sits under the name"
+            "{label}: its state word sits under the header"
         );
         assert_eq!(
-            lines[3].trim(),
+            lines[4].trim(),
             "",
             "{label}: a blank row parts the header from the rows"
         );
@@ -8284,8 +8290,8 @@ async fn a_host_screen_headline_reads_as_machine_over_mux() {
     h.ctrl(KeyCode::Down);
     let out = h.view_text();
     assert!(
-        out.contains("prod/zellij"),
-        "the headline is the label:\n{out}"
+        out.contains("Machine: prod") && out.contains("Host:    zellij"),
+        "the header names the machine and the mux:\n{out}"
     );
     assert!(
         !out.contains("prod:zellij"),
@@ -8321,8 +8327,8 @@ async fn a_host_that_answered_nothing_headlines_without_a_mux() {
     h.draw();
     let out = h.view_text();
     assert!(
-        out.lines().any(|l| l.trim() == "machine prod"),
-        "the headline is the machine alone:\n{out}"
+        out.lines().any(|l| l.trim() == "Machine: prod"),
+        "the header names the machine alone:\n{out}"
     );
     assert!(
         !out.contains("prod/tmux"),
@@ -8352,8 +8358,8 @@ async fn a_host_that_answered_headlines_with_its_mux() {
     h.draw();
     let out = h.view_text();
     assert!(
-        out.contains("fresh/tmux"),
-        "an answered host's screen names the pair:\n{out}"
+        out.contains("Machine: fresh") && out.contains("Host:    tmux"),
+        "an answered host's screen names its mux:\n{out}"
     );
 }
 
@@ -9380,10 +9386,10 @@ fn every_rendered_surface_names_a_session_by_its_three_level_path() {
     };
     let mut frames = Vec::new();
 
-    // The landing lists every card as its path.
-    h.sw.open_landing();
+    // The start lists every card as its path.
+    h.sw.open_start();
     h.draw();
-    frames.push(("landing", screen(&h)));
+    frames.push(("start", screen(&h)));
 
     // The jump popup names the card its number reaches.
     h.sw.open_jump('1', &mut h.state);
@@ -9450,7 +9456,7 @@ fn every_rendered_surface_names_a_session_by_its_three_level_path() {
         let (_, text) = frames.iter().find(|(s, _)| *s == surface).unwrap();
         assert!(text.contains(path), "{surface} names {path}:\n{text}");
     };
-    named("landing", "gpu-01/tmux/train-llm");
+    named("start", "gpu-01/tmux/train-llm");
     named("jump", "gpu-01/tmux/train-llm");
     named("toasts", "gpu-01/tmux/eval");
     named("toasts", "gpu-01/tmux/serve");
@@ -9542,7 +9548,10 @@ async fn selecting_a_stopped_session_shows_its_screen_and_attaches_nothing() {
         Some(ViewScreen::Stopped)
     );
     let out = h.view_text();
-    assert!(out.contains("session jup/herdr/parked"), "{out}");
+    assert!(
+        out.contains("Host:    herdr") && out.contains("Session: parked"),
+        "{out}"
+    );
     assert!(out.contains("herdr keeps this session"), "{out}");
     assert!(out.contains("Enter"), "the key that resumes it:\n{out}");
 }
@@ -9645,7 +9654,7 @@ async fn enter_on_a_stopped_sessions_screen_in_the_terminal_view_resumes_it() {
 }
 
 #[tokio::test]
-async fn the_landing_list_says_attached_only_for_a_client_other_than_xmuxs_own() {
+async fn the_start_list_says_attached_only_for_a_client_other_than_xmuxs_own() {
     let mut h = Harness::from_hosts(&["jup"]);
     h.sw.apply_host_result(
         "jup".into(),
@@ -9658,7 +9667,7 @@ async fn the_landing_list_says_attached_only_for_a_client_other_than_xmuxs_own()
         .display_clients
         .insert(Address::new("jup", "api"), 1);
     let facts: Vec<(String, String)> =
-        h.sw.landing_links(&h.state)
+        h.sw.start_links(&h.state)
             .into_iter()
             .map(|l| (l.label, l.value))
             .collect();

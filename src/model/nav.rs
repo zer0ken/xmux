@@ -40,6 +40,9 @@ pub struct NavSize {
     /// holds the focus or the prefix is armed). A docked floating nav keeps the right
     /// column, the terminal keeping the remainder, but draws a rounded box around it.
     pub docked_floating: bool,
+    /// Whether the terminal view shows the start screen, whose sessions run in its
+    /// preview box, so the PTYs take the box's size rather than the whole view's.
+    pub start_preview: bool,
 }
 
 impl NavSize {
@@ -52,6 +55,7 @@ impl NavSize {
             position: NavPosition::Left,
             floating: None,
             docked_floating: false,
+            start_preview: false,
         }
     }
 
@@ -64,6 +68,7 @@ impl NavSize {
             position: NavPosition::Left,
             floating: None,
             docked_floating: false,
+            start_preview: false,
         }
     }
 

@@ -208,7 +208,7 @@ def compare_xmux(s):
 
 def features(s):
     fresh_app_state()
-    s.caption("Open a session from the landing screen")
+    s.caption("Open a session from the start screen")
     s.type("xmux"); s.key("Enter", TYPE)
     s.answered("3  gpu-01/tmux/my-important-session", 1.4)
     s.key("Down"); s.key("Down"); s.hold(0.6); s.key("Enter")
@@ -284,7 +284,7 @@ def login(s):
     # The machine screen stays and starts on its host link, which opens the host screen,
     # whose links start on its first session.
     s.key("Enter")
-    s.answered("host db-01/tmux", 1.4)
+    s.answered("Host:    tmux", 1.4)
     s.key("Down"); s.key("Enter")
     s.answered("accepting connections", 2.0)
     s._at_due()

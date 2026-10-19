@@ -363,9 +363,9 @@ class App:
                     f"selection on {name} under {section}", timeout)
 
     def open(self, section, name):
-        """Selects a card with a jump, which also executes it from the landing screen.
+        """Selects a card with a jump, which also executes it from the start screen.
 
-        A card that already holds the selection is executed with Enter while the landing
+        A card that already holds the selection is executed with Enter while the start
         screen shows, and is otherwise already open.
         """
         num = self.card(section, name)
@@ -464,7 +464,7 @@ class Cell:
 def first_launch(c):
     m = c.mux
     app = c.launch(c.h1, c.h2)
-    app.t.wait(lambda ls: any("machines scanned" in l for l in ls), "the landing screen", 30)
+    app.t.wait(lambda ls: any("machines scanned" in l for l in ls), "the start screen", 30)
     app.t.wait_text(c.path(c.h1, f"{m}1"), 40)
     app.open(f"{c.h1}/{m}", f"{m}1")
     app.t.wait_gone("machines scanned", 10)
@@ -517,8 +517,8 @@ def password_login(c):
     app.card(f"{c.pw}/{m}", f"{m}1", 40)
     # The hosts the login found replace the machine's card, but the machine keeps the
     # selection, so its screen stays and no host screen opens on its own.
-    app.t.wait(lambda ls: any(re.search(rf"\bmachine {re.escape(c.pw)}\b", l) for l in ls)
-               and not any(f"host {c.pw}/" in l for l in ls),
+    app.t.wait(lambda ls: any(re.search(rf"\bMachine: {re.escape(c.pw)}\b", l) for l in ls)
+               and not any("Host:" in l for l in ls),
                f"the machine screen of {c.pw} after the login", 10)
     app.open(f"{c.pw}/{m}", f"{m}1")
     app.whereami(c.path(c.pw, f"{m}1"))

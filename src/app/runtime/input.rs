@@ -443,16 +443,29 @@ impl Runtime {
             }
         }
         // A click on a link of the machine or host screen the terminal view shows opens
-        // it, the same as Enter on the selected link. The landing screen's links
+        // it, the same as Enter on the selected link. The start screen's links
         // take a click from either view's focus.
-        let landing = self.model.switcher.landing_open();
+        let start = self.model.switcher.start_open();
         if is_left_press
-            && (self.model.state.focus.is_terminal_focused() || landing)
+            && (self.model.state.focus.is_terminal_focused() || start)
             && self.model.render_plan.view_screen.is_some()
         {
-            if let Some(link) =
-                crate::ui::switcher::Switcher::link_at(&self.model.render_plan, col0, row0)
-            {
+            // A click anywhere on the start's preview opens the card it shows, as a
+            // click on that card's link does.
+            let on_preview = || {
+                let at = ratatui::layout::Position::new(col0, row0);
+                self.model
+                    .render_plan
+                    .start_preview
+                    .is_some_and(|rect| rect.contains(at))
+            };
+            let link = crate::ui::switcher::Switcher::link_at(&self.model.render_plan, col0, row0)
+                .or_else(|| {
+                    on_preview()
+                        .then(|| self.model.switcher.start_preview_link(&self.model.state))
+                        .flatten()
+                });
+            if let Some(link) = link {
                 let effects = update(&mut self.model, Msg::OpenLink(Some(link)));
                 let _ = self.execute_effects(effects);
                 ensure_current_host(
@@ -466,9 +479,9 @@ impl Runtime {
                 return true;
             }
         }
-        // Off its links the landing screen has no hover, so a click there
+        // Off its links the start screen has no hover, so a click there
         // executes nothing.
-        if is_left_press && landing && in_mux.is_some() {
+        if is_left_press && start && in_mux.is_some() {
             return dirty;
         }
         let down = (ev.cb & 0x01) != 0;

@@ -156,16 +156,18 @@ predictable and still lets every machine and host be opened.
 
 ## Screen Reading Order
 
-A machine or host screen reads from the top as its headline, its status, the level below
-as links, and its actions as links, and the arrows walk its links in that order with the
-headline's link up as the last stop. The walk cycles: a step past the last link returns
+Every screen opens with its header: the level above as `Level: name`, then the screen's
+own level the same way, so a screen always states where it sits and the level above is
+one link away. A screen then reads as its status, the level below as links, and its
+actions as links, and the arrows walk its links in that order with the header's link up
+as the last stop. The walk cycles: a step past the last link returns
 to the first, and a step before the first returns to the last. Every action a screen
 offers is a link that Enter or a click runs exactly as its key does, with the key written
 beside it.
 
 The user opens a screen to look into the level below or to act on it, so the children
 come first, where the screen starts, and the actions follow them. The level above is
-already named in the headline and is where the user goes once done, so it is the last
+already named in the header and is where the user goes once done, so it is the last
 stop, and cycling keeps it one step before the first child. An action the cursor cannot
 reach leaves a user who reads the screen with the arrows in hand unable to do what the
 screen offers, and the key written on the link teaches the shortcut from the row the
@@ -217,7 +219,7 @@ network failure drops a session or a host, the selection and the view move up to
 nearest level that still exists, session to host and host to machine. When nothing of the
 machine is left, because the roster dropped it, it serves no mux, or the filter hides all
 of it, no level is left to move to, so the selection names nothing and the terminal view
-shows the landing list and attaches nothing until the user picks a card. They never move
+shows the start list and attaches nothing until the user picks a card. They never move
 down or sideways, and a lost context that returns through a background event does not
 take the selection back. A filter is the user's own, so a filter edit that lists the
 node the user was on again returns the selection to that node. The upward move is the
@@ -250,11 +252,11 @@ an arrow key or a hover. Gestures that are neither keep their own meaning: a dra
 or resizes, the wheel scrolls, and typing edits a text field. Attaching to a stopped
 session resumes it, so its selection shows its screen and only executing it attaches.
 
-The landing screen is the one surface on which a selection shows nothing: from launch
-until the first execution the selection only highlights and a hover previews
-nothing, so nothing attaches before the user has chosen. The target the first execution
-opens is the user's choice from then on, so a session card that appears later does not
-take the selection from it.
+The start screen is the top of the hierarchy, the local machine above every machine.
+Its selection previews as any selection does, in a box under its list, while the keys
+stay with the nav, so the user looks before choosing and executes from the list. The
+target the first execution opens is the user's choice from then on, so a session card
+that appears later does not take the selection from it.
 
 ## Results as Notifications
 
@@ -286,7 +288,7 @@ colour for the accent on it, and nothing else marks it as selected. Every cell o
 item takes that one pair: its number, its name, its key tokens, and its glyphs alike, so
 no colour or dimming of the item survives inside the highlight. Every surface with a
 selection paints it in this one look: the nav's cards and the halves of a section
-title, the links on the landing, machine, and host screens, the rows of a popup list,
+title, the links on the start, machine, and host screens, the rows of a popup list,
 the help's tabs, and the focused stop of the login pane. A standalone item reserves
 exactly one blank cell inside each side of its selection or hover background. Its
 layout reserves this room before painting, so selecting it moves no text. A part of

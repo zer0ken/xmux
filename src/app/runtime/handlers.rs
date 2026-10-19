@@ -743,9 +743,9 @@ impl Runtime {
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
         switcher.set_own_session(env.own_session.clone());
-        // Nothing is chosen at launch, so the terminal view lands on the landing screen
+        // Nothing is chosen at launch, so the terminal view lands on the start screen
         // rather than on whichever session answers first.
-        switcher.open_landing();
+        switcher.open_start();
         switcher.set_renumbering(roster.cfg.ui.renumbering, &mut state);
         // The launch roster can add hosts after the first hosts answer, so the card
         // numbers stay open until it is in.
@@ -818,6 +818,7 @@ impl Runtime {
             floating_docked: false,
             max_fps,
             applied_nav_height: u16::MAX,
+            applied_start_preview: false,
             auto_hide_nav,
             nav_was_focused: true,
             floating_rect: None,
@@ -1051,13 +1052,15 @@ impl Runtime {
         let docked_changed = docked != self.model.floating_docked;
         self.model.floating_docked = docked;
         // Resize when ANY dimension of the split moved: the width (focus / hide / prefix
-        // Ctrl-←/→ in a column), the horizontal nav height (border drag / resize keys), or the side the
-        // nav is attached to. All change the mux terminal region, so all must resize the
-        // PTYs or the grid mismatches the draw.
+        // Ctrl-←/→ in a column), the horizontal nav height (border drag / resize keys), the side the
+        // nav is attached to, or the start screen opening or closing its preview box. All
+        // change the mux terminal region, so all must resize the PTYs or the grid
+        // mismatches the draw.
         if want_nav_width != self.model.nav_width
             || self.model.nav_height != self.model.applied_nav_height
             || want_position != self.model.nav_position
             || docked_changed
+            || self.model.switcher.start_open() != self.model.applied_start_preview
         {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char
             // cell at the new boundary can survive ratatui's diff, so force a full repaint.

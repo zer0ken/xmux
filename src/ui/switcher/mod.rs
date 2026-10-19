@@ -571,14 +571,15 @@ pub struct Switcher {
     /// The transient offset and in-flight border drag of the active modal popup. Its
     /// frame geometry belongs to the render plan shared with mouse input.
     popup_geo: PopupGeometry,
-    /// Whether the landing screen fills the terminal view: from launch until the user
-    /// first executes a target, and never again in the run. While it is open the
-    /// selection highlights and attaches nothing.
-    landing: bool,
+    /// Whether the start screen fills the terminal view: from launch until the user
+    /// first executes a target, and again from a machine screen's up-link until the next
+    /// execution. While it is open the selection previews in its lower half and the
+    /// keys stay with the nav.
+    start: bool,
     /// Whether the selection names nothing: the node it named was lost with nothing
     /// of its machine left on the list. The selected row then only marks the place the
     /// lost card stood, which the next arrow key starts from, and the terminal view shows
-    /// the landing list.
+    /// the start list.
     vacant: bool,
     /// The node the selection named before it became vacant, which it returns to when
     /// the user changes the filter so that node is listed again.
@@ -602,7 +603,7 @@ mod render;
 pub(crate) use render::MIDDLE_ELLIPSIS;
 mod side;
 
-pub use render::{Cursor, RenderPlan};
+pub use render::{start_preview_inner, Cursor, RenderPlan};
 
 pub use crate::model::{step_nav_position, NavPosition};
 
@@ -641,7 +642,7 @@ impl Switcher {
             rescan_collapse: None,
             create_host: None,
             popup_geo: PopupGeometry::default(),
-            landing: false,
+            start: false,
             vacant: false,
             lost: None,
             vacant_place: None,
@@ -683,29 +684,29 @@ impl Switcher {
         self.terminal_view_target.clone()
     }
 
-    /// Opens the landing screen. The app calls this once at launch, before anything is
-    /// chosen.
-    pub fn open_landing(&mut self) {
-        self.landing = true;
+    /// Opens the start screen: at launch, before anything is chosen, and from a machine
+    /// screen's up-link, the one level above the hierarchy's top.
+    pub fn open_start(&mut self) {
+        self.start = true;
         self.on_focus_changed();
     }
 
-    pub(crate) fn landing_open(&self) -> bool {
-        self.landing
+    pub(crate) fn start_open(&self) -> bool {
+        self.start
     }
 
-    /// Whether the terminal view shows the landing list: while the landing screen is
+    /// Whether the terminal view shows the start list: while the start screen is
     /// open, and while the selection names nothing and the pointer is on no card.
-    fn landing_shown(&self) -> bool {
-        self.landing || (self.vacant && self.hover.is_none())
+    fn start_shown(&self) -> bool {
+        self.start || (self.vacant && self.hover.is_none())
     }
 
-    /// Closes the landing screen for the rest of the run, so the selection drives the
-    /// terminal view from here on. Returns whether it was open. Closing it is the first
+    /// Closes the start screen, so the selection drives the terminal view until a
+    /// machine screen's up-link opens it again. Returns whether it was open. Closing it is the first
     /// execution, so the card it executed is a choice from here on: a session card that
     /// appears later no longer takes the selection as the first session.
-    pub(crate) fn close_landing(&mut self) -> bool {
-        if !std::mem::take(&mut self.landing) {
+    pub(crate) fn close_start(&mut self) -> bool {
+        if !std::mem::take(&mut self.start) {
             return false;
         }
         if self.interest == Interest::FirstSession {
@@ -772,10 +773,10 @@ impl Switcher {
     pub fn sync_view_focus(&mut self, terminal: bool) {
         // The nav's hover follows the pointer whether or not the nav holds the focus, so
         // it survives a terminal focus. The link hover belongs to the terminal view, so
-        // it is dropped when the nav takes the focus (the landing screen excepted, which
+        // it is dropped when the nav takes the focus (the start screen excepted, which
         // the nav's focus can still pick).
         let hovered = self.hover.is_some() || self.link_hover.is_some();
-        if !terminal && !self.landing {
+        if !terminal && !self.start {
             self.link_hover = None;
         }
         let entered = terminal && !self.terminal_view;
@@ -1501,13 +1502,17 @@ impl Switcher {
         self.set_target(target);
     }
 
-    /// `Ctrl+↑`: the selection walks up a level, session to host to machine.
+    /// `Ctrl+↑`: the selection walks up a level, session to host to machine, and from a
+    /// machine to the start screen above every machine.
     fn ascend(&mut self) {
-        let Some(parent) = self.selected_node().and_then(|node| node.parent()) else {
+        let Some(node) = self.selected_node() else {
             return;
         };
         self.note_user_move();
-        self.select_node(parent);
+        match node.parent() {
+            Some(parent) => self.select_node(parent),
+            None => self.open_start(),
+        }
     }
 
     /// `Ctrl+↓`: the selection walks down a level, to the child it last came up from
@@ -1592,7 +1597,7 @@ impl Switcher {
     /// Wraps at both ends, as the vertical step does.
     ///
     /// A category is a host that has sessions, the no-session group, or the disconnected group
-    /// ([`category_of_row`]). Landing is always on the category's first card: its first
+    /// ([`category_of_row`]). Start is always on the category's first card: its first
     /// session, or the band's first host card. Leaving is from ANY card of it, so a
     /// selection deep inside the band steps straight out.
     ///
@@ -1616,7 +1621,7 @@ impl Switcher {
         self.set_selected(heads[next as usize].1);
     }
 
-    /// Each category in list order paired with its first selectable card - the landing
+    /// Each category in list order paired with its first selectable card - the start
     /// points of a horizontal step. The cards of one category are contiguous (the
     /// flatten emits a section and its sessions together, and sinks every host with
     /// nothing to show to the host band at the end), so one entry per category is one
@@ -1718,12 +1723,19 @@ impl Switcher {
                 || self.current_view_screen(state) == Some(ViewScreen::Login))
     }
 
+    /// Whether the keys belong to the shown screen's own use rather than its links: the
+    /// login pane's form, or a stopped session's Enter, which resumes it. The links there
+    /// answer only the pointer.
+    fn links_pointer_only(&self, state: &crate::state::State) -> bool {
+        self.login_pane_shown(state) || self.current_view_screen(state) == Some(ViewScreen::Stopped)
+    }
+
     /// Which screen the terminal view shows in place of the grid, or `None` for a session.
     /// It is the screen of the shown node: the hover's while the pointer is on a
     /// nav target, else the selection's.
     pub(crate) fn current_view_screen(&self, state: &crate::state::State) -> Option<ViewScreen> {
-        if self.landing_shown() {
-            return Some(ViewScreen::Landing);
+        if self.start_shown() {
+            return Some(ViewScreen::Start);
         }
         self.view_screen_of(self.shown_node().as_ref(), state)
     }
@@ -1823,9 +1835,38 @@ impl Switcher {
     /// The links the screen of `node` offers, in the order the arrow keys walk them: the
     /// level below, then the screen's actions, then the level above. A machine's screen
     /// lists its hosts by name, each with its session count or state; a host's screen its
-    /// sessions in card order, and last its machine, which its headline carries. A
-    /// session's grid offers none.
+    /// sessions in card order. The level above is the header's first row: a machine's
+    /// is the start screen, a host's its machine, and a session's screen its host.
     pub(crate) fn screen_links(
+        &self,
+        node: &Node,
+        state: &crate::state::State,
+    ) -> Vec<crate::ui::chrome::ScreenLink> {
+        use crate::ui::chrome::LinkTarget;
+        let mut links = self.level_links(node, state);
+        // Every screen's last stop is the level above, which its header names first: a
+        // machine's is the start screen, the local machine above every machine.
+        let up = match node {
+            Node::Machine(_) => LinkTarget::Start,
+            Node::Host(host) => {
+                LinkTarget::Node(Node::Machine(crate::session::machine_of(host).to_string()))
+            }
+            Node::Session(address) => LinkTarget::Node(Node::Host(address.host.clone())),
+        };
+        // The header writes the link's name, so the link carries none of its own.
+        links.push(crate::ui::chrome::ScreenLink {
+            target: up,
+            label: String::new(),
+            value: String::new(),
+            number: None,
+            parted: false,
+        });
+        links
+    }
+
+    /// A screen's links below its header: the level below and the actions. A session's
+    /// screen has none.
+    fn level_links(
         &self,
         node: &Node,
         state: &crate::state::State,
@@ -1857,6 +1898,7 @@ impl Switcher {
                 label: action.words(host_details).to_string(),
                 value: String::new(),
                 number: None,
+                parted: false,
             });
         let mut links: Vec<ScreenLink> = match node {
             Node::Machine(machine) => state
@@ -1892,6 +1934,7 @@ impl Switcher {
                         label,
                         value,
                         number: None,
+                        parted: false,
                     })
                 })
                 .collect(),
@@ -1905,34 +1948,32 @@ impl Switcher {
                     label: sess.name.clone(),
                     value: session_facts(sess, state),
                     number: None,
+                    parted: false,
                 })
                 .collect(),
             Node::Session(_) => Vec::new(),
         };
         links.extend(actions);
-        if matches!(node, Node::Host(_)) {
-            links.push(ScreenLink {
-                target: LinkTarget::Node(Node::Machine(machine.to_string())),
-                label: machine.to_string(),
-                value: String::new(),
-                number: None,
-            });
-        }
         links
     }
 
-    /// The landing screen's links: every card of the nav, in its order and under its
+    /// The start screen's links: every card of the nav, in its order and under its
     /// number, each written as its path in the hierarchy.
-    pub(crate) fn landing_links(
+    pub(crate) fn start_links(
         &self,
         state: &crate::state::State,
     ) -> Vec<crate::ui::chrome::ScreenLink> {
         use crate::ui::chrome::ScreenLink;
+        // The nav category of the card before, so a change of category parts the list
+        // as the nav parts its bands; every host's sessions are one category here.
+        let mut last = None;
         self.rows
             .iter()
             .enumerate()
             .filter(|(_, row)| row.selectable())
             .map(|(i, row)| {
+                let category = std::mem::discriminant(&category_of_row(&row.reference));
+                let parted = last.replace(category).is_some_and(|prev| prev != category);
                 let label = card_path(row);
                 let value = match &row.reference {
                     RowRef::Session { sess } => session_facts(sess, state),
@@ -1948,6 +1989,7 @@ impl Switcher {
                     label,
                     value,
                     number: Some(self.card_number(i)),
+                    parted,
                 }
             })
             .collect()
@@ -1961,10 +2003,10 @@ impl Switcher {
         kind: ViewScreen,
         state: &crate::state::State,
     ) -> Option<ScreenParts> {
-        if kind == ViewScreen::Landing {
-            // The landing list and the nav share the one selection, so the link it
+        if kind == ViewScreen::Start {
+            // The start list and the nav share the one selection, so the link it
             // marks is the card the nav marks, whichever view holds the focus.
-            let links = self.landing_links(state);
+            let links = self.start_links(state);
             let selected = self.selected_node();
             let link = links.iter().position(|l| l.node() == selected.as_ref());
             return Some(ScreenParts {
@@ -1985,13 +2027,38 @@ impl Switcher {
         })
     }
 
+    /// What the start screen previews in its lower half: the card the pointer or the
+    /// selection stands on, as its own screen, or as its live grid for a session the
+    /// selection attaches. The preview is a look that takes no keys, so its screen has no
+    /// link selected.
+    pub(crate) fn start_preview(&self, state: &crate::state::State) -> Option<StartPreview> {
+        let node = self.shown_node()?;
+        if let Some(kind) = self.view_screen_of(Some(&node), state) {
+            let mut parts = self.screen_parts(kind, state)?;
+            parts.selection_and_hover = (None, None);
+            return Some(StartPreview::Screen(kind, parts));
+        }
+        match node {
+            Node::Session(address) => Some(StartPreview::Grid(address)),
+            Node::Machine(_) | Node::Host(_) => None,
+        }
+    }
+
+    /// The start link of the card the preview shows, which a click on the preview opens.
+    pub(crate) fn start_preview_link(&self, state: &crate::state::State) -> Option<usize> {
+        let node = self.shown_node()?;
+        self.start_links(state)
+            .iter()
+            .position(|l| l.node() == Some(&node))
+    }
+
     /// The links of the shown screen, empty while it is a session's grid.
     pub(crate) fn shown_links(
         &self,
         state: &crate::state::State,
     ) -> Vec<crate::ui::chrome::ScreenLink> {
-        if self.landing_shown() {
-            return self.landing_links(state);
+        if self.start_shown() {
+            return self.start_links(state);
         }
         match self.shown_node() {
             Some(node) if self.current_view_screen(state).is_some() => {
@@ -2013,7 +2080,7 @@ impl Switcher {
         if !self.terminal_view || self.hover.is_some() {
             return (None, None);
         }
-        if self.login_pane_shown(state) {
+        if self.links_pointer_only(state) {
             return (None, self.link_hover);
         }
         (
@@ -2057,7 +2124,7 @@ impl Switcher {
     pub(crate) fn step_link(&mut self, delta: isize, state: &crate::state::State) {
         let links = self.shown_links(state);
         let n = links.len();
-        if n == 0 || self.login_pane_shown(state) {
+        if n == 0 || self.links_pointer_only(state) {
             return;
         }
         self.link_selection =
@@ -2077,16 +2144,12 @@ impl Switcher {
         let links = self.shown_links(state);
         let index = match index {
             Some(i) => i,
-            None if self.login_pane_shown(state)
-                || self.current_view_screen(state) == Some(ViewScreen::Stopped) =>
-            {
-                return None;
-            }
+            None if self.links_pointer_only(state) => return None,
             None => self.selection_link_index(&links),
         };
         match links.get(index)?.target {
             crate::ui::chrome::LinkTarget::Action(action) => Some(action),
-            crate::ui::chrome::LinkTarget::Node(_) => None,
+            crate::ui::chrome::LinkTarget::Node(_) | crate::ui::chrome::LinkTarget::Start => None,
         }
     }
 
@@ -2095,20 +2158,27 @@ impl Switcher {
     /// node just left is selected on the new screen, so a step back down is one Enter
     /// away; a step down starts the new screen on its start link.
     pub(crate) fn open_link(&mut self, index: usize, state: &crate::state::State) -> bool {
-        let Some(node) = self
-            .shown_links(state)
-            .into_iter()
-            .nth(index)
-            .and_then(|l| l.node().cloned())
-        else {
+        use crate::ui::chrome::LinkTarget;
+        let Some(link) = self.shown_links(state).into_iter().nth(index) else {
             return false;
+        };
+        let node = match link.target {
+            LinkTarget::Node(node) => Some(node),
+            LinkTarget::Start => None,
+            LinkTarget::Action(_) => return false,
         };
         let before = self.selected_node();
         self.note_user_move();
         self.link_hover = None;
+        // A machine screen's up-link: the start list replaces the screen, and the machine
+        // stays selected, one execution from its screen again.
+        let Some(node) = node else {
+            self.open_start();
+            return true;
+        };
         self.select_node(node);
-        // A landing link is the first execution: the screen it opens replaces the landing.
-        self.close_landing();
+        // A start link is the first execution: the screen it opens replaces the start.
+        self.close_start();
         if let Some(before) = before {
             if let Some(node) = self
                 .selected_node()
@@ -2156,13 +2226,11 @@ impl Switcher {
         // The shown node's session, never xmux's OWN session. Emptying the target here is
         // what makes the refusal total: the target is the one value the display reconcile,
         // the attach, and the mux-side switch all read, so none of them can reach this
-        // session by another path. The landing screen empties it the same way, which is
-        // why a selection made on it attaches nothing, and so does a stopped session the
-        // user has not executed, since attaching resumes it.
+        // session by another path. A stopped session the user has not executed attaches
+        // nothing either, since attaching resumes it.
         self.terminal_view_target = match self.shown_node() {
             Some(Node::Session(address))
-                if !self.landing
-                    && !self.is_own_session(&address.host, &address.session)
+                if !self.is_own_session(&address.host, &address.session)
                     && !self.holds_stopped(&address) =>
             {
                 TerminalViewTarget {
@@ -2195,10 +2263,10 @@ impl Switcher {
     /// one entry point. Neither waits for a card that is not on the list yet. A create
     /// lands on its new card through the awaited interest (`Interest::Awaiting`) instead.
     pub fn select_address(&mut self, address: &Address) -> bool {
-        // A selection xmux is told to make is an execution: it ends the landing screen,
+        // A selection xmux is told to make is an execution: it ends the start screen,
         // even when the selection already stands on that card.
         if self.row_of_session(address).is_some() {
-            self.close_landing();
+            self.close_start();
         }
         let moved = match self.row_of_session(address) {
             Some(i) if self.selected_node() != Some(Node::Session(address.clone())) => {
@@ -2816,12 +2884,39 @@ fn session_facts(sess: &Session, state: &crate::state::State) -> String {
     facts.join(", ")
 }
 
+/// What the start screen previews; see [`Switcher::start_preview`].
+pub(crate) enum StartPreview {
+    /// A card with a screen of its own, painted as that screen.
+    Screen(ViewScreen, ScreenParts),
+    /// A session, painted as its live grid once the display shows it.
+    Grid(Address),
+}
+
 /// What a view screen paints besides its kind; see [`Switcher::screen_parts`].
 pub(crate) struct ScreenParts {
     pub(crate) address: Address,
     pub(crate) machine_screen: bool,
     pub(crate) links: Vec<crate::ui::chrome::ScreenLink>,
     pub(crate) selection_and_hover: (Option<usize>, Option<usize>),
+}
+
+impl ScreenParts {
+    /// The parts as the chrome paints and hit-tests them, as screen `kind`.
+    pub(crate) fn view(
+        &self,
+        kind: ViewScreen,
+        focused: bool,
+    ) -> crate::ui::chrome::ViewScreenRender<'_> {
+        crate::ui::chrome::ViewScreenRender {
+            address: &self.address,
+            kind,
+            focused,
+            machine_screen: self.machine_screen,
+            links: &self.links,
+            link_selection: self.selection_and_hover.0,
+            link_hover: self.selection_and_hover.1,
+        }
+    }
 }
 
 /// The selection as a rebuild found it, before the rows are re-derived.

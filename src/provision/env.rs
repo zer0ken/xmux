@@ -191,6 +191,19 @@ fn resolve_home(
         .or(profile)
 }
 
+/// The name of the machine xmux runs on, as its OS names it, or `local`, the roster's name
+/// for it, where none can be read.
+pub(crate) fn local_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/proc/sys/kernel/hostname").ok())
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "local".into())
+}
+
 pub(crate) fn resolved_home() -> Option<PathBuf> {
     resolve_home(
         std::env::var_os("HOME"),

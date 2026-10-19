@@ -514,7 +514,7 @@ fn a_small_window_gives_the_focused_login_pane_its_whole_width() {
     assert_eq!(rt.model.nav_width, 0, "the nav steps aside:\n{out}");
     assert_eq!(rt.model.render_plan.regions.terminal.width, 40, "{out}");
     for row in [
-        "machine pwbox",
+        "Machine: pwbox",
         "address*   pwbox",
         "port*      22",
         "username*",
@@ -2125,7 +2125,7 @@ fn assert_on_the_machine_screen_with_both_hosts(rt: &mut Runtime) {
     rt.prepare_and_draw(&mut term);
     let out = drawn_text(&term);
     assert!(
-        out.contains("machine win"),
+        out.contains("Machine: win"),
         "the machine screen stays:\n{out}"
     );
     assert!(!out.contains("host win/"), "no host screen opens:\n{out}");
@@ -2167,7 +2167,7 @@ async fn a_working_login_opens_the_machine_screen_with_its_hosts_scanning() {
     rt.prepare_and_draw(&mut term);
     let out = drawn_text(&term);
     let spin = crate::ui::spinner_glyph(rt.model.state.chrome.spinner_frame);
-    assert!(out.contains("machine win"), "{out}");
+    assert!(out.contains("Machine: win"), "{out}");
     assert!(
         out.lines()
             .any(|l| l.contains("hosts") && l.contains(&format!("{spin} scanning"))),
@@ -2194,9 +2194,9 @@ async fn a_login_that_reveals_hosts_keeps_the_machine_selected() {
 }
 
 #[tokio::test]
-async fn a_login_from_the_landing_that_reveals_hosts_keeps_the_machine_selected() {
+async fn a_login_from_the_start_that_reveals_hosts_keeps_the_machine_selected() {
     let mut rt = hostless_machine_needing_login_rt();
-    rt.model.switcher.open_landing();
+    rt.model.switcher.open_start();
     sync_test_render_plan(&mut rt);
     rt.handle_stdin_bytes(b"\x1b[B", &Selection::default());
     assert_eq!(
@@ -2205,7 +2205,7 @@ async fn a_login_from_the_landing_that_reveals_hosts_keeps_the_machine_selected(
     );
     rt.handle_stdin_bytes(b"\r", &Selection::default());
     assert!(
-        !rt.model.switcher.landing_open(),
+        !rt.model.switcher.start_open(),
         "Enter executes the machine"
     );
     log_in_and_discover_two_hosts(&mut rt);
@@ -2213,7 +2213,7 @@ async fn a_login_from_the_landing_that_reveals_hosts_keeps_the_machine_selected(
 }
 
 #[tokio::test]
-async fn a_login_on_the_preselected_landing_card_keeps_the_machine_selected() {
+async fn a_login_on_the_preselected_start_card_keeps_the_machine_selected() {
     // The machine is the only card, so the launch preselects it and Enter executes it
     // without a move: the execution, not a move, makes it the user's choice, and the
     // first session card the login reveals does not take the selection.
@@ -2225,7 +2225,7 @@ async fn a_login_on_the_preselected_landing_card_keeps_the_machine_selected() {
         Some("alice@win: Permission denied (publickey,password).".into()),
         &mut rt.model.state,
     );
-    rt.model.switcher.open_landing();
+    rt.model.switcher.open_start();
     sync_test_render_plan(&mut rt);
     assert_eq!(
         rt.model.switcher.selected_node(),
@@ -2233,7 +2233,7 @@ async fn a_login_on_the_preselected_landing_card_keeps_the_machine_selected() {
     );
     rt.handle_stdin_bytes(b"\r", &Selection::default());
     assert!(
-        !rt.model.switcher.landing_open(),
+        !rt.model.switcher.start_open(),
         "Enter executes the machine"
     );
     log_in_and_discover_two_hosts(&mut rt);
@@ -2454,6 +2454,7 @@ fn test_rt(env: Env) -> Runtime {
         max_fps: crate::provision::config::DEFAULT_MAX_FPS,
         floating_rect: None,
         applied_nav_height: u16::MAX,
+        applied_start_preview: false,
         auto_hide_nav: false,
         nav_was_focused: true,
         mouse_state: MouseState::default(),
@@ -8124,10 +8125,10 @@ fn a_click_on_an_action_link_runs_what_its_key_runs() {
     );
 }
 
-/// `hierarchy_rt` as it stands at launch: the landing screen up in nav focus.
-fn landing_rt() -> Runtime {
+/// `hierarchy_rt` as it stands at launch: the start screen up in nav focus.
+fn start_rt() -> Runtime {
     let mut rt = hierarchy_rt();
-    rt.model.switcher.open_landing();
+    rt.model.switcher.open_start();
     sync_test_render_plan(&mut rt);
     rt
 }
@@ -8144,12 +8145,12 @@ fn click(rt: &mut Runtime, cb: u16, col: u16, row: u16) -> bool {
 }
 
 #[test]
-fn a_landing_link_takes_hover_and_a_click_from_the_navs_focus() {
-    let mut rt = landing_rt();
+fn a_start_link_rect_takes_hover_and_a_click_from_the_navs_focus() {
+    let mut rt = start_rt();
     let deploy = rt
         .model
         .switcher
-        .landing_links(&rt.model.state)
+        .start_links(&rt.model.state)
         .iter()
         .position(|l| l.node() == session_node("web", "deploy").as_ref())
         .unwrap();
@@ -8160,16 +8161,13 @@ fn a_landing_link_takes_hover_and_a_click_from_the_navs_focus() {
         .iter()
         .find(|(i, _)| *i == deploy)
         .copied()
-        .expect("the landing paints the card's link");
+        .expect("the start paints the card's link");
     assert!(click(&mut rt, 35, rect.x, rect.y), "hover repaints");
     assert_eq!(rt.model.switcher.hover_targets().1, Some(deploy));
-    assert!(
-        rt.model.switcher.landing_open(),
-        "hovering executes nothing"
-    );
+    assert!(rt.model.switcher.start_open(), "hovering executes nothing");
 
     click(&mut rt, 0, rect.x, rect.y);
-    assert!(!rt.model.switcher.landing_open());
+    assert!(!rt.model.switcher.start_open());
     assert_eq!(selected(&rt), session_node("web", "deploy"));
     assert_eq!(rt.model.switcher.terminal_view_target().target, "deploy");
     assert!(
@@ -8179,12 +8177,48 @@ fn a_landing_link_takes_hover_and_a_click_from_the_navs_focus() {
 }
 
 #[test]
-fn a_click_off_the_landing_links_executes_nothing() {
-    let mut rt = landing_rt();
+fn a_click_off_the_start_links_executes_nothing() {
+    let mut rt = start_rt();
     let area = rt.model.render_plan.regions.terminal;
-    click(&mut rt, 0, area.right() - 2, area.bottom() - 2);
-    assert!(rt.model.switcher.landing_open());
+    // The list half's last row, right of every link and above the preview box.
+    click(&mut rt, 0, area.right() - 2, area.y + area.height / 2 - 1);
+    assert!(rt.model.switcher.start_open());
     assert!(rt.model.state.focus.is_nav_focused());
+}
+
+#[test]
+fn a_click_anywhere_on_the_start_preview_opens_its_card() {
+    let mut rt = start_rt();
+    let shown = selected(&rt);
+    let preview = rt
+        .model
+        .render_plan
+        .start_preview
+        .expect("the start paints its preview box");
+    click(&mut rt, 0, preview.right() - 2, preview.bottom() - 2);
+    assert!(
+        !rt.model.switcher.start_open(),
+        "the click executes the card"
+    );
+    assert_eq!(selected(&rt), shown, "the card the preview showed");
+    assert!(
+        !rt.model.state.focus.view_is_nav(),
+        "the terminal view takes the focus"
+    );
+}
+
+#[test]
+fn the_start_sizes_the_terminals_to_its_preview_box() {
+    let mut nav = crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH);
+    let full = terminal_view_size(140, 39, nav);
+    nav.start_preview = true;
+    let preview = terminal_view_size(140, 39, nav);
+    assert_eq!(preview.0, full.0 - 2, "inside the box's two side borders");
+    assert_eq!(
+        preview.1,
+        full.1 - full.1 / 2 - 2,
+        "the lower half inside its border"
+    );
 }
 
 #[test]
@@ -8231,13 +8265,17 @@ fn a_click_on_the_navs_empty_area_brings_the_nav_the_focus() {
 }
 
 #[test]
-fn enter_in_the_nav_executes_the_landing_selection() {
-    let mut rt = landing_rt();
+fn enter_in_the_nav_executes_the_start_selection() {
+    let mut rt = start_rt();
     rt.handle_stdin_bytes(b"\x1b[B", &Selection::default());
-    assert!(rt.model.switcher.landing_open(), "an arrow only selects");
-    assert_eq!(rt.model.switcher.terminal_view_target().target, "");
+    assert!(rt.model.switcher.start_open(), "an arrow only selects");
+    assert_eq!(
+        rt.model.switcher.terminal_view_target().target,
+        "api",
+        "the selection attaches for the start's preview"
+    );
     rt.handle_stdin_bytes(b"\r", &Selection::default());
-    assert!(!rt.model.switcher.landing_open());
+    assert!(!rt.model.switcher.start_open());
     assert_eq!(rt.model.switcher.terminal_view_target().target, "api");
 }
 
@@ -8495,35 +8533,36 @@ fn view_rows(rt: &Runtime, term: &ratatui::Terminal<ratatui::backend::TestBacken
 }
 
 #[test]
-fn a_headline_wider_than_the_view_continues_under_its_path() {
+fn a_header_name_wider_than_the_view_continues_under_its_first_character() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    for (session, level) in [("", "machine "), ("train", "host ")] {
+    for session in ["", "train"] {
         for (cols, rows) in [(80u16, 24u16), (40, 14)] {
             let mut rt = headline_rt(LONG_MACHINE, session, cols, rows);
             let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
             rt.prepare_and_draw(&mut term);
             let view = view_rows(&rt, &term);
             let out = view.join("\n");
-            let path_col = 1 + level.len();
-            // The headline's rows: the first after the level word, the rest indented to
-            // the path's first column.
-            let mut headline = view[1][path_col..].trim_end().to_string();
-            for row in &view[2..] {
-                if !row.starts_with(&" ".repeat(path_col)) || row.trim().is_empty() {
+            // The machine's header row: its name after the label column, the rest of the
+            // name indented to the name's first column.
+            let first = view
+                .iter()
+                .position(|row| row.starts_with(" Machine: "))
+                .unwrap_or_else(|| panic!("{out}"));
+            let value_col = " Machine: ".len();
+            let mut rows_of_name = 1;
+            let mut name = view[first][value_col..].trim_end().to_string();
+            for row in &view[first + 1..] {
+                if !row.starts_with(&" ".repeat(value_col)) || row.trim().is_empty() {
                     break;
                 }
-                headline.push_str(row.trim());
+                name.push_str(row.trim());
+                rows_of_name += 1;
             }
-            let want = if session.is_empty() {
-                LONG_MACHINE.to_string()
-            } else {
-                format!("{LONG_MACHINE}/tmux")
-            };
-            assert_eq!(headline, want, "{cols}x{rows}:\n{out}");
-            assert!(view[1].starts_with(&format!(" {level}")), "{out}");
+            assert_eq!(name, LONG_MACHINE, "{cols}x{rows}:\n{out}");
+            assert!(rows_of_name > 1, "{cols}x{rows}:\n{out}");
             if !session.is_empty() {
-                // The machine half is the link up on every row it covers.
+                // On a host's screen the machine is the link up on every row it covers.
                 let up = rt
                     .model
                     .switcher
@@ -8531,15 +8570,14 @@ fn a_headline_wider_than_the_view_continues_under_its_path() {
                     .iter()
                     .position(|l| matches!(l.node(), Some(crate::model::Node::Machine(_))))
                     .unwrap_or_else(|| panic!("{out}"));
-                let link_rows: Vec<u16> = rt
+                let link_rows = rt
                     .model
                     .render_plan
                     .view_links
                     .iter()
                     .filter(|(link, _)| *link == up)
-                    .map(|(_, rect)| rect.y)
-                    .collect();
-                assert_eq!(link_rows.len(), 2, "{cols}x{rows}: {link_rows:?}\n{out}");
+                    .count();
+                assert_eq!(link_rows, rows_of_name, "{cols}x{rows}:\n{out}");
             }
         }
     }
