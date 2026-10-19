@@ -8187,6 +8187,26 @@ fn a_click_off_the_start_links_executes_nothing() {
 }
 
 #[test]
+fn the_wheel_over_the_start_screen_walks_its_selection() {
+    let mut rt = start_rt();
+    let before = selected(&rt);
+    let area = rt.model.render_plan.regions.terminal;
+    click(&mut rt, 65, area.x + 2, area.y + 2);
+    assert_ne!(
+        selected(&rt),
+        before,
+        "a wheel notch down moves the selection"
+    );
+    click(&mut rt, 64, area.x + 2, area.bottom() - 2);
+    assert_eq!(
+        selected(&rt),
+        before,
+        "and a notch up, over the preview too, moves it back"
+    );
+    assert!(rt.model.switcher.start_open(), "the wheel only selects");
+}
+
+#[test]
 fn a_click_anywhere_on_the_start_preview_opens_its_card() {
     let mut rt = start_rt();
     let shown = selected(&rt);

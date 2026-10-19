@@ -306,7 +306,7 @@ nobody asked about, such as a machine that stops answering, goes to the history 
 | left-click the start's preview box | open the card it shows |
 | left-click a view | focus that view |
 | left-click `‹ 5` or `7 ›` | select the nearest card scrolled off that side |
-| wheel over the nav | move the selection |
+| wheel over the nav or the start screen | move the selection; the start list scrolls with it |
 | drag the nav border | resize the nav, clamping it at its minimum |
 | drag the key list or a popup | move it |
 | left-click a popup item | execute it, as `Enter` would |

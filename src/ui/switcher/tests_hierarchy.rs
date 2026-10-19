@@ -1219,6 +1219,26 @@ fn the_start_preview_shows_the_displayed_session_grid() {
 }
 
 #[test]
+fn a_start_list_taller_than_its_half_scrolls_to_the_selection() {
+    let names: Vec<String> = (1..=30).map(|n| format!("s{n:02}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut h = H::new(&[("big", &names, None)]);
+    h.sw.open_start();
+    h.draw();
+    for _ in 0..29 {
+        h.key(KeyCode::Down);
+    }
+    assert_eq!(h.node(), session("big", "s30"));
+    let rect = start_link_rect(&h, session("big", "s30"));
+    let list = h.plan.regions.terminal;
+    assert!(
+        rect.y < list.y + list.height / 2,
+        "the last card stands in the list half: {rect:?}"
+    );
+    assert!(h.highlighted(rect), "and the list marks it");
+}
+
+#[test]
 fn the_start_states_the_scan_progress_with_the_spinner() {
     let mut h = landed();
     h.sw.mark_scanning("idle", &mut h.state);

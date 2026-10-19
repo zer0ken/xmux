@@ -487,12 +487,14 @@ impl Runtime {
         let down = (ev.cb & 0x01) != 0;
         let mut model_msg = None;
         let mut ensure_after_update = false;
+        // The start screen is the nav's own list over the terminal view, so the wheel over
+        // it walks the one selection, as over the nav, and the list scrolls with it.
         match resolve_mouse_chain(
             is_wheel,
             down,
             is_left_press,
             self.model.state.focus.is_nav_focused(),
-            in_mux.is_some(),
+            in_mux.is_some() && !start,
         ) {
             ChainAction::ScrollNav(down) => {
                 // Plain wheel → scroll the selection LINEARLY through every row
