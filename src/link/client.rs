@@ -225,11 +225,11 @@ impl HostClient {
     }
 
     /// Sets whether xmux's display client (`display_tty`) sizes the session it shows: it
-    /// does not while the session is `shared`. Returns whether every line reached the
-    /// writer thread, on the same terms as [`HostClient::switch_client_on`].
-    pub fn size_display_on(&self, display_tty: &str, shared: bool) -> bool {
+    /// does not while it `yields`. Returns whether every line reached the writer thread,
+    /// on the same terms as [`HostClient::switch_client_on`].
+    pub fn size_display_on(&self, display_tty: &str, yields: bool) -> bool {
         self.proto
-            .display_size_lines(display_tty, shared)
+            .display_size_lines(display_tty, yields)
             .into_iter()
             .all(|line| self.cmd_tx.send(HostCmd::Send(line)).is_ok())
     }
@@ -298,18 +298,22 @@ fn spawn_piped_child(command: &crate::transport::CommandSpec) -> anyhow::Result<
         cmd.env(k, v);
     }
     #[cfg(unix)]
-    if command.should_detach_tty() {
+    {
         use std::os::unix::process::CommandExt as _;
+        let detach = command.should_detach_tty();
+        let guard = exit_guard::read_end()?;
         unsafe {
-            cmd.pre_exec(|| {
-                if libc::setsid() == -1 {
+            cmd.pre_exec(move || {
+                if detach && libc::setsid() == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
-                Ok(())
+                exit_guard::watch(guard)
             });
         }
     }
     let mut child = cmd.spawn()?;
+    #[cfg(windows)]
+    exit_guard::bind(&child);
     let stdout = child
         .stdout
         .take()
@@ -331,6 +335,103 @@ fn spawn_piped_child(command: &crate::transport::CommandSpec) -> anyhow::Result<
         stdin: Box::new(stdin),
         stderr_drain: Some(stderr_drain),
     })
+}
+
+/// Ends a control child together with xmux, however xmux ends. A child on pipes
+/// outlives a killed xmux: its mux client sees no hangup, so it would stay attached to
+/// the session and keep sizing it. Ending the child ends its connection, which detaches
+/// the client.
+mod exit_guard {
+    /// The read end of a pipe whose write end only this process holds for its whole
+    /// life, so the read end reports a hangup the moment the process is gone.
+    #[cfg(unix)]
+    pub(super) fn read_end() -> std::io::Result<libc::c_int> {
+        static PIPE: std::sync::OnceLock<Option<libc::c_int>> = std::sync::OnceLock::new();
+        let read = PIPE.get_or_init(|| {
+            let mut fds = [0; 2];
+            // Close-on-exec keeps the write end out of every child, which would otherwise
+            // hold the pipe open after xmux is gone.
+            #[cfg(target_os = "linux")]
+            let made = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } == 0;
+            #[cfg(not(target_os = "linux"))]
+            let made = unsafe {
+                libc::pipe(fds.as_mut_ptr()) == 0
+                    && libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC) == 0
+                    && libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC) == 0
+            };
+            made.then_some(fds[0])
+        });
+        read.ok_or_else(std::io::Error::last_os_error)
+    }
+
+    /// Runs in the spawned child before it execs: forks a watcher that signals the child
+    /// once xmux is gone and exits on its own once the child is. Everything it calls is
+    /// async-signal-safe, as code between `fork` and `exec` must be.
+    #[cfg(unix)]
+    pub(super) fn watch(guard: libc::c_int) -> std::io::Result<()> {
+        unsafe {
+            let child = libc::getpid();
+            match libc::fork() {
+                -1 => Err(std::io::Error::last_os_error()),
+                0 => {
+                    // A copy of any other descriptor would keep it open after xmux closes
+                    // its own: a display PTY would never hang up, and the spawn would wait
+                    // on its exec-status pipe for as long as the watcher lives.
+                    let max = libc::sysconf(libc::_SC_OPEN_MAX).clamp(256, 65_536) as libc::c_int;
+                    for fd in (0..max).filter(|&fd| fd != guard) {
+                        libc::close(fd);
+                    }
+                    let mut poll = libc::pollfd {
+                        fd: guard,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    // Reparented means the child has ended. Nothing writes the pipe, so a
+                    // ready read end is the hangup.
+                    while libc::getppid() == child {
+                        if libc::poll(&mut poll, 1, 1000) > 0 {
+                            libc::kill(child, libc::SIGTERM);
+                            break;
+                        }
+                    }
+                    libc::_exit(0)
+                }
+                _ => Ok(()),
+            }
+        }
+    }
+
+    /// Puts the child in a job that closes, killing it, when xmux's handle does.
+    #[cfg(windows)]
+    pub(super) fn bind(child: &std::process::Child) {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        static JOB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let job = *JOB.get_or_init(|| unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return 0;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            job as usize
+        });
+        if job != 0 {
+            unsafe {
+                AssignProcessToJobObject(job as _, child.as_raw_handle() as _);
+            }
+        }
+    }
 }
 
 /// Spawns the control child on a pty this process allocates (Unix). A `-CC` mux
@@ -403,6 +504,59 @@ impl HostClient {
 mod tests {
     use super::*;
     use crate::link::test_control_proto;
+
+    /// A control child must not outlive xmux, however xmux ends. The test reruns itself
+    /// as the xmux that spawns the child, then kills that process outright, which runs
+    /// none of its cleanup.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_control_child_ends_when_xmux_is_killed() {
+        const PARENT: &str = "XMUX_TEST_EXIT_GUARD_PIDFILE";
+        if let Ok(pidfile) = std::env::var(PARENT) {
+            let script =
+                format!("echo $$ > {pidfile}.tmp && mv {pidfile}.tmp {pidfile}; exec sleep 60");
+            let command = crate::transport::CommandSpec::new("sh", vec!["-c".into(), script]);
+            let _spawned = spawn_piped_child(&command.detach_tty()).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            return;
+        }
+        let pidfile =
+            std::env::temp_dir().join(format!("xmux-exit-guard-{}.pid", std::process::id()));
+        let mut xmux = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "link::client::tests::a_control_child_ends_when_xmux_is_killed",
+            ])
+            .env(PARENT, &pidfile)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let alive = |pid: &str| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .is_ok_and(|stat| !stat.rsplit(')').next().unwrap_or("").starts_with(" Z"))
+        };
+        let wait = |done: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !done() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            done()
+        };
+        assert!(wait(&|| pidfile.exists()), "the child never started");
+        let child = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert!(alive(&child));
+        xmux.kill().unwrap();
+        xmux.wait().unwrap();
+        let _ = std::fs::remove_file(&pidfile);
+        assert!(
+            wait(&|| !alive(&child)),
+            "the child outlived the killed xmux"
+        );
+    }
 
     #[test]
     fn teardown_returns_without_waiting_for_reader_eof() {

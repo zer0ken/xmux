@@ -59,10 +59,10 @@ pub trait ControlProtocol: Send + Sync {
     fn session_shared(&self, body: &[String], display_tty: &str) -> bool;
 
     /// The lines that set whether xmux's display client `display_tty` sizes the session
-    /// it shows (it does not while `shared`, so the user's own client keeps its size),
+    /// it shows (it does not while it `yields`, so the user's own client keeps its size),
     /// then have the mux size its windows again. Each line is one command answering with
     /// one block, so the reply correlation stays in step.
-    fn display_size_lines(&self, display_tty: &str, shared: bool) -> Vec<String>;
+    fn display_size_lines(&self, display_tty: &str, yields: bool) -> Vec<String>;
 
     /// Stops `display_tty` from sizing the session it lands on next, sent before the
     /// client moves, so the move cannot resize a client the user already has there

@@ -261,14 +261,15 @@ impl AttachRegistry {
         false
     }
 
-    /// Resizes every kept attachment to `cols×rows` (one `PtyCmd::Resize` each, off
-    /// the loop via their control threads).
-    pub fn resize_all(&mut self, cols: u16, rows: u16) {
-        for att in self.map.values_mut() {
-            att.resize(cols, rows);
-        }
-        for att in self.pending.values_mut() {
-            att.resize(cols, rows);
+    /// Resizes `addr`'s attachments, installed and paint-pending, to `cols×rows` (one
+    /// `PtyCmd::Resize` each, off the loop via their control threads). An attachment
+    /// already that size is left alone.
+    pub fn resize(&mut self, addr: &str, cols: u16, rows: u16) {
+        let live = self.map.get_mut(addr).into_iter();
+        for att in live.chain(self.pending.get_mut(addr)) {
+            if att.size != (cols, rows) {
+                att.resize(cols, rows);
+            }
         }
     }
 
@@ -484,7 +485,7 @@ mod tests {
         reg.insert_fake("local", 1);
         reg.park_pending("local", crate::display::attachment::fake_attachment(2));
 
-        reg.resize_all(101, 37);
+        reg.resize("local", 101, 37);
 
         assert_eq!(reg.map["local"].size, (101, 37));
         assert_eq!(reg.pending["local"].size, (101, 37));

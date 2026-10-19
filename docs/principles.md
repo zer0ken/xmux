@@ -235,6 +235,16 @@ the one exception because a lost node leaves nothing to show; its nearest surviv
 ancestor is the context that contained what the user was looking at, so it is the least
 surprising place to stand.
 
+## Guest Client
+
+xmux is a guest in every session it shows. The session belongs to the user, who may have
+it open in other clients too, so xmux holds a session only while the user is looking at it
+through xmux, and holds its size only while the user is working there. Showing a session
+in a preview, keeping it attached out of view, or resizing xmux's own layout never takes
+the session from a client the user is working in elsewhere. When xmux ends, however it
+ends, it leaves no client behind, so a session never keeps a size or an attachment for a
+viewer that is gone.
+
 ## Separate Selection and Execution
 
 Choosing a target and acting on it are separate inputs. The arrow keys move the

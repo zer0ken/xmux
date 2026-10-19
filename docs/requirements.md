@@ -56,7 +56,8 @@ against, naming no source file, function, or test.
 - **FR-B4** - Up/down step one card, left/right step one category, a fuzzy filter
   narrows the list over `<host>/<name>`, and `prefix R` re-scans every machine.
 - **FR-B5** - Quitting (`prefix q` or the ctl `quit` verb) leaves every mux session
-  untouched.
+  untouched. However xmux ends, a forced kill included, every client it attached
+  detaches.
 - **FR-B6** - Under a filter, `Enter` attaches the visible filtered session, never a
   filtered-out one.
 - **FR-B7** - Every host-state card shows one fixed-width state glyph (a spinner while
@@ -240,9 +241,13 @@ against, naming no source file, function, or test.
   the terminal view reaches it until its release, with motion past the view at the
   view's nearest edge.
 - **FR-C10** - xmux's display client leaves the size of a session the user also has open
-  to the user's own clients. On tmux it stops sizing a session while another client that
-  sizes windows is attached to it (`refresh-client -f ignore-size`) and sizes the session
-  again once it is the session's only such client. On abduco it attaches with the lowest
+  to the user's own clients. On tmux it sizes a session only while the terminal view or
+  the start screen's preview shows it, and a session another client that sizes windows
+  is attached to only while the user works in the terminal view (the terminal view and
+  xmux's window hold the focus); otherwise it stops sizing it (`refresh-client -f
+  ignore-size`). Under `window-size latest` the session then follows whichever client
+  the user typed into last. Only the attachment on view is resized, and one the preview
+  opened ends once the preview leaves it. On abduco it attaches with the lowest
   priority (`abduco -l -a`), so it sizes the session only while no other client is
   attached. A tmux window larger than the terminal view shows the part around the
   cursor, and a smaller one shows its edge with the rest of the view filled with dots.

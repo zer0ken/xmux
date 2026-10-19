@@ -42,8 +42,6 @@ pub(crate) struct AppModel {
     pub(crate) floating_docked: bool,
     pub(crate) max_fps: u16,
     pub(crate) applied_nav_height: u16,
-    /// Whether the PTYs were last sized to the start screen's preview box.
-    pub(crate) applied_start_preview: bool,
     pub(crate) auto_hide_nav: bool,
     pub(crate) nav_was_focused: bool,
     /// The floating nav's current box (auto-placed or dragged), recomputed by the runtime
@@ -153,7 +151,6 @@ impl AppModel {
             floating_docked: false,
             max_fps: crate::provision::config::DEFAULT_MAX_FPS,
             applied_nav_height: u16::MAX,
-            applied_start_preview: false,
             auto_hide_nav: false,
             nav_was_focused: true,
             floating_rect: None,
@@ -2301,7 +2298,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.nav_position = position;
             model.nav_width = width;
             model.applied_nav_height = model.nav_height;
-            model.applied_start_preview = model.switcher.start_open();
             model.state.chrome.set_nav_position(position);
             Vec::new()
         }

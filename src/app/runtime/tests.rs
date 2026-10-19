@@ -2454,7 +2454,6 @@ fn test_rt(env: Env) -> Runtime {
         max_fps: crate::provision::config::DEFAULT_MAX_FPS,
         floating_rect: None,
         applied_nav_height: u16::MAX,
-        applied_start_preview: false,
         auto_hide_nav: false,
         nav_was_focused: true,
         mouse_state: MouseState::default(),
@@ -2509,6 +2508,8 @@ fn test_rt(env: Env) -> Runtime {
         display_sync_held: false,
         rescan_pending: false,
         display_probe: DisplayProbe::default(),
+        sizing: None,
+        preview_kept: None,
         held_input: None,
         passthrough: Vec::new(),
         title: None,
@@ -2968,45 +2969,61 @@ async fn asking_who_shares_the_displayed_session_waits_for_the_display_tty() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn the_answer_sets_whether_the_display_client_sizes_its_session() {
-    // A session another window-sizing client shares keeps that client's size, so xmux's
-    // display client yields; alone, it sizes the session. An answer about a client that is
-    // no longer the display client changes nothing.
+    // xmux's display client sizes its session only while xmux shows it, and a session
+    // another window-sizing client shares only while the user works in xmux's view of
+    // it; otherwise it yields, so the session follows the client used last. An answer
+    // about a client that is no longer the display client changes nothing.
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     let commands = rt.mgr.insert_recording("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
         crate::model::DisplayTty(Some("/dev/pts/3".into()));
     let proto = crate::link::test_control_proto();
+    let answer = |rt: &mut Runtime, tty: &str, shared: bool| {
+        rt.handle_host_event(HostEvent::DisplaySessionClients {
+            host: "jup".into(),
+            display_tty: tty.into(),
+            shared,
+        });
+        sent_lines(&commands)
+    };
 
-    rt.handle_host_event(HostEvent::DisplaySessionClients {
-        host: "jup".into(),
-        display_tty: "/dev/pts/3".into(),
-        shared: true,
-    });
-    assert_eq!(
-        sent_lines(&commands),
-        proto.display_size_lines("/dev/pts/3", true),
-        "a shared session keeps the user's size"
-    );
+    for (sizing, shared, yields, why) in [
+        (
+            None,
+            false,
+            true,
+            "a session xmux does not show is left alone",
+        ),
+        (
+            Some(false),
+            false,
+            false,
+            "alone, a shown session follows xmux",
+        ),
+        (
+            Some(false),
+            true,
+            true,
+            "a shared session xmux only shows keeps the user's size",
+        ),
+        (
+            Some(true),
+            true,
+            false,
+            "a shared session the user works in follows xmux",
+        ),
+    ] {
+        rt.sizing = sizing.map(|in_use| ("jup".to_string(), in_use));
+        assert_eq!(
+            answer(&mut rt, "/dev/pts/3", shared),
+            proto.display_size_lines("/dev/pts/3", yields),
+            "{why}"
+        );
+    }
 
-    rt.handle_host_event(HostEvent::DisplaySessionClients {
-        host: "jup".into(),
-        display_tty: "/dev/pts/3".into(),
-        shared: false,
-    });
-    assert_eq!(
-        sent_lines(&commands),
-        proto.display_size_lines("/dev/pts/3", false),
-        "alone, the display client sizes its session"
-    );
-
-    rt.handle_host_event(HostEvent::DisplaySessionClients {
-        host: "jup".into(),
-        display_tty: "/dev/pts/7".into(),
-        shared: false,
-    });
     assert!(
-        sent_lines(&commands).is_empty(),
+        answer(&mut rt, "/dev/pts/7", false).is_empty(),
         "an answer about a client that is no longer the display client is dropped"
     );
 }
@@ -9589,4 +9606,114 @@ fn newly_created_config_is_applied_without_a_second_edit() {
         .expect("file replacement reloads")
         .unwrap();
     assert_eq!(ui.max_fps, 90);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn only_the_attachment_on_view_takes_the_view_size() {
+    // A resize counts as activity to the mux, so a hidden attachment keeps its size
+    // rather than take its session's size from the client the user works in.
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.insert(crate::model::Host::new(
+        crate::transport::ssh("web".to_string(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux").unwrap(),
+    ));
+    rt.registry.insert_fake("jup", 1);
+    rt.registry.insert_fake("web", 2);
+    rt.model.state.selection = Selection {
+        host: "jup".into(),
+        session: "api".into(),
+    };
+    rt.fit_displays();
+    let view = terminal_view_size(rt.cols, rt.body_rows, rt.nav_size());
+    assert_eq!(rt.registry.get("jup").unwrap().size, view);
+    assert_eq!(
+        rt.registry.get("web").unwrap().size,
+        (80, 24),
+        "hidden, unresized"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_attachment_the_start_preview_opened_ends_when_the_preview_leaves_it() {
+    // What the preview attaches is the user browsing, not using: it must not stay
+    // attached, holding the session, once the preview moves on or the start closes.
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    for alias in ["web", "db"] {
+        rt.hosts.insert(crate::model::Host::new(
+            crate::transport::ssh(alias.to_string(), String::new(), "linux".into()),
+            crate::mux::for_binary("tmux").unwrap(),
+        ));
+    }
+    let select = |rt: &mut Runtime, host: &str| {
+        rt.model.state.selection = Selection {
+            host: host.into(),
+            session: "main".into(),
+        };
+    };
+    rt.registry.insert_fake("jup", 1);
+    select(&mut rt, "jup");
+    rt.model.switcher.open_start();
+    rt.fit_displays();
+
+    select(&mut rt, "web");
+    rt.registry.insert_fake("web", 2);
+    rt.fit_displays();
+    assert!(
+        rt.registry.contains("jup"),
+        "attached before the start, kept"
+    );
+    assert!(rt.registry.contains("web"), "on view in the preview");
+
+    select(&mut rt, "db");
+    rt.hosts
+        .get_mut("db")
+        .unwrap()
+        .display
+        .mark_in_flight("db", 3);
+    rt.fit_displays();
+    assert!(!rt.registry.contains("web"), "the preview left it");
+
+    select(&mut rt, "jup");
+    rt.model.switcher.close_start();
+    rt.fit_displays();
+    assert!(
+        !rt.hosts.get("db").unwrap().display.in_flight_contains("db"),
+        "an attach still in flight for the preview is dropped too"
+    );
+    assert!(rt.registry.contains("jup"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_change_in_what_is_on_view_settles_who_sizes_the_session() {
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    let commands = rt.mgr.insert_recording("jup");
+    let host = rt.hosts.get_mut("jup").unwrap();
+    host.display_tty = crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    host.display.set_shows("jup", "api");
+    rt.model.state.selection = Selection {
+        host: "jup".into(),
+        session: "api".into(),
+    };
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    let proto = crate::link::test_control_proto();
+    rt.fit_displays();
+    assert_eq!(
+        sent_lines(&commands),
+        vec![proto.session_clients_line("api")]
+    );
+    rt.fit_displays();
+    assert!(sent_lines(&commands).is_empty(), "nothing changed");
+    rt.model.switcher.open_start();
+    rt.fit_displays();
+    assert_eq!(
+        sent_lines(&commands),
+        vec![proto.session_clients_line("api")],
+        "the start screen's preview is not the user working in the session"
+    );
 }
