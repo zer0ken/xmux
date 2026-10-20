@@ -715,7 +715,10 @@ pub(crate) fn terminal_view_size(
     // so the full area is `body_rows + 1` tall. A portrait area stacks the nav on top and shrinks the terminal view
     // height accordingly; a hidden nav gives the full area.
     let area = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
-    let t = crate::ui::switcher::compute_regions(area, nav).terminal;
+    let mut t = crate::ui::switcher::compute_regions(area, nav).terminal;
+    if nav.start_preview {
+        t = crate::ui::switcher::start_preview_inner(t);
+    }
     (t.width.max(1), t.height.max(1))
 }
 
@@ -872,7 +875,7 @@ fn ensure_current_host(
 ) {
     // Auto height (0) is fine here: this sizes the host's METADATA control client, not the
     // displayed grid (that goes through the DriverCtx, which carries the real nav_height),
-    // and on_tick's resize_all reconciles it to the exact height. Avoids threading nav_height
+    // and the per-frame fit reconciles it to the exact height. Avoids threading nav_height
     // through every ensure_current_host caller for a size the user never sees.
     let (cols, rows) =
         terminal_view_size(cols, rows, crate::ui::switcher::NavSize::visible(nav_width));
@@ -1598,6 +1601,8 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         tokio::spawn(async move { crate::link::control::prune_stale(&dir, &keep).await });
     }
 
+    rt.model.state.chrome.local_name = crate::provision::env::local_name();
+
     // The startup check records the version before the app takes the terminal.
     {
         let recorded = crate::cli::update::notify::read(&rt.env.xmux_dir);
@@ -1846,6 +1851,14 @@ struct Runtime {
     display_sync_held: bool,
     rescan_pending: bool,
     display_probe: DisplayProbe,
+    /// The host whose display client xmux shows, and whether the user is working in that
+    /// view (the terminal view and xmux's window hold the focus, the start screen is
+    /// closed). It decides which display client sizes its session; see
+    /// [`Runtime::fit_displays`].
+    sizing: Option<(String, bool)>,
+    /// The attachments that existed when the start screen opened. One the preview
+    /// attached beyond them is torn down once the preview leaves it.
+    preview_kept: Option<HashSet<String>>,
     /// Terminal input typed for a selection whose attachment does not exist yet; see
     /// [`input_route`].
     held_input: Option<HeldInput>,

@@ -196,8 +196,8 @@ pub(crate) struct ViewScreenRender<'a> {
     pub(crate) focused: bool,
     /// The screen is a machine's rather than a host's or a session's.
     pub(crate) machine_screen: bool,
-    /// The links the screen offers, in the order the arrow keys walk them. A host's
-    /// last link is its machine, written as the machine half of the headline.
+    /// The links the screen offers, in the order the arrow keys walk them. The last is
+    /// the level above, written as the header's first row.
     pub(crate) links: &'a [ScreenLink],
     /// The selected link, drawn while the terminal view holds the focus.
     pub(crate) link_selection: Option<usize>,
@@ -206,33 +206,37 @@ pub(crate) struct ViewScreenRender<'a> {
 }
 
 /// One link a screen offers: what it opens or runs, the name it is written as, what the
-/// screen states beside it, and the card number it carries on the landing screen. In
+/// screen states beside it, and the card number it carries on the start screen. In
 /// terminal focus a link is a selection target: the arrow keys move its selection,
-/// the pointer its hover, and Enter or a click opens it.
+/// the pointer its hover, and Enter or a click opens it. `parted` marks a start
+/// link whose card opens another nav group, which the start list parts by a blank row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenLink {
     pub(crate) target: LinkTarget,
     pub(crate) label: String,
     pub(crate) value: String,
     pub(crate) number: Option<usize>,
+    pub(crate) parted: bool,
 }
 
 impl ScreenLink {
-    /// The node the link opens, `None` for an action.
+    /// The node the link opens, `None` for an action or the start up-link.
     pub(crate) fn node(&self) -> Option<&crate::model::Node> {
         match &self.target {
             LinkTarget::Node(node) => Some(node),
-            LinkTarget::Action(_) => None,
+            LinkTarget::Action(_) | LinkTarget::Start => None,
         }
     }
 }
 
-/// What a screen link stands for: a node whose screen it opens, or an action it runs by
-/// the key written beside it.
+/// What a screen link stands for: a node whose screen it opens, an action it runs by
+/// the key written beside it, or the start screen it steps up to. A machine's screen
+/// carries the last as its up-link, the one level above the hierarchy's top.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LinkTarget {
     Node(crate::model::Node),
     Action(crate::model::ScreenAction),
+    Start,
 }
 
 /// Where a screen painted one of its links: the link, the line, the first column and the
@@ -263,7 +267,7 @@ fn screen_top(screen: &ScreenLines, selected: Option<usize>, height: u16) -> usi
 }
 
 impl ViewScreen {
-    /// The state word under the headline, empty for a host screen with sessions, whose
+    /// The state word under the header, empty for a host screen with sessions, whose
     /// count is read from the host's sessions instead. The two SETTLED HOST states read theirs from
     /// the one source the nav cards read, so a card and the screen reached from it can
     /// never name the same state two ways; the self-session state is not a host state and
@@ -280,7 +284,7 @@ impl ViewScreen {
             ViewScreen::Stopped => crate::session::STOPPED,
             ViewScreen::Host => "",
             ViewScreen::Machine => crate::ui::cards::MACHINE_REACHABLE,
-            ViewScreen::Landing => "",
+            ViewScreen::Start => "",
         }
     }
 }
@@ -407,7 +411,7 @@ enum ScreenCell {
     Gap,
     /// A row whose value opens with link `link`: the name of the list in the cell on the
     /// list's first row, no cell on the rows after it, or the card number on every row of
-    /// the landing screen's list.
+    /// the start screen's list.
     Link(Option<String>, usize),
     /// A row whose value is the action link `link`, with the key that runs it in the cell.
     Action(String, usize),
@@ -471,6 +475,7 @@ impl Default for Chrome {
             nav_position: crate::ui::switcher::NavPosition::Left,
             colors: NavBorderColors::from_palette(&palette),
             update_available: None,
+            local_name: "local".into(),
         }
     }
 }
@@ -580,14 +585,14 @@ impl Chrome {
     /// The terminal-view HOST SCREEN: what fills the terminal-view region in place of a
     /// mux, for a selected host with no session to show.
     ///
-    /// One screen grammar for settled states and a scanning host: the host's name as the headline,
+    /// One screen grammar for settled states and a scanning host: the header,
     /// under it the same status word its nav card carries, then the rows
     /// that apply to it. A row uses a left-aligned name, whitespace, then the value,
     /// so a key offered on a screen looks like a key
     /// offered anywhere else, and a datum's name stays quieter than the datum.
     ///
     /// The settled host screens and the own-session screen are ONE factual screen in
-    /// several states, not a panel each: one builder lays them all out, so the headline,
+    /// several states, not a panel each: one builder lays them all out, so the header,
     /// the state word, and the key rows cannot drift apart, and a later settled state
     /// joins this grammar. The domain model chooses the state; this renders the result.
     /// When the rows left below the content fit a complete frame, the Braille animation
@@ -623,7 +628,7 @@ impl Chrome {
             })
     }
 
-    /// How far the scan has come, as the landing screen states it under its headline: how
+    /// How far the scan has come, as the start screen states it under its header: how
     /// many machines answered out of all of them, turning the spinner the cards turn while
     /// any is still scanning. A machine serving several muxes counts once, and only once
     /// none of its hosts is still scanning.
@@ -688,49 +693,46 @@ impl Chrome {
             .collect()
     }
 
-    /// The name a view screen carries at its top, in the grammar the nav cards use:
-    /// `{machine}/{mux}` for a host's screen, and that with the session under it for the
-    /// session xmux is itself running in. What arrives is the [`crate::session::Address`]
-    /// the screen was reached by, which is the host id and, for the session screen, its
-    /// session name - the two halves are already separate, so nothing is re-split.
-    fn headline(
+    /// The header of a screen: the level above and the screen's own level, each as its
+    /// word and its name. A machine sits under the local machine xmux runs on, a host under
+    /// its machine, and a session under its host; the start screen is the local machine
+    /// itself, the top of the hierarchy.
+    fn header(
         &self,
         state: &crate::state::State,
         address: &crate::session::Address,
         kind: ViewScreen,
         machine_screen: bool,
-    ) -> String {
-        if address.host.is_empty() && kind != ViewScreen::Landing {
-            return String::new();
+    ) -> Vec<(&'static str, String)> {
+        if kind == ViewScreen::Start {
+            return vec![("Local", self.local_name.clone())];
         }
+        if address.host.is_empty() {
+            return Vec::new();
+        }
+        let machine = crate::session::machine_of(&address.host).to_string();
         if machine_screen {
-            return crate::session::machine_of(&address.host).to_string();
+            return vec![("Local", self.local_name.clone()), ("Machine", machine)];
         }
-        match kind {
-            // The root of the hierarchy, above every machine.
-            ViewScreen::Landing => "xmux".into(),
-            ViewScreen::Scanning => self.host_label(&address.host),
-            ViewScreen::SelfSession | ViewScreen::Stopped => {
-                if address.session.is_empty() {
-                    self.host_label(&address.host)
-                } else {
-                    state.session_label(address)
-                }
-            }
-            // An EMPTY host answered - it has no session, which is itself an answer
-            // through its mux - so its screen names the pair. An unreachable or blocked
-            // host answered nothing, so its screen reads the machine alone unless the id
-            // names the mux. A listing failure keeps the confirmed mux that answered.
-            ViewScreen::Unreachable
-            | ViewScreen::Login
-            | ViewScreen::ListFailed
-            | ViewScreen::Empty
-            | ViewScreen::Host
-            | ViewScreen::Machine => self.host_label_when(
-                &address.host,
-                matches!(kind, ViewScreen::Empty | ViewScreen::Host),
-            ),
+        if matches!(kind, ViewScreen::SelfSession | ViewScreen::Stopped)
+            && !address.session.is_empty()
+        {
+            return vec![
+                ("Host", state.session_mux(address)),
+                ("Session", address.session.clone()),
+            ];
         }
+        // An unreachable or blocked host answered nothing, so it is named by its mux only
+        // when its id names one, and by its id otherwise.
+        let answered = !matches!(
+            kind,
+            ViewScreen::Unreachable | ViewScreen::Login | ViewScreen::ListFailed
+        );
+        let mux = match self.named_mux(&address.host, answered) {
+            "" => address.host.clone(),
+            mux => mux.to_string(),
+        };
+        vec![("Machine", machine), ("Host", mux)]
     }
 
     /// The ssh config entry the machine of `host` matches, one row per line, or the row
@@ -1006,8 +1008,8 @@ impl Chrome {
             if let Some(reached) = state.last_reached.get(host) {
                 rows.push((ScreenCell::Label("last listed"), reached_at(*reached)));
             }
-        } else if kind == ViewScreen::Landing {
-            // The landing screen is its list of cards, headed by a newer release while
+        } else if kind == ViewScreen::Start {
+            // The start screen is its list of cards, headed by a newer release while
             // the running build is behind one.
             if let Some(latest) = &self.update_available {
                 rows.push((
@@ -1093,17 +1095,14 @@ impl Chrome {
             None => {}
         }
 
-        // The headline's link up: a host's machine, which the headline carries as the
-        // machine half of its path.
-        let landing = kind == ViewScreen::Landing;
-        let up = view.links.iter().position(|l| {
-            !machine_screen
-                && !matches!(
-                    kind,
-                    ViewScreen::SelfSession | ViewScreen::Stopped | ViewScreen::Landing
-                )
-                && matches!(l.node(), Some(crate::model::Node::Machine(_)))
-        });
+        // The link up is a screen's last link, the level above, which the header writes
+        // on its first row. The start screen is the top and has none.
+        let is_start = kind == ViewScreen::Start;
+        let up = view
+            .links
+            .len()
+            .checked_sub(1)
+            .filter(|&i| !is_start && !matches!(view.links[i].target, LinkTarget::Action(_)));
         // A block of rows is parted from the block above by one blank line.
         let part = |rows: &mut Vec<(ScreenCell, String)>| {
             if rows
@@ -1114,7 +1113,7 @@ impl Chrome {
             }
         };
         // The level below, as links: a machine's hosts, a host's sessions, and on the
-        // landing screen every card under its number.
+        // start screen every card under its number.
         let name = if machine_screen { "hosts" } else { "sessions" };
         // Card numbers line up by units place, as they do in the nav's address column.
         let number_w = view
@@ -1133,6 +1132,9 @@ impl Chrome {
         }
         for (n, &i) in children.iter().enumerate() {
             let link = &view.links[i];
+            if link.parted {
+                rows.push((ScreenCell::Gap, String::new()));
+            }
             let value = if link.value.is_empty() {
                 link.label.clone()
             } else {
@@ -1140,7 +1142,7 @@ impl Chrome {
             };
             let cell = match link.number {
                 Some(number) => Some(format!("{number:>number_w$}")),
-                None => (n == 0 && !landing).then(|| name.to_string()),
+                None => (n == 0 && !is_start).then(|| name.to_string()),
             };
             rows.push((ScreenCell::Link(cell, i), value));
         }
@@ -1169,7 +1171,7 @@ impl Chrome {
             .enumerate()
             .filter_map(|(i, l)| match l.target {
                 LinkTarget::Action(action) => Some((i, action)),
-                LinkTarget::Node(_) => None,
+                LinkTarget::Node(_) | LinkTarget::Start => None,
             })
             .collect();
         if !actions.is_empty() {
@@ -1254,81 +1256,49 @@ impl Chrome {
             | ViewScreen::Stopped
             | ViewScreen::Host
             | ViewScreen::Machine
-            | ViewScreen::Landing => pal.decoration,
+            | ViewScreen::Start => pal.decoration,
         });
-        let headline = self.headline(state, address, kind, machine_screen);
         let bold = Style::default()
             .fg(pal.secondary)
             .add_modifier(Modifier::BOLD);
         let mut links: Vec<LinkCell> = Vec::new();
-        // A machine's and a host's screen look alike, so the headline names the level
-        // before the path: the user reads `machine db-01` or `host db-01/tmux` and knows
-        // which one every row and key below it is about.
-        let level = match kind {
-            ViewScreen::SelfSession | ViewScreen::Landing => "",
-            _ if headline.is_empty() => "",
-            ViewScreen::Stopped => "session ",
-            _ if machine_screen => "machine ",
-            _ => "host ",
-        };
-        let lead = vec![
-            Span::raw(" "),
-            Span::styled(level, Style::default().fg(pal.decoration)),
-        ];
-        let path_col = 1 + level.len() as u16;
-        // A host's headline is its path, and the machine half of the path is the link up
-        // to the machine's screen.
-        let (up, label_len) = match up.map(|i| (i, &view.links[i])) {
-            Some((i, link)) if headline.starts_with(&link.label) => (i, link.label.chars().count()),
-            _ => (0, 0),
-        };
-        // A path wider than the view continues on the next rows under its first
-        // character. A path is one identifier, so it breaks between characters, and the
-        // link covers its part of every row it reaches.
-        let mut headline_lines = Vec::new();
-        let chars: Vec<char> = headline.chars().collect();
-        let avail = (width.saturating_sub(path_col) as usize).max(1);
-        let mut start = 0;
-        loop {
-            let mut end = start;
-            let mut row_w = 0;
-            while end < chars.len() {
-                let w = unicode_width::UnicodeWidthChar::width(chars[end]).unwrap_or(0);
-                if row_w + w > avail && end > start {
-                    break;
-                }
-                row_w += w;
-                end += 1;
-            }
-            let mut spans = if start == 0 {
-                lead.clone()
-            } else {
-                vec![Span::raw(" ".repeat(path_col as usize))]
+        // The header: the level above, whose name is the link up, then the screen's own
+        // level, each as `Level: name` under one label column. Every screen opens with it,
+        // so the user reads where the screen sits and steps up from its top rows.
+        let header = self.header(state, address, kind, machine_screen);
+        let label_w = header
+            .iter()
+            .map(|(word, _)| word.len() + 1)
+            .max()
+            .unwrap_or(0);
+        let value_col = 2 + label_w as u16;
+        let avail = (width.saturating_sub(value_col) as usize).max(1);
+        let mut out = vec![Line::from("")];
+        for (n, (word, name)) in header.into_iter().enumerate() {
+            let link = up.filter(|_| n == 0 && !is_start);
+            let style = match link {
+                Some(i) => link_style(pal, i, selection_and_hover).add_modifier(Modifier::BOLD),
+                None => bold,
             };
-            let linked: String = chars[start..end.min(label_len.max(start))].iter().collect();
-            let plain: String = chars[end.min(label_len).max(start)..end].iter().collect();
-            if !linked.is_empty() {
-                links.push((
-                    up,
-                    1 + headline_lines.len(),
-                    path_col,
-                    unicode_width::UnicodeWidthStr::width(linked.as_str()) as u16,
-                ));
-                spans.push(Span::styled(
-                    linked,
-                    link_style(pal, up, selection_and_hover).add_modifier(Modifier::BOLD),
-                ));
-            }
-            spans.push(Span::styled(plain, bold));
-            headline_lines.push(Line::from(spans));
-            start = end;
-            if start >= chars.len() {
-                break;
+            // A name wider than the view continues on the next rows under its first
+            // character, and the link covers its part of every row it reaches.
+            for (row, part) in wrap_width(&name, avail).into_iter().enumerate() {
+                let lead = if row == 0 {
+                    format!(" {:<label_w$} ", format!("{word}:"))
+                } else {
+                    " ".repeat(value_col as usize)
+                };
+                if let Some(i) = link {
+                    let w = unicode_width::UnicodeWidthStr::width(part.as_str()) as u16;
+                    links.push((i, out.len(), value_col, w));
+                }
+                out.push(Line::from(vec![
+                    Span::styled(lead, Style::default().fg(pal.decoration)),
+                    Span::styled(part, style),
+                ]));
             }
         }
-        let mut out = vec![Line::from("")];
-        out.extend(headline_lines);
-        let word = if landing {
+        let word = if is_start {
             self.scan_progress(state)
         } else if logged_out {
             crate::ui::cards::LOGGED_OUT.to_string()
@@ -2029,4 +1999,21 @@ mod tests {
     fn non_ascii_hex_config_color_does_not_panic() {
         assert_eq!(map_color("#€abc"), Color::Reset);
     }
+}
+
+/// `text` cut into rows at most `width` columns wide, between characters, since a name
+/// is one identifier.
+fn wrap_width(text: &str, width: usize) -> Vec<String> {
+    let mut rows = vec![String::new()];
+    let mut row_w = 0;
+    for c in text.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if row_w + w > width && row_w > 0 {
+            rows.push(String::new());
+            row_w = 0;
+        }
+        rows.last_mut().expect("one row at least").push(c);
+        row_w += w;
+    }
+    rows
 }

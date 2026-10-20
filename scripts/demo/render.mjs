@@ -94,7 +94,7 @@ const tour = load("features");
 const lead = t => t - tour.keys[0][0] + 0.8;
 const caps = tour.captions.map(([t, c]) => [lead(t), c]);
 const FEATURES = {
-  landing: "Open a session from the landing screen", "nav-switch": "Switch sessions",
+  start: "Open a session from the start screen", "nav-switch": "Switch sessions",
   hierarchy: "Walk up to the host and the machine", "nav-resize": "Resize the nav",
   "nav-place": "Place the nav", "nav-autohide": "Auto-hide the nav",
 };

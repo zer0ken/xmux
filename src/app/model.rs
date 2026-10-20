@@ -175,6 +175,7 @@ impl AppModel {
             position: self.nav_position,
             floating: self.floating_rect,
             docked_floating: self.floating_docked,
+            start_preview: self.switcher.start_open(),
         }
     }
 
@@ -1523,7 +1524,7 @@ fn settle_rescan(model: &mut AppModel) {
 pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     let answers = matches!(msg, Msg::HostEvent { .. } | Msg::ApplyInventory { .. });
     let answering_before = answers.then(|| answering_hosts(&model.state));
-    let landing = model.switcher.landing_open();
+    let start = model.switcher.start_open();
     let mut effects = step(model, msg);
     if let Some(before) = answering_before {
         record_lost_hosts(model, &before);
@@ -1531,27 +1532,25 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     settle_rescan(model);
     show_logout_question(model);
     effects.extend(settle_logout_choice(model));
-    if landing {
-        effects.extend(settle_landing(model));
-    }
+    effects.extend(settle_start(model, start));
     effects
 }
 
-/// The first execution ends the landing screen and gives the terminal view the focus,
-/// whichever input it came from: a move into the terminal view (Enter, a click on a nav
-/// target) closes the landing, and an execution that closed it (a landing link, a jump, a
-/// switch) moves the focus there.
-fn settle_landing(model: &mut AppModel) -> Vec<Effect> {
+/// The start screen belongs to the nav's focus. An execution ends it and gives the
+/// terminal view the focus, whichever input it came from: a move into the terminal view
+/// (Enter, a click on a nav target) closes the start, and an execution that closed it (a
+/// start link, a jump, a switch) moves the focus there. A machine screen's up-link, which
+/// reopens it from the terminal view, moves the focus back to the nav, as at launch.
+fn settle_start(model: &mut AppModel, was_open: bool) -> Vec<Effect> {
     let nav = model.state.focus.view_is_nav();
-    if model.switcher.landing_open() {
-        if !nav {
-            model.switcher.close_landing();
+    match (was_open, model.switcher.start_open()) {
+        (true, true) if !nav => {
+            model.switcher.close_start();
+            Vec::new()
         }
-        Vec::new()
-    } else if nav {
-        update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
-    } else {
-        Vec::new()
+        (true, false) if nav => update(model, Msg::Focus(crate::model::FocusTarget::Terminal)),
+        (false, true) if !nav => update(model, Msg::Focus(crate::model::FocusTarget::Nav)),
+        _ => Vec::new(),
     }
 }
 
@@ -5082,11 +5081,11 @@ mod tests {
         assert_eq!(m.render_plan.popup_rect.x, before.x - 5, "the popup moved");
     }
 
-    /// `model_with_cards` as it stands at launch: the landing screen up, the selection on
+    /// `model_with_cards` as it stands at launch: the start screen up, the selection on
     /// the first session, nothing executed.
     fn landed() -> AppModel {
         let mut m = model_with_cards();
-        m.switcher.open_landing();
+        m.switcher.open_start();
         m
     }
 
@@ -5214,31 +5213,34 @@ mod tests {
     }
 
     #[test]
-    fn the_landing_selection_attaches_nothing_until_it_is_executed() {
+    fn the_start_selection_previews_until_it_is_executed() {
         let mut m = landed();
         update(&mut m, down());
         update(&mut m, Msg::SyncSelection);
-        assert!(
-            m.state.selection.session.is_empty(),
-            "a move on the landing selects no session to attach"
+        assert_eq!(
+            m.state.selection.session, "editor",
+            "a move on the start selects the session its preview shows"
         );
-        assert!(m.switcher.landing_open());
+        assert!(m.switcher.start_open(), "a move only previews");
 
         update(&mut m, Msg::Focus(crate::model::FocusTarget::Terminal));
-        assert!(!m.switcher.landing_open(), "Enter executes the selection");
+        assert!(!m.switcher.start_open(), "Enter executes the selection");
         update(&mut m, Msg::SyncSelection);
         assert_eq!(m.state.selection.session, "editor");
 
         update(&mut m, Msg::Focus(crate::model::FocusTarget::Nav));
-        assert!(!m.switcher.landing_open(), "the landing never returns");
+        assert!(
+            !m.switcher.start_open(),
+            "a focus change does not reopen the start"
+        );
     }
 
     #[test]
-    fn a_landing_link_executes_and_focuses_the_terminal_view() {
+    fn a_start_link_rect_executes_and_focuses_the_terminal_view() {
         let mut m = landed();
         let i = m
             .switcher
-            .landing_links(&m.state)
+            .start_links(&m.state)
             .iter()
             .position(|l| {
                 l.node()
@@ -5248,14 +5250,72 @@ mod tests {
             })
             .unwrap();
         update(&mut m, Msg::OpenLink(Some(i)));
-        assert!(!m.switcher.landing_open());
+        assert!(!m.switcher.start_open());
         assert!(terminal_focused(&m));
         update(&mut m, Msg::SyncSelection);
         assert_eq!(m.state.selection.session, "editor");
     }
 
     #[test]
-    fn a_switch_executes_the_landing_and_focuses_the_terminal_view() {
+    fn a_machine_up_link_reopens_the_start_in_the_nav_until_the_next_execution() {
+        let mut m = landed();
+        update(&mut m, Msg::Focus(crate::model::FocusTarget::Terminal));
+        assert!(!m.switcher.start_open());
+        update(&mut m, Msg::Focus(crate::model::FocusTarget::Nav));
+        let ctrl_up = || Msg::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+        update(&mut m, ctrl_up());
+        update(&mut m, ctrl_up());
+        assert_eq!(
+            m.switcher.selected_node(),
+            Some(crate::model::Node::Machine("local".into()))
+        );
+        update(&mut m, Msg::Focus(crate::model::FocusTarget::Terminal));
+        let up = m
+            .switcher
+            .shown_links(&m.state)
+            .iter()
+            .position(|l| matches!(l.target, crate::ui::chrome::LinkTarget::Start))
+            .expect("a machine screen links up to the start");
+
+        update(&mut m, Msg::OpenLink(Some(up)));
+        assert!(m.switcher.start_open(), "the up-link reopens the start");
+        assert!(
+            !terminal_focused(&m),
+            "the reopened start takes the nav's focus"
+        );
+        update(&mut m, Msg::SyncSelection);
+        assert!(m.switcher.start_open(), "the next message leaves it open");
+        assert!(
+            m.state.selection.session.is_empty(),
+            "the reopened start attaches nothing"
+        );
+        assert_eq!(
+            m.switcher.selected_node(),
+            Some(crate::model::Node::Machine("local".into())),
+            "the machine left stays selected, one Enter from its screen"
+        );
+
+        update(&mut m, Msg::Focus(crate::model::FocusTarget::Terminal));
+        assert!(
+            !m.switcher.start_open(),
+            "Enter executes the selection again"
+        );
+        assert_eq!(
+            m.switcher.current_view_screen(&m.state),
+            Some(crate::model::ViewScreen::Machine)
+        );
+
+        // Ctrl-↑ steps the same level up the link does.
+        update(&mut m, Msg::Focus(crate::model::FocusTarget::Nav));
+        update(&mut m, ctrl_up());
+        assert!(
+            m.switcher.start_open(),
+            "Ctrl-↑ on a machine opens the start"
+        );
+    }
+
+    #[test]
+    fn a_switch_executes_the_start_and_focuses_the_terminal_view() {
         let mut m = landed();
         update(
             &mut m,
@@ -5263,7 +5323,7 @@ mod tests {
                 "local", "build",
             ))),
         );
-        assert!(!m.switcher.landing_open());
+        assert!(!m.switcher.start_open());
         assert!(terminal_focused(&m));
         update(&mut m, Msg::SyncSelection);
         assert_eq!(m.state.selection.session, "build");
@@ -5276,12 +5336,12 @@ mod tests {
             &mut m,
             Msg::Key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE)),
         );
-        assert!(m.switcher.landing_open(), "a jump being typed only selects");
+        assert!(m.switcher.start_open(), "a jump being typed only selects");
         update(
             &mut m,
             Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
-        assert!(!m.switcher.landing_open());
+        assert!(!m.switcher.start_open());
         assert!(terminal_focused(&m));
     }
 }

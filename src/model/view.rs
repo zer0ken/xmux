@@ -28,7 +28,7 @@ pub enum ViewScreen {
     /// The root of the hierarchy, shown from launch until the user first executes a
     /// target: the scan progress and every card in nav order. The selection highlights on
     /// it and attaches nothing.
-    Landing,
+    Start,
 }
 
 /// The session confirmed into the terminal view, as the screen choice reads it.
@@ -149,7 +149,7 @@ pub fn screen_actions(kind: ViewScreen, ssh: bool) -> Vec<ScreenAction> {
         ViewScreen::Scanning
         | ViewScreen::SelfSession
         | ViewScreen::Stopped
-        | ViewScreen::Landing => Vec::new(),
+        | ViewScreen::Start => Vec::new(),
         // Creating under a host that failed is refused, so `n` is offered only where it
         // can run.
         ViewScreen::Host | ViewScreen::Empty => {

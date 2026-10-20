@@ -5,7 +5,7 @@
 //! item has no padding. The harness paints the default
 //! `auto-dark` theme: Black on LightGreen.
 
-use super::tests_hierarchy::{fleet, landed, landing_link, session, H};
+use super::tests_hierarchy::{fleet, landed, session, start_link_rect, H};
 use super::*;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::style::{Color, Modifier};
@@ -209,7 +209,7 @@ fn a_selected_screen_link_is_highlighted_and_no_other_link_is() {
     h.sw.step_link(-1, &h.state);
     h.draw();
     assert!(h.selected_look(h.link_rect(5)));
-    // The headline's machine link is part of the path and has no padding.
+    // The header's machine link is the name alone and has no padding.
     let link = h.link_rect(5);
     assert!(h.selected_look(link));
     assert!(h.plain(Rect::new(link.x - 1, link.y, 1, 1)));
@@ -226,11 +226,11 @@ fn a_selected_screen_link_is_highlighted_and_no_other_link_is() {
 }
 
 #[test]
-fn a_selected_landing_link_is_highlighted_and_no_other_link_is() {
+fn a_selected_start_link_is_highlighted_and_no_other_link_is() {
     let h = landed();
-    assert!(h.selected_look(landing_link(&h, session("gpu", "train"))));
-    assert!(h.unpadded(landing_link(&h, session("gpu", "train"))));
-    assert!(h.plain(landing_link(&h, session("web", "api"))));
+    assert!(h.selected_look(start_link_rect(&h, session("gpu", "train"))));
+    assert!(h.unpadded(start_link_rect(&h, session("gpu", "train"))));
+    assert!(h.plain(start_link_rect(&h, session("web", "api"))));
 }
 
 #[test]
@@ -433,12 +433,12 @@ fn selecting_a_screen_link_moves_no_text() {
 }
 
 #[test]
-fn selecting_a_landing_link_moves_no_text() {
+fn selecting_a_start_link_rect_moves_no_text() {
     let mut h = landed();
     let term = h.plan.regions.terminal;
     let first = h.symbols(term);
     h.key(KeyCode::Down);
-    assert!(h.selected_look(landing_link(&h, session("web", "api"))));
+    assert!(h.selected_look(start_link_rect(&h, session("web", "api"))));
     assert_eq!(h.symbols(term), first);
 }
 

@@ -56,7 +56,8 @@ against, naming no source file, function, or test.
 - **FR-B4** - Up/down step one card, left/right step one category, a fuzzy filter
   narrows the list over `<host>/<name>`, and `prefix R` re-scans every machine.
 - **FR-B5** - Quitting (`prefix q` or the ctl `quit` verb) leaves every mux session
-  untouched.
+  untouched. However xmux ends, a forced kill included, every client it attached
+  detaches.
 - **FR-B6** - Under a filter, `Enter` attaches the visible filtered session, never a
   filtered-out one.
 - **FR-B7** - Every host-state card shows one fixed-width state glyph (a spinner while
@@ -166,21 +167,27 @@ against, naming no source file, function, or test.
   nearest remaining node up its lineage, and a new card takes the selection only when
   the user asked for it (Selection by Interest in docs/principles.md). When nothing of
   the selected machine is left, the selection names nothing and the terminal view shows
-  the landing list and attaches nothing until the user picks a card, or until a filter
+  the start list and attaches nothing until the user picks a card, or until a filter
   edit lists the node the user was on again.
 - **FR-B42** - Machines, hosts, and sessions each have a view screen linked to one
   another, reached through `Ctrl-↑` / `Ctrl-↓`, the section title parts, and the screen
   links.
-- **FR-B43** - From launch until the first execution the terminal view attaches to no
-  session and shows the landing screen: how many machines the scan has reached, with the
-  scan spinner, and every nav card in nav order and numbering as its `/`-separated path.
-  The landing list and the nav share one selection, which only highlights; the
-  first execution closes the landing screen for the rest of the run, opens the chosen
-  card, and focuses the terminal view.
+- **FR-B43** - From launch until the first execution the terminal view shows the start
+  screen: how many machines the scan has reached, with the scan spinner, and every nav
+  card in nav order and numbering as its `/`-separated path, grouped as the nav groups
+  its cards. The start list and the nav share one selection, and a framed box in the
+  screen's lower half previews the card the pointer or the selection stands on: a
+  machine's or a host's screen, or a session's live grid, whose terminal takes the
+  box's size while the start screen is up; a click anywhere in the box opens its
+  card. An execution closes the start screen, opens the chosen card, and focuses the terminal
+  view; a machine screen's link up and `Ctrl-↑` on a machine open the start screen
+  again with the focus in the nav.
 - **FR-B44** - Every surface names the levels machine, host, and session, with `host`
-  always one mux on a machine, a machine screen and a host screen open with their level
-  and path (`machine db-01`, `host db-01/tmux`), and each states only the facts of its
-  own level. A surface that names a session apart from its host's section, title, or
+  always one mux on a machine. Every view screen opens with a header of two rows, the
+  level above and its own level, each as `Level: name` (`Local: <this machine>` over
+  `Machine: db-01`, `Machine: db-01` over `Host: tmux`, `Host: tmux` over
+  `Session: api`), whose first row links up; the start screen's header is
+  `Local: <this machine>` alone. Each screen states only the facts of its own level. A surface that names a session apart from its host's section, title, or
   screen writes its whole path (`db-01/tmux/pg-primary`).
 - **FR-B45** - A bell, an OSC 9 notification, or an OSC 777 notification that any kept
   session's client sends reaches the terminal xmux runs in. A session whose grid is not
@@ -234,9 +241,13 @@ against, naming no source file, function, or test.
   the terminal view reaches it until its release, with motion past the view at the
   view's nearest edge.
 - **FR-C10** - xmux's display client leaves the size of a session the user also has open
-  to the user's own clients. On tmux it stops sizing a session while another client that
-  sizes windows is attached to it (`refresh-client -f ignore-size`) and sizes the session
-  again once it is the session's only such client. On abduco it attaches with the lowest
+  to the user's own clients. On tmux it sizes a session only while the terminal view or
+  the start screen's preview shows it, and a session another client that sizes windows
+  is attached to only while the user works in the terminal view (the terminal view and
+  xmux's window hold the focus); otherwise it stops sizing it (`refresh-client -f
+  ignore-size`). Under `window-size latest` the session then follows whichever client
+  the user typed into last. Only the attachment on view is resized, and one the preview
+  opened ends once the preview leaves it. On abduco it attaches with the lowest
   priority (`abduco -l -a`), so it sizes the session only while no other client is
   attached. A tmux window larger than the terminal view shows the part around the
   cursor, and a smaller one shows its edge with the rest of the view filled with dots.
@@ -252,9 +263,10 @@ against, naming no source file, function, or test.
 - **FR-D4** - The control socket is removed if stale before bind, owner-only (`0600`) on
   unix, and removed on exit, and a crashed instance's `ctl-*.sock` marker is swept on
   the next startup.
-- **FR-D5** - The app launches directly into the split view with the landing screen
+- **FR-D5** - The app launches directly into the split view with the start screen
   (FR-B43), preselects the first session to appear, and keeps that selection as later
-  hosts answer; the preselect attaches nothing until the user executes a card.
+  hosts answer; the preselect attaches for the start's preview and the keys stay with
+  the nav until the user executes a card.
 - **FR-D6** - An enumeration logs at INFO only when its session list changed and at WARN
   on failure.
 - **FR-D7** - Daily log files are kept for a bounded window, and a repeating recovered

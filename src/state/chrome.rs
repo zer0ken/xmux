@@ -100,9 +100,13 @@ pub struct Chrome {
     /// The nav border colours resolved from the active palette and configuration.
     pub(crate) colors: NavBorderColors,
     /// The newest recorded release while it is newer than the running xmux (set once by
-    /// the app at launch). The landing screen and the prefix key list name it for as long
+    /// the app at launch). The start screen and the prefix key list name it for as long
     /// as the running build is behind, so it is never a result that comes and goes.
     pub(crate) update_available: Option<String>,
+    /// The name of the machine xmux runs on, which heads the start screen as the top of
+    /// the hierarchy and every machine's screen as the level above it (set once by the
+    /// app at launch).
+    pub(crate) local_name: String,
 }
 
 impl Chrome {

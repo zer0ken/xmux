@@ -1,7 +1,7 @@
 //! The machine / host / session hierarchy in the nav and the terminal view: the two halves
 //! of a section title, the card step and the level step, the machine's and the host's
 //! screens and their links, the hover under the pointer, and a machine none of
-//! whose hosts connected standing as one card, and the landing screen above them all.
+//! whose hosts connected standing as one card, and the start screen above them all.
 
 use super::*;
 use crate::model::Node;
@@ -411,8 +411,12 @@ fn the_machine_and_host_screens_name_their_level_and_keep_to_its_facts() {
     assert_eq!(h.node(), host("box:tmux"));
     let mux = h.view();
     assert_eq!(
-        mux.lines().nth(1).map(str::trim_end),
-        Some(" host box/tmux"),
+        mux.lines()
+            .skip(1)
+            .take(2)
+            .map(str::trim_end)
+            .collect::<Vec<_>>(),
+        [" Machine: box", " Host:    tmux"],
         "{mux}"
     );
     for gone in ["ssh config", "Host box", "address", "SSH login"] {
@@ -425,8 +429,13 @@ fn the_machine_and_host_screens_name_their_level_and_keep_to_its_facts() {
     assert_eq!(h.node(), machine("box"));
     let machine = h.view();
     assert_eq!(
-        machine.lines().nth(1).map(str::trim_end),
-        Some(" machine box"),
+        machine
+            .lines()
+            .skip(1)
+            .take(2)
+            .map(str::trim_end)
+            .collect::<Vec<_>>(),
+        [" Local:   local", " Machine: box"],
         "{machine}"
     );
     for want in ["ssh config", "Host box", "User dev", "hosts"] {
@@ -449,7 +458,10 @@ fn the_host_screen_links_its_machine_and_its_sessions_and_leaves_the_login_to_th
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
     let view = h.view();
-    assert!(view.contains("web/tmux"), "{view}");
+    assert!(
+        view.contains("Machine: web") && view.contains("Host:    tmux"),
+        "{view}"
+    );
     for want in [
         "sessions",
         "updates",
@@ -491,7 +503,7 @@ fn a_screen_reads_headline_status_children_then_actions() {
             .unwrap_or_else(|| panic!("the host screen states {want:?}:\n{view}"))
     };
     let order = [
-        at("host web/tmux"),
+        at("Host:    tmux"),
         at("2 sessions"),
         at("updates"),
         at("sessions  api"),
@@ -513,7 +525,7 @@ fn a_screen_reads_headline_status_children_then_actions() {
             .unwrap_or_else(|| panic!("the machine screen states {want:?}:\n{view}"))
     };
     let order = [
-        at("machine web"),
+        at("Machine: web"),
         at("hosts"),
         at("rescan this machine"),
         at("rescan all machines"),
@@ -835,7 +847,7 @@ fn a_machine_card_that_logs_back_in_keeps_the_selection_on_the_machine() {
         Some(ViewScreen::Machine)
     );
     let view = h.view();
-    assert!(view.contains("machine db"), "{view}");
+    assert!(view.contains("Machine: db"), "{view}");
     assert!(view.contains("tmux  1 session"), "{view}");
     assert!(view.contains("zellij  1 session"), "{view}");
 }
@@ -1054,31 +1066,28 @@ fn the_section_step_from_a_title_part_goes_to_the_neighbouring_section() {
     assert_eq!(h.node(), host("idle"), "→ reaches the host cards' section");
 }
 
-/// The fleet as it stands at launch: the landing screen up, nothing executed yet.
+/// The fleet as it stands at launch: the start screen up, nothing executed yet.
 pub(super) fn landed() -> H {
     let mut h = fleet();
-    h.sw.open_landing();
+    h.sw.open_start();
     h.draw();
     h
 }
 
-/// Where the landing list painted the link for `node`.
-pub(super) fn landing_link(h: &H, node: Option<Node>) -> Rect {
+/// Where the start list painted the link for `node`.
+pub(super) fn start_link_rect(h: &H, node: Option<Node>) -> Rect {
     let i =
-        h.sw.landing_links(&h.state)
+        h.sw.start_links(&h.state)
             .iter()
             .position(|l| l.node() == node.as_ref())
-            .expect("the landing lists the node");
+            .expect("the start lists the node");
     h.link_rect(i)
 }
 
 #[test]
-fn the_landing_lists_every_card_in_nav_order_under_its_number() {
+fn the_start_lists_every_card_in_nav_order_under_its_number() {
     let h = landed();
-    assert_eq!(
-        h.sw.current_view_screen(&h.state),
-        Some(ViewScreen::Landing)
-    );
+    assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Start));
     let cards: Vec<(usize, Node)> = (0..h.sw.rows.len())
         .filter(|&i| h.sw.rows[i].selectable())
         .map(|i| {
@@ -1088,7 +1097,7 @@ fn the_landing_lists_every_card_in_nav_order_under_its_number() {
             )
         })
         .collect();
-    let links = h.sw.landing_links(&h.state);
+    let links = h.sw.start_links(&h.state);
     assert_eq!(
         links
             .iter()
@@ -1109,14 +1118,128 @@ fn the_landing_lists_every_card_in_nav_order_under_its_number() {
         "each card is written as its path, parted by `/` alone"
     );
     let view = h.view();
-    assert!(view.contains(" xmux"), "{view}");
+    assert!(view.contains(" Local: local"), "{view}");
     assert!(view.contains("4 of 4 machines scanned"), "{view}");
     assert!(view.contains("1  gpu/tmux/train"), "{view}");
     assert!(view.contains("5  db  logged out"), "{view}");
 }
 
 #[test]
-fn the_landing_states_the_scan_progress_with_the_spinner() {
+fn the_start_list_parts_its_groups_by_one_blank_row() {
+    let h = landed();
+    // fleet order: the session group (train, api, deploy), then the no-session group
+    // (idle), then the unresolved group (db). Each group sits one blank row below the
+    // last card of the group before it.
+    let (train, api, deploy, idle, db) = (0, 1, 2, 3, 4);
+    assert_eq!(h.link_rect(api).y, h.link_rect(train).y + 1);
+    assert_eq!(h.link_rect(deploy).y, h.link_rect(api).y + 1);
+    assert_eq!(
+        h.link_rect(idle).y,
+        h.link_rect(deploy).y + 2,
+        "one blank row parts the session group from the no-session group"
+    );
+    assert_eq!(
+        h.link_rect(db).y,
+        h.link_rect(idle).y + 2,
+        "one blank row parts the no-session group from the unresolved group"
+    );
+}
+
+/// The terminal's lower half, as one string, for the preview tests: the region the
+/// start screen reserves for the preview.
+fn lower_half(h: &H) -> String {
+    let buf = h.term.backend().buffer();
+    let top_h = (buf.area.height / 2) as usize;
+    (top_h..buf.area.height as usize)
+        .map(|y| {
+            (0..buf.area.width as usize)
+                .map(|x| buf[(x as u16, y as u16)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_start_preview_shows_the_selected_host_screen_in_the_lower_half() {
+    let mut h = landed();
+    let idle = h.card_row(|r| matches!(r, RowRef::Host { host, .. } if host == "idle"));
+    h.sw.set_selected(idle);
+    h.draw();
+    let bottom = lower_half(&h);
+    assert!(
+        bottom.contains("start a new session"),
+        "the lower half previews the idle host screen:\n{bottom}"
+    );
+    assert!(bottom.contains("no sessions"), "{bottom}");
+}
+
+#[test]
+fn the_start_preview_of_a_session_waits_for_its_display() {
+    let h = landed();
+    // The selection rests on the first card, a session, which no display shows yet.
+    assert!(matches!(h.sw.selected_node(), Some(Node::Session(_))));
+    let bottom = lower_half(&h);
+    assert!(
+        bottom.contains("preview"),
+        "the box frames the preview:\n{bottom}"
+    );
+    assert!(
+        !bottom
+            .replace("preview", "")
+            .chars()
+            .any(|c| c.is_alphabetic() || c.is_ascii_digit()),
+        "the box stays empty until the display shows the session:\n{bottom}"
+    );
+}
+
+#[test]
+fn the_start_preview_shows_the_displayed_session_grid() {
+    let mut h = landed();
+    h.state.displayed = crate::model::Selection {
+        host: "gpu".into(),
+        session: "train".into(),
+    };
+    let mut grid = crate::display::grid::Grid::new(5, 80);
+    let lines: Vec<String> = (1..=5).map(|n| format!("line{n:02}")).collect();
+    grid.feed(lines.join("\r\n").as_bytes());
+    let (sw, state, previous) = (&h.sw, &h.state, h.plan.clone());
+    h.term
+        .draw(|f| {
+            let nav = super::tests_support::auto_nav(NAV_WIDTH, f.area());
+            let plan = sw.layout(f.area(), nav, state, &previous);
+            sw.render(f, Some(&grid), false, state, &plan);
+        })
+        .unwrap();
+    let bottom = lower_half(&h);
+    assert!(
+        bottom.contains("line01") && bottom.contains("line05"),
+        "the box shows the session's grid:\n{bottom}"
+    );
+}
+
+#[test]
+fn a_start_list_taller_than_its_half_scrolls_to_the_selection() {
+    let names: Vec<String> = (1..=30).map(|n| format!("s{n:02}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut h = H::new(&[("big", &names, None)]);
+    h.sw.open_start();
+    h.draw();
+    for _ in 0..29 {
+        h.key(KeyCode::Down);
+    }
+    assert_eq!(h.node(), session("big", "s30"));
+    let rect = start_link_rect(&h, session("big", "s30"));
+    let list = h.plan.regions.terminal;
+    assert!(
+        rect.y < list.y + list.height / 2,
+        "the last card stands in the list half: {rect:?}"
+    );
+    assert!(h.highlighted(rect), "and the list marks it");
+}
+
+#[test]
+fn the_start_states_the_scan_progress_with_the_spinner() {
     let mut h = landed();
     h.sw.mark_scanning("idle", &mut h.state);
     h.draw();
@@ -1130,7 +1253,7 @@ fn the_landing_states_the_scan_progress_with_the_spinner() {
 }
 
 #[test]
-fn the_landing_names_a_newer_release_and_the_command_that_installs_it() {
+fn the_start_names_a_newer_release_and_the_command_that_installs_it() {
     let mut h = landed();
     assert!(!h.view().contains("xmux update"), "{}", h.view());
     h.state.chrome.update_available = Some("99.0.0".into());
@@ -1177,45 +1300,42 @@ fn the_prefix_key_list_keeps_the_update_notice_when_narrow() {
 }
 
 #[test]
-fn the_landing_and_the_nav_share_one_selection_that_attaches_nothing() {
+fn the_start_and_the_nav_share_one_selection_that_the_preview_attaches() {
     let mut h = landed();
     assert_eq!(h.node(), session("gpu", "train"));
-    assert!(h.highlighted(landing_link(&h, session("gpu", "train"))));
-    assert_eq!(h.sw.terminal_view_target().target, "");
+    assert!(h.highlighted(start_link_rect(&h, session("gpu", "train"))));
+    assert_eq!(h.sw.terminal_view_target().target, "train");
 
     h.key(KeyCode::Down);
     assert_eq!(h.node(), session("web", "api"));
     assert!(
-        h.highlighted(landing_link(&h, session("web", "api"))),
-        "the landing marks the card the nav moved to"
+        h.highlighted(start_link_rect(&h, session("web", "api"))),
+        "the start marks the card the nav moved to"
     );
-    assert!(!h.highlighted(landing_link(&h, session("gpu", "train"))));
+    assert!(!h.highlighted(start_link_rect(&h, session("gpu", "train"))));
     assert_eq!(
         h.sw.terminal_view_target().target,
-        "",
-        "the selection highlights and attaches nothing"
+        "api",
+        "the selection attaches the session its preview shows"
     );
 
-    // A nav hover does not preview while the landing is up either.
+    // A nav hover previews as it does off the start, and the start stays up.
     let deploy = h.card_row(|r| matches!(r, RowRef::Session { sess } if sess.name == "deploy"));
     let rect = h.card(deploy);
     h.sw.mouse_hover(&h.plan.clone(), rect.x, rect.y);
     h.draw();
-    assert_eq!(
-        h.sw.current_view_screen(&h.state),
-        Some(ViewScreen::Landing)
-    );
-    assert_eq!(h.sw.terminal_view_target().target, "");
+    assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Start));
+    assert_eq!(h.sw.terminal_view_target().target, "deploy");
 }
 
 #[test]
-fn a_landing_link_takes_the_pointer_from_the_navs_focus() {
+fn a_start_link_takes_the_pointer_from_the_navs_focus() {
     let mut h = landed();
-    let rect = landing_link(&h, session("web", "deploy"));
+    let rect = start_link_rect(&h, session("web", "deploy"));
     assert!(h.sw.link_hover_at(&h.plan.clone(), rect.x, rect.y));
     h.draw();
     assert!(
-        h.has_hover_style(landing_link(&h, session("web", "deploy"))),
+        h.has_hover_style(start_link_rect(&h, session("web", "deploy"))),
         "the hover wears its background and survives the frame's focus sync"
     );
     assert_eq!(
@@ -1226,33 +1346,30 @@ fn a_landing_link_takes_the_pointer_from_the_navs_focus() {
 }
 
 #[test]
-fn opening_a_landing_link_executes_it_and_the_landing_never_returns() {
+fn opening_a_start_link_executes_it_and_a_rescan_does_not_reopen_the_start() {
     let mut h = landed();
     let i =
-        h.sw.landing_links(&h.state)
+        h.sw.start_links(&h.state)
             .iter()
             .position(|l| l.node() == Some(&Node::Session(Address::new("web", "deploy"))))
             .unwrap();
     assert!(h.sw.open_link(i, &h.state));
     h.draw();
-    assert!(!h.sw.landing_open());
+    assert!(!h.sw.start_open());
     assert_eq!(h.node(), session("web", "deploy"));
     assert_eq!(h.sw.terminal_view_target().target, "deploy");
 
     h.key(KeyCode::Up);
     h.sw.request_rescan(&mut h.state);
     h.draw();
-    assert_ne!(
-        h.sw.current_view_screen(&h.state),
-        Some(ViewScreen::Landing)
-    );
+    assert_ne!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Start));
 }
 
 #[test]
-fn a_landing_link_to_a_machine_that_needs_a_login_opens_its_login_screen() {
+fn a_start_link_to_a_machine_that_needs_a_login_opens_its_login_screen() {
     let mut h = landed();
     let i =
-        h.sw.landing_links(&h.state)
+        h.sw.start_links(&h.state)
             .iter()
             .position(|l| l.node() == Some(&Node::Machine("db".into())))
             .unwrap();
@@ -1263,38 +1380,38 @@ fn a_landing_link_to_a_machine_that_needs_a_login_opens_its_login_screen() {
 }
 
 #[test]
-fn a_landed_jump_closes_the_landing_and_a_cancelled_one_does_not() {
+fn a_landed_jump_closes_the_start_and_a_cancelled_one_does_not() {
     let mut h = landed();
     h.key(KeyCode::Char('3'));
     assert_eq!(h.node(), session("web", "deploy"));
     h.key(KeyCode::Esc);
-    assert!(h.sw.landing_open(), "a cancelled jump executes nothing");
+    assert!(h.sw.start_open(), "a cancelled jump executes nothing");
 
     h.key(KeyCode::Char('3'));
     h.key(KeyCode::Enter);
-    assert!(!h.sw.landing_open());
+    assert!(!h.sw.start_open());
     assert_eq!(h.sw.terminal_view_target().target, "deploy");
 }
 
 #[test]
-fn a_switch_closes_the_landing_even_onto_the_card_already_selected() {
+fn a_switch_closes_the_start_even_onto_the_card_already_selected() {
     let mut h = landed();
     assert_eq!(h.node(), session("gpu", "train"));
     h.sw.select_address(&Address::new("nowhere", "x"));
-    assert!(h.sw.landing_open(), "a switch to no card executes nothing");
+    assert!(h.sw.start_open(), "a switch to no card executes nothing");
     h.select("gpu", "train");
-    assert!(!h.sw.landing_open());
+    assert!(!h.sw.start_open());
     assert_eq!(h.sw.terminal_view_target().target, "train");
 }
 
 #[test]
-fn the_landing_counts_a_machine_serving_several_muxes_once() {
+fn the_start_counts_a_machine_serving_several_muxes_once() {
     let mut h = H::new(&[
         ("gpu", &["train"], None),
         ("db:tmux", &["pg-primary"], None),
         ("db:zellij", &["scratch"], None),
     ]);
-    h.sw.open_landing();
+    h.sw.open_start();
     assert_eq!(
         h.state.chrome.scan_progress(&h.state),
         "2 of 2 machines scanned"
@@ -1376,11 +1493,11 @@ fn a_machine_still_answering_spins_on_its_own_card() {
     let row = h.card_row(
         |r| matches!(r, RowRef::Machine { machine, scanning: true, .. } if machine == "win"),
     );
-    let landing = h.sw.landing_links(&h.state);
-    let link = landing
+    let start = h.sw.start_links(&h.state);
+    let link = start
         .iter()
         .find(|l| l.node() == Some(&Node::Machine("win".into())))
-        .expect("the landing lists the machine");
+        .expect("the start lists the machine");
     assert_eq!(link.value, "scanning");
     assert!(h.state.scanning_any());
     assert!(row > 0);

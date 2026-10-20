@@ -61,6 +61,7 @@ impl Runtime {
             attach_seq,
             cols,
             body_rows: rows,
+            sizing,
             ..
         } = self;
         let (cols, rows) = (*cols, *rows);
@@ -591,12 +592,19 @@ impl Runtime {
             EventEffect::SizeDisplayClient { host, tty, shared } => {
                 // The answer is about the client that was asked about; a display that
                 // reattached since has a new client, and its own settle asks again.
+                // The client sizes its session only while xmux shows it, and a session
+                // the user also has open only while the user is working in xmux's view
+                // of it: the mux then follows whichever client was used last.
+                let yields = match sizing {
+                    Some((shown, in_use)) if *shown == host => shared && !*in_use,
+                    _ => true,
+                };
                 if hosts
                     .get(&host)
                     .is_some_and(|h| h.matches_display_tty(&tty))
                 {
                     if let Some(client) = mgr.get(&host) {
-                        client.size_display_on(&tty, shared);
+                        client.size_display_on(&tty, yields);
                     }
                 }
             }
@@ -743,9 +751,9 @@ impl Runtime {
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
         switcher.set_own_session(env.own_session.clone());
-        // Nothing is chosen at launch, so the terminal view lands on the landing screen
+        // Nothing is chosen at launch, so the terminal view lands on the start screen
         // rather than on whichever session answers first.
-        switcher.open_landing();
+        switcher.open_start();
         switcher.set_renumbering(roster.cfg.ui.renumbering, &mut state);
         // The launch roster can add hosts after the first hosts answer, so the card
         // numbers stay open until it is in.
@@ -880,6 +888,8 @@ impl Runtime {
             display_sync_held: false,
             rescan_pending: false,
             display_probe: DisplayProbe::default(),
+            sizing: None,
+            preview_kept: None,
             held_input: None,
             passthrough: Vec::new(),
             title: None,
@@ -1051,9 +1061,10 @@ impl Runtime {
         let docked_changed = docked != self.model.floating_docked;
         self.model.floating_docked = docked;
         // Resize when ANY dimension of the split moved: the width (focus / hide / prefix
-        // Ctrl-←/→ in a column), the horizontal nav height (border drag / resize keys), or the side the
-        // nav is attached to. All change the mux terminal region, so all must resize the
-        // PTYs or the grid mismatches the draw.
+        // Ctrl-←/→ in a column), the horizontal nav height (border drag / resize keys), the side the
+        // nav is attached to, or the start screen opening or closing its preview box. All
+        // change the mux terminal region, so all must resize the PTYs or the grid
+        // mismatches the draw.
         if want_nav_width != self.model.nav_width
             || self.model.nav_height != self.model.applied_nav_height
             || want_position != self.model.nav_position
@@ -1074,14 +1085,13 @@ impl Runtime {
                 },
             );
             debug_assert!(effects.is_empty());
-            let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
-            self.registry.resize_all(vc, vr);
             if crossed_hidden || crossed_position || docked_changed {
                 self.clear_pending = true;
                 self.images.forget();
             }
             self.dirty = true;
         }
+        self.fit_displays();
         // The key list and the help modal name the arrow pair the CURRENT placement
         // makes active, so they read the resolved position every frame.
         // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
@@ -2378,6 +2388,63 @@ impl Runtime {
         true
     }
 
+    /// Fits the display attachments to what the frame shows. Only the attachment on view
+    /// takes the terminal view's size (the preview box's while the start screen is open):
+    /// a resize counts as activity to the mux, so resizing a hidden client would take its
+    /// session's size from the client the user is working in. An attachment the start
+    /// preview opened is torn down once the preview leaves it, and a change in what is on
+    /// view or in whether the user works in it settles which client sizes its session.
+    pub(super) fn fit_displays(&mut self) {
+        let start = self.model.switcher.start_open();
+        let selection = &self.model.state.selection;
+        let shown = (!selection.is_empty()).then(|| display_key(&self.hosts, selection));
+        if let Some(key) = &shown {
+            let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
+            self.registry.resize(key, vc, vr);
+        }
+        // An attach still in flight counts as held, so its landing is torn down too.
+        let held: Vec<String> = self
+            .hosts
+            .ids()
+            .iter()
+            .filter(|key| {
+                self.registry.contains(key)
+                    || self.registry.contains_pending(key)
+                    || self
+                        .hosts
+                        .get(key)
+                        .is_some_and(|h| h.display.in_flight_contains(key))
+            })
+            .cloned()
+            .collect();
+        if start && self.preview_kept.is_none() {
+            self.preview_kept = Some(held.iter().cloned().collect());
+        }
+        if let Some(kept) = &self.preview_kept {
+            for key in held
+                .iter()
+                .filter(|k| !kept.contains(*k) && shown.as_ref() != Some(*k))
+            {
+                self.registry.remove(key);
+                if let Some(h) = self.hosts.get_mut(key) {
+                    h.display.clear(key);
+                }
+            }
+            if !start {
+                self.preview_kept = None;
+            }
+        }
+        let in_use = !start && self.window_focused && self.model.state.focus.is_terminal_focused();
+        let sizing = (!selection.is_empty()).then(|| (selection.host.clone(), in_use));
+        if sizing != self.sizing {
+            let was = std::mem::replace(&mut self.sizing, sizing);
+            let hosts = was.into_iter().chain(self.sizing.clone());
+            for host in hosts.map(|(host, _)| host).collect::<HashSet<_>>() {
+                settle_display_size(&self.hosts, &self.mgr, &host);
+            }
+        }
+    }
+
     /// Takes back the nav's note of a display client away from its card. Returns true
     /// when there was one.
     fn clear_display_away(&mut self) -> bool {
@@ -2425,8 +2492,6 @@ impl Runtime {
                 let body = r.saturating_sub(1);
                 self.cols = c;
                 self.body_rows = body;
-                let (vc, vr) = terminal_view_size(c, body, self.nav_size());
-                self.registry.resize_all(vc, vr);
                 let _ = term.autoresize();
                 // A console resize reflows the existing cells; force a full repaint.
                 self.clear_pending = true;

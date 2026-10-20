@@ -514,7 +514,7 @@ fn a_small_window_gives_the_focused_login_pane_its_whole_width() {
     assert_eq!(rt.model.nav_width, 0, "the nav steps aside:\n{out}");
     assert_eq!(rt.model.render_plan.regions.terminal.width, 40, "{out}");
     for row in [
-        "machine pwbox",
+        "Machine: pwbox",
         "address*   pwbox",
         "port*      22",
         "username*",
@@ -2125,7 +2125,7 @@ fn assert_on_the_machine_screen_with_both_hosts(rt: &mut Runtime) {
     rt.prepare_and_draw(&mut term);
     let out = drawn_text(&term);
     assert!(
-        out.contains("machine win"),
+        out.contains("Machine: win"),
         "the machine screen stays:\n{out}"
     );
     assert!(!out.contains("host win/"), "no host screen opens:\n{out}");
@@ -2167,7 +2167,7 @@ async fn a_working_login_opens_the_machine_screen_with_its_hosts_scanning() {
     rt.prepare_and_draw(&mut term);
     let out = drawn_text(&term);
     let spin = crate::ui::spinner_glyph(rt.model.state.chrome.spinner_frame);
-    assert!(out.contains("machine win"), "{out}");
+    assert!(out.contains("Machine: win"), "{out}");
     assert!(
         out.lines()
             .any(|l| l.contains("hosts") && l.contains(&format!("{spin} scanning"))),
@@ -2194,9 +2194,9 @@ async fn a_login_that_reveals_hosts_keeps_the_machine_selected() {
 }
 
 #[tokio::test]
-async fn a_login_from_the_landing_that_reveals_hosts_keeps_the_machine_selected() {
+async fn a_login_from_the_start_that_reveals_hosts_keeps_the_machine_selected() {
     let mut rt = hostless_machine_needing_login_rt();
-    rt.model.switcher.open_landing();
+    rt.model.switcher.open_start();
     sync_test_render_plan(&mut rt);
     rt.handle_stdin_bytes(b"\x1b[B", &Selection::default());
     assert_eq!(
@@ -2205,7 +2205,7 @@ async fn a_login_from_the_landing_that_reveals_hosts_keeps_the_machine_selected(
     );
     rt.handle_stdin_bytes(b"\r", &Selection::default());
     assert!(
-        !rt.model.switcher.landing_open(),
+        !rt.model.switcher.start_open(),
         "Enter executes the machine"
     );
     log_in_and_discover_two_hosts(&mut rt);
@@ -2213,7 +2213,7 @@ async fn a_login_from_the_landing_that_reveals_hosts_keeps_the_machine_selected(
 }
 
 #[tokio::test]
-async fn a_login_on_the_preselected_landing_card_keeps_the_machine_selected() {
+async fn a_login_on_the_preselected_start_card_keeps_the_machine_selected() {
     // The machine is the only card, so the launch preselects it and Enter executes it
     // without a move: the execution, not a move, makes it the user's choice, and the
     // first session card the login reveals does not take the selection.
@@ -2225,7 +2225,7 @@ async fn a_login_on_the_preselected_landing_card_keeps_the_machine_selected() {
         Some("alice@win: Permission denied (publickey,password).".into()),
         &mut rt.model.state,
     );
-    rt.model.switcher.open_landing();
+    rt.model.switcher.open_start();
     sync_test_render_plan(&mut rt);
     assert_eq!(
         rt.model.switcher.selected_node(),
@@ -2233,7 +2233,7 @@ async fn a_login_on_the_preselected_landing_card_keeps_the_machine_selected() {
     );
     rt.handle_stdin_bytes(b"\r", &Selection::default());
     assert!(
-        !rt.model.switcher.landing_open(),
+        !rt.model.switcher.start_open(),
         "Enter executes the machine"
     );
     log_in_and_discover_two_hosts(&mut rt);
@@ -2508,6 +2508,8 @@ fn test_rt(env: Env) -> Runtime {
         display_sync_held: false,
         rescan_pending: false,
         display_probe: DisplayProbe::default(),
+        sizing: None,
+        preview_kept: None,
         held_input: None,
         passthrough: Vec::new(),
         title: None,
@@ -2967,45 +2969,61 @@ async fn asking_who_shares_the_displayed_session_waits_for_the_display_tty() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn the_answer_sets_whether_the_display_client_sizes_its_session() {
-    // A session another window-sizing client shares keeps that client's size, so xmux's
-    // display client yields; alone, it sizes the session. An answer about a client that is
-    // no longer the display client changes nothing.
+    // xmux's display client sizes its session only while xmux shows it, and a session
+    // another window-sizing client shares only while the user works in xmux's view of
+    // it; otherwise it yields, so the session follows the client used last. An answer
+    // about a client that is no longer the display client changes nothing.
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     let commands = rt.mgr.insert_recording("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
         crate::model::DisplayTty(Some("/dev/pts/3".into()));
     let proto = crate::link::test_control_proto();
+    let answer = |rt: &mut Runtime, tty: &str, shared: bool| {
+        rt.handle_host_event(HostEvent::DisplaySessionClients {
+            host: "jup".into(),
+            display_tty: tty.into(),
+            shared,
+        });
+        sent_lines(&commands)
+    };
 
-    rt.handle_host_event(HostEvent::DisplaySessionClients {
-        host: "jup".into(),
-        display_tty: "/dev/pts/3".into(),
-        shared: true,
-    });
-    assert_eq!(
-        sent_lines(&commands),
-        proto.display_size_lines("/dev/pts/3", true),
-        "a shared session keeps the user's size"
-    );
+    for (sizing, shared, yields, why) in [
+        (
+            None,
+            false,
+            true,
+            "a session xmux does not show is left alone",
+        ),
+        (
+            Some(false),
+            false,
+            false,
+            "alone, a shown session follows xmux",
+        ),
+        (
+            Some(false),
+            true,
+            true,
+            "a shared session xmux only shows keeps the user's size",
+        ),
+        (
+            Some(true),
+            true,
+            false,
+            "a shared session the user works in follows xmux",
+        ),
+    ] {
+        rt.sizing = sizing.map(|in_use| ("jup".to_string(), in_use));
+        assert_eq!(
+            answer(&mut rt, "/dev/pts/3", shared),
+            proto.display_size_lines("/dev/pts/3", yields),
+            "{why}"
+        );
+    }
 
-    rt.handle_host_event(HostEvent::DisplaySessionClients {
-        host: "jup".into(),
-        display_tty: "/dev/pts/3".into(),
-        shared: false,
-    });
-    assert_eq!(
-        sent_lines(&commands),
-        proto.display_size_lines("/dev/pts/3", false),
-        "alone, the display client sizes its session"
-    );
-
-    rt.handle_host_event(HostEvent::DisplaySessionClients {
-        host: "jup".into(),
-        display_tty: "/dev/pts/7".into(),
-        shared: false,
-    });
     assert!(
-        sent_lines(&commands).is_empty(),
+        answer(&mut rt, "/dev/pts/7", false).is_empty(),
         "an answer about a client that is no longer the display client is dropped"
     );
 }
@@ -8124,10 +8142,10 @@ fn a_click_on_an_action_link_runs_what_its_key_runs() {
     );
 }
 
-/// `hierarchy_rt` as it stands at launch: the landing screen up in nav focus.
-fn landing_rt() -> Runtime {
+/// `hierarchy_rt` as it stands at launch: the start screen up in nav focus.
+fn start_rt() -> Runtime {
     let mut rt = hierarchy_rt();
-    rt.model.switcher.open_landing();
+    rt.model.switcher.open_start();
     sync_test_render_plan(&mut rt);
     rt
 }
@@ -8144,12 +8162,12 @@ fn click(rt: &mut Runtime, cb: u16, col: u16, row: u16) -> bool {
 }
 
 #[test]
-fn a_landing_link_takes_hover_and_a_click_from_the_navs_focus() {
-    let mut rt = landing_rt();
+fn a_start_link_rect_takes_hover_and_a_click_from_the_navs_focus() {
+    let mut rt = start_rt();
     let deploy = rt
         .model
         .switcher
-        .landing_links(&rt.model.state)
+        .start_links(&rt.model.state)
         .iter()
         .position(|l| l.node() == session_node("web", "deploy").as_ref())
         .unwrap();
@@ -8160,16 +8178,13 @@ fn a_landing_link_takes_hover_and_a_click_from_the_navs_focus() {
         .iter()
         .find(|(i, _)| *i == deploy)
         .copied()
-        .expect("the landing paints the card's link");
+        .expect("the start paints the card's link");
     assert!(click(&mut rt, 35, rect.x, rect.y), "hover repaints");
     assert_eq!(rt.model.switcher.hover_targets().1, Some(deploy));
-    assert!(
-        rt.model.switcher.landing_open(),
-        "hovering executes nothing"
-    );
+    assert!(rt.model.switcher.start_open(), "hovering executes nothing");
 
     click(&mut rt, 0, rect.x, rect.y);
-    assert!(!rt.model.switcher.landing_open());
+    assert!(!rt.model.switcher.start_open());
     assert_eq!(selected(&rt), session_node("web", "deploy"));
     assert_eq!(rt.model.switcher.terminal_view_target().target, "deploy");
     assert!(
@@ -8179,12 +8194,68 @@ fn a_landing_link_takes_hover_and_a_click_from_the_navs_focus() {
 }
 
 #[test]
-fn a_click_off_the_landing_links_executes_nothing() {
-    let mut rt = landing_rt();
+fn a_click_off_the_start_links_executes_nothing() {
+    let mut rt = start_rt();
     let area = rt.model.render_plan.regions.terminal;
-    click(&mut rt, 0, area.right() - 2, area.bottom() - 2);
-    assert!(rt.model.switcher.landing_open());
+    // The list half's last row, right of every link and above the preview box.
+    click(&mut rt, 0, area.right() - 2, area.y + area.height / 2 - 1);
+    assert!(rt.model.switcher.start_open());
     assert!(rt.model.state.focus.is_nav_focused());
+}
+
+#[test]
+fn the_wheel_over_the_start_screen_walks_its_selection() {
+    let mut rt = start_rt();
+    let before = selected(&rt);
+    let area = rt.model.render_plan.regions.terminal;
+    click(&mut rt, 65, area.x + 2, area.y + 2);
+    assert_ne!(
+        selected(&rt),
+        before,
+        "a wheel notch down moves the selection"
+    );
+    click(&mut rt, 64, area.x + 2, area.bottom() - 2);
+    assert_eq!(
+        selected(&rt),
+        before,
+        "and a notch up, over the preview too, moves it back"
+    );
+    assert!(rt.model.switcher.start_open(), "the wheel only selects");
+}
+
+#[test]
+fn a_click_anywhere_on_the_start_preview_opens_its_card() {
+    let mut rt = start_rt();
+    let shown = selected(&rt);
+    let preview = rt
+        .model
+        .render_plan
+        .start_preview
+        .expect("the start paints its preview box");
+    click(&mut rt, 0, preview.right() - 2, preview.bottom() - 2);
+    assert!(
+        !rt.model.switcher.start_open(),
+        "the click executes the card"
+    );
+    assert_eq!(selected(&rt), shown, "the card the preview showed");
+    assert!(
+        !rt.model.state.focus.view_is_nav(),
+        "the terminal view takes the focus"
+    );
+}
+
+#[test]
+fn the_start_sizes_the_terminals_to_its_preview_box() {
+    let mut nav = crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH);
+    let full = terminal_view_size(140, 39, nav);
+    nav.start_preview = true;
+    let preview = terminal_view_size(140, 39, nav);
+    assert_eq!(preview.0, full.0 - 2, "inside the box's two side borders");
+    assert_eq!(
+        preview.1,
+        full.1 - full.1 / 2 - 2,
+        "the lower half inside its border"
+    );
 }
 
 #[test]
@@ -8231,13 +8302,17 @@ fn a_click_on_the_navs_empty_area_brings_the_nav_the_focus() {
 }
 
 #[test]
-fn enter_in_the_nav_executes_the_landing_selection() {
-    let mut rt = landing_rt();
+fn enter_in_the_nav_executes_the_start_selection() {
+    let mut rt = start_rt();
     rt.handle_stdin_bytes(b"\x1b[B", &Selection::default());
-    assert!(rt.model.switcher.landing_open(), "an arrow only selects");
-    assert_eq!(rt.model.switcher.terminal_view_target().target, "");
+    assert!(rt.model.switcher.start_open(), "an arrow only selects");
+    assert_eq!(
+        rt.model.switcher.terminal_view_target().target,
+        "api",
+        "the selection attaches for the start's preview"
+    );
     rt.handle_stdin_bytes(b"\r", &Selection::default());
-    assert!(!rt.model.switcher.landing_open());
+    assert!(!rt.model.switcher.start_open());
     assert_eq!(rt.model.switcher.terminal_view_target().target, "api");
 }
 
@@ -8495,35 +8570,36 @@ fn view_rows(rt: &Runtime, term: &ratatui::Terminal<ratatui::backend::TestBacken
 }
 
 #[test]
-fn a_headline_wider_than_the_view_continues_under_its_path() {
+fn a_header_name_wider_than_the_view_continues_under_its_first_character() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    for (session, level) in [("", "machine "), ("train", "host ")] {
+    for session in ["", "train"] {
         for (cols, rows) in [(80u16, 24u16), (40, 14)] {
             let mut rt = headline_rt(LONG_MACHINE, session, cols, rows);
             let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
             rt.prepare_and_draw(&mut term);
             let view = view_rows(&rt, &term);
             let out = view.join("\n");
-            let path_col = 1 + level.len();
-            // The headline's rows: the first after the level word, the rest indented to
-            // the path's first column.
-            let mut headline = view[1][path_col..].trim_end().to_string();
-            for row in &view[2..] {
-                if !row.starts_with(&" ".repeat(path_col)) || row.trim().is_empty() {
+            // The machine's header row: its name after the label column, the rest of the
+            // name indented to the name's first column.
+            let first = view
+                .iter()
+                .position(|row| row.starts_with(" Machine: "))
+                .unwrap_or_else(|| panic!("{out}"));
+            let value_col = " Machine: ".len();
+            let mut rows_of_name = 1;
+            let mut name = view[first][value_col..].trim_end().to_string();
+            for row in &view[first + 1..] {
+                if !row.starts_with(&" ".repeat(value_col)) || row.trim().is_empty() {
                     break;
                 }
-                headline.push_str(row.trim());
+                name.push_str(row.trim());
+                rows_of_name += 1;
             }
-            let want = if session.is_empty() {
-                LONG_MACHINE.to_string()
-            } else {
-                format!("{LONG_MACHINE}/tmux")
-            };
-            assert_eq!(headline, want, "{cols}x{rows}:\n{out}");
-            assert!(view[1].starts_with(&format!(" {level}")), "{out}");
+            assert_eq!(name, LONG_MACHINE, "{cols}x{rows}:\n{out}");
+            assert!(rows_of_name > 1, "{cols}x{rows}:\n{out}");
             if !session.is_empty() {
-                // The machine half is the link up on every row it covers.
+                // On a host's screen the machine is the link up on every row it covers.
                 let up = rt
                     .model
                     .switcher
@@ -8531,15 +8607,14 @@ fn a_headline_wider_than_the_view_continues_under_its_path() {
                     .iter()
                     .position(|l| matches!(l.node(), Some(crate::model::Node::Machine(_))))
                     .unwrap_or_else(|| panic!("{out}"));
-                let link_rows: Vec<u16> = rt
+                let link_rows = rt
                     .model
                     .render_plan
                     .view_links
                     .iter()
                     .filter(|(link, _)| *link == up)
-                    .map(|(_, rect)| rect.y)
-                    .collect();
-                assert_eq!(link_rows.len(), 2, "{cols}x{rows}: {link_rows:?}\n{out}");
+                    .count();
+                assert_eq!(link_rows, rows_of_name, "{cols}x{rows}:\n{out}");
             }
         }
     }
@@ -9531,4 +9606,114 @@ fn newly_created_config_is_applied_without_a_second_edit() {
         .expect("file replacement reloads")
         .unwrap();
     assert_eq!(ui.max_fps, 90);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn only_the_attachment_on_view_takes_the_view_size() {
+    // A resize counts as activity to the mux, so a hidden attachment keeps its size
+    // rather than take its session's size from the client the user works in.
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.insert(crate::model::Host::new(
+        crate::transport::ssh("web".to_string(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux").unwrap(),
+    ));
+    rt.registry.insert_fake("jup", 1);
+    rt.registry.insert_fake("web", 2);
+    rt.model.state.selection = Selection {
+        host: "jup".into(),
+        session: "api".into(),
+    };
+    rt.fit_displays();
+    let view = terminal_view_size(rt.cols, rt.body_rows, rt.nav_size());
+    assert_eq!(rt.registry.get("jup").unwrap().size, view);
+    assert_eq!(
+        rt.registry.get("web").unwrap().size,
+        (80, 24),
+        "hidden, unresized"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_attachment_the_start_preview_opened_ends_when_the_preview_leaves_it() {
+    // What the preview attaches is the user browsing, not using: it must not stay
+    // attached, holding the session, once the preview moves on or the start closes.
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    for alias in ["web", "db"] {
+        rt.hosts.insert(crate::model::Host::new(
+            crate::transport::ssh(alias.to_string(), String::new(), "linux".into()),
+            crate::mux::for_binary("tmux").unwrap(),
+        ));
+    }
+    let select = |rt: &mut Runtime, host: &str| {
+        rt.model.state.selection = Selection {
+            host: host.into(),
+            session: "main".into(),
+        };
+    };
+    rt.registry.insert_fake("jup", 1);
+    select(&mut rt, "jup");
+    rt.model.switcher.open_start();
+    rt.fit_displays();
+
+    select(&mut rt, "web");
+    rt.registry.insert_fake("web", 2);
+    rt.fit_displays();
+    assert!(
+        rt.registry.contains("jup"),
+        "attached before the start, kept"
+    );
+    assert!(rt.registry.contains("web"), "on view in the preview");
+
+    select(&mut rt, "db");
+    rt.hosts
+        .get_mut("db")
+        .unwrap()
+        .display
+        .mark_in_flight("db", 3);
+    rt.fit_displays();
+    assert!(!rt.registry.contains("web"), "the preview left it");
+
+    select(&mut rt, "jup");
+    rt.model.switcher.close_start();
+    rt.fit_displays();
+    assert!(
+        !rt.hosts.get("db").unwrap().display.in_flight_contains("db"),
+        "an attach still in flight for the preview is dropped too"
+    );
+    assert!(rt.registry.contains("jup"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_change_in_what_is_on_view_settles_who_sizes_the_session() {
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    let commands = rt.mgr.insert_recording("jup");
+    let host = rt.hosts.get_mut("jup").unwrap();
+    host.display_tty = crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    host.display.set_shows("jup", "api");
+    rt.model.state.selection = Selection {
+        host: "jup".into(),
+        session: "api".into(),
+    };
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    let proto = crate::link::test_control_proto();
+    rt.fit_displays();
+    assert_eq!(
+        sent_lines(&commands),
+        vec![proto.session_clients_line("api")]
+    );
+    rt.fit_displays();
+    assert!(sent_lines(&commands).is_empty(), "nothing changed");
+    rt.model.switcher.open_start();
+    rt.fit_displays();
+    assert_eq!(
+        sent_lines(&commands),
+        vec![proto.session_clients_line("api")],
+        "the start screen's preview is not the user working in the session"
+    );
 }

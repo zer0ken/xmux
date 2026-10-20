@@ -55,7 +55,7 @@ removes the collision.
 
 | Key | Action |
 |---|---|
-| `Ctrl-↑` / `Ctrl-↓` | move up a level (session, host, machine) / back down to the child |
+| `Ctrl-↑` / `Ctrl-↓` | move up a level (session, host, machine, start screen) / back down to the child |
 | `prefix i` (bare `i` in the nav) | select the current host and show its screen |
 | `prefix r` | rescan this machine: the selected card's machine alone |
 | `prefix h` | open the table of machine problems |
@@ -143,34 +143,54 @@ card and `←`/`→` to the adjacent section. A bare `Ctrl-↑`/`Ctrl-↓` right
 `prefix Ctrl-↑`/`prefix Ctrl-↓` still resizes the horizontal nav.
 
 The terminal view shows a machine screen for a machine and a host screen for one mux
-on it. Each reads from the top as its level and path, such as `machine db-01` or
-`host db-01/tmux`, then its status, then the level below as links, then its actions. A
-machine screen states how the machine is reached and logged in to and links each of its
-hosts whose mux is confirmed, and none while no mux is; a host screen states how many
-sessions it has (`no sessions`, `1 session`, `2 sessions`) and how they stay current and
-links each of its sessions, and the machine half of its path
-links to its machine. Every action a screen offers, such as `prefix n  start a new
+on it. Every screen opens with a two-row header, the level above and its own level:
+
+```text
+ Local:   laptop
+ Machine: db-01
+```
+
+```text
+ Machine: db-01
+ Host:    tmux
+```
+
+The first row links up: a machine's to the start screen, a host's to its machine, and a
+session's (`Host:` over `Session:`) to its host. Under the header a screen states its
+status, then the level below as links, then its actions. A machine screen states how the
+machine is reached and logged in to and links each of its hosts whose mux is confirmed,
+and none while no mux is; a host screen states how many sessions it has
+(`no sessions`, `1 session`, `2 sessions`) and how they stay current and links each of
+its sessions. Every action a screen offers, such as `prefix n  start a new
 session`, is a link written beside the key that runs it, and a failure screen's actions
 are links too.
 
 While the terminal view shows either screen, `↑`/`↓` (and `Tab`) step through its links
 and `Enter` opens the selected link or runs the selected action exactly as its key does.
-The links are walked in one order: the level below, then the actions, then, on a host
-screen, the machine link as the last stop. The steps cycle: a step past the last link
+The links are walked in one order: the level below, then the actions, then the
+header's link up as the last stop. The steps cycle: a step past the last link
 returns to the first, and a step before the first returns to the last. A host screen
 starts on its first session (on its machine link while it has none) and a machine screen
 on its first host. Opening a link one level up selects the link back to the screen just
 left. While a machine screen shows the login pane, the pane takes those keys and its
-links answer only a click. A screen too short for its selected link or the pane's
+links answer only a click, and so do a stopped session's, whose `Enter` resumes it. A screen too short for its selected link or the pane's
 focused stop scrolls just far enough to show it on its last row.
 
-At launch the terminal view shows the landing screen in place of a session: how many
+At launch the terminal view shows the start screen, headed `Local:` and this machine's
+name, in place of a session: how many
 machines the scan has reached, and every nav card under its number as a
 `machine/mux/session` path. While a newer release is recorded, an `update` row above the
-list names it and `xmux update`. The landing list and the nav share one selection, which only
-highlights there. The first execution (`Enter`, a click on a nav card or a landing card,
-a landed `prefix <digit>` jump, or a ctl `switch`) closes the landing screen for the
-rest of the run, opens the chosen card, and focuses the terminal view.
+list names it and `xmux update`. The start list and the nav share one selection, which only
+highlights there. The list is grouped as the nav is, one blank row between the session
+cards, the hosts with no sessions, and the unresolved hosts and machines. A `preview`
+box in the screen's lower half shows the card the pointer or the selection stands on:
+a machine's or a host's screen without links to select, or a session's live grid once
+the display shows it, sized to the box while the start screen is up. A click anywhere
+in the box opens its card, as a click on the card's link does. An execution (`Enter`, a click on a nav card or
+a start card, a landed `prefix <digit>` jump, or a ctl `switch`) closes the start
+screen, opens the chosen card, and focuses the terminal view. A machine screen's link
+up and `Ctrl-↑` on a machine open the start screen again, with the focus in the nav and
+the machine still selected, so `Enter` returns to its screen.
 
 ## Commands
 
@@ -282,10 +302,11 @@ nobody asked about, such as a machine that stops answering, goes to the history 
 | left-click a card or title part | open it: select it and focus the terminal view |
 | point at a card or title part | preview it in the terminal view without moving the selection |
 | left-click a screen link | open the screen it names, or run the action it names as its key does |
-| point at or left-click a landing card | mark it, or open it as `Enter` does, from either focus |
+| point at or left-click a start card | mark it, or open it as `Enter` does, from either focus |
+| left-click the start's preview box | open the card it shows |
 | left-click a view | focus that view |
 | left-click `‹ 5` or `7 ›` | select the nearest card scrolled off that side |
-| wheel over the nav | move the selection |
+| wheel over the nav or the start screen | move the selection; the start list scrolls with it |
 | drag the nav border | resize the nav, clamping it at its minimum |
 | drag the key list or a popup | move it |
 | left-click a popup item | execute it, as `Enter` would |

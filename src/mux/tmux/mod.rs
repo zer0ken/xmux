@@ -402,16 +402,18 @@ impl ControlProtocol for TmuxControl {
 
     /// `ignore-size` leaves a client out of window sizing only while some client without
     /// it is attached anywhere on the server, which is why the flag is cleared again
-    /// whenever xmux's client is alone on its session. tmux sizes windows only when
-    /// something asks it to and a flag change does not, so the flag is followed by
-    /// setting and unsetting a user option of xmux's own: an option change makes tmux
-    /// size every window again and redraw every client, and it notifies no control
-    /// client, so no xmux instance on the server answers it. Sizing again matters both
-    /// ways: a client moved inside xmux's view into a session the user also has open has
-    /// already resized it, and a client left alone still shows the size the departed
-    /// client gave.
-    fn display_size_lines(&self, display_tty: &str, shared: bool) -> Vec<String> {
-        let flag = if shared {
+    /// whenever xmux's client is the one the session should follow. Cleared, the client
+    /// still sizes the windows only while it is the one used last (`window-size latest`),
+    /// so a client the user types into elsewhere takes the size back. tmux sizes windows
+    /// only when something asks it to and a flag change does not, so the flag is
+    /// followed by setting and unsetting a user option of xmux's own: an option change
+    /// makes tmux size every window again and redraw every client, and it notifies no
+    /// control client, so no xmux instance on the server answers it. Sizing again
+    /// matters both ways: a client moved inside xmux's view into a session the user also
+    /// has open has already resized it, and a client left alone still shows the size
+    /// the departed client gave.
+    fn display_size_lines(&self, display_tty: &str, yields: bool) -> Vec<String> {
+        let flag = if yields {
             "ignore-size"
         } else {
             "!ignore-size"

@@ -62,7 +62,7 @@ The xmux behavior group:
 
 | Scenario | Passes when |
 | --- | --- |
-| `first-launch` | the landing screen appears, choosing a session attaches it, and typed input runs in that session |
+| `first-launch` | the start screen appears, choosing a session attaches it, and typed input runs in that session |
 | `switch` | after both sessions of a mux were shown, moving to a session of another mux on another host and back to the second session shows each one and runs what is typed there |
 | `new-session` | `prefix n` creates a session that becomes selected, attached, and live on the host |
 | `password-login` | logging in to the password-only host lists its sessions, and logging out, confirming the removal of the ssh config entry xmux did not write, removes that entry and leaves one host card; a subsequent login with public-key registration permits a fresh key-only SSH connection |

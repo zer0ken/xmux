@@ -6,13 +6,13 @@
 
 ![이 GIF는 같은 키 입력 속도로 나란히 녹화한 두 터미널을 보여준다. 왼쪽 터미널에서는
 ssh로 gpu-01에 접속해 tmux 세션 목록을 확인하고 attach하기까지 7.3초가 걸린다.
-오른쪽 터미널에서는 xmux가 landing 화면에서 화살표 키 두 번과 Enter로 같은 세션을
+오른쪽 터미널에서는 xmux가 시작 화면에서 화살표 키 두 번과 Enter로 같은 세션을
 열기까지 2.6초가 걸린다.](docs/assets/xmux-demo.gif)
 
-**landing 화면에서 세션 열기**
+**시작 화면에서 세션 열기**
 
-![xmux는 landing 화면으로 시작한다. landing 화면은 machine이 응답하는 대로 찾은 세션을
-번호와 함께 나열한다. 화살표 키 두 번과 Enter로 gpu-01의 세션을 연다.](docs/assets/xmux-landing.gif)
+![xmux는 시작 화면으로 시작한다. 시작 화면은 machine이 응답하는 대로 찾은 세션을
+번호와 함께 나열한다. 화살표 키 두 번과 Enter로 gpu-01의 세션을 연다.](docs/assets/xmux-start.gif)
 
 **세션 전환**
 
@@ -87,7 +87,7 @@ Homebrew, WinGet, Cargo 설치와 버전 고정, 갱신, 제거는 [`INSTALL.md`
 xmux
 ```
 
-landing 화면은 machine이 응답하는 대로 모든 세션을 나열한다. nav에서 쓰는 키는 다음과
+시작 화면은 machine이 응답하는 대로 모든 세션을 나열한다. nav에서 쓰는 키는 다음과
 같다.
 
 - `↑` / `↓`는 선택을 옮긴다.

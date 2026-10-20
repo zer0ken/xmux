@@ -185,16 +185,21 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **command palette** - the searchable list of named actions (`prefix :`).
 - **one-machine re-scan** - `prefix r`: the selected card's machine asked again alone.
 - **view screen** - what the terminal view shows in place of a grid: a machine screen,
-  a host screen, a scanning or settled state, the own session, or the landing screen.
-- **machine screen** - the view screen headed `machine {machine}`: how the machine is
-  reached and logged in to, its login pane, a link to each of its hosts whose mux is
-  confirmed, and its actions as links. A machine with no confirmed mux links to no host.
+  a host screen, a scanning or settled state, the own session, or the start screen.
+- **header** - the two rows every view screen opens with: the level above, which links
+  up, and the screen's own level, each as `Level: name`.
+- **machine screen** - the view screen whose header is `Local: {this machine}` over
+  `Machine: {machine}`: how the machine is reached and logged in to, its login pane, a
+  link to each of its hosts whose mux is confirmed, and its actions as links. A machine
+  with no confirmed mux links to no host.
   A machine being scanned keeps this screen, with the state `scanning`.
-- **host screen** - the view screen headed `host {machine}/{mux}`: how many sessions the
-  host has, how they stay current, a link to each session, its actions as links, and a link to its
-  machine in its headline.
-- **landing screen** - the view screen from launch until the first execution: the scan
-  progress and every nav card as a link, sharing the one selection.
+- **host screen** - the view screen whose header is `Machine: {machine}` over
+  `Host: {mux}`: how many sessions the host has, how they stay current, a link to each
+  session, and its actions as links.
+- **start screen** - the view screen of the local machine, above every machine, shown
+  from launch and from a machine's link up until the next execution: the scan progress,
+  every nav card as a link sharing the one selection, and a preview box of the selected
+  card's screen or live grid.
 - **screen link** - a selectable link on a machine, host, or failure screen that opens
   another node's screen or runs one of the screen's actions through the key written
   beside it. While the login pane is open it owns the keyboard, so a link there holds no

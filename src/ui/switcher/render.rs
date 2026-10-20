@@ -1,7 +1,7 @@
 use super::*;
 
 use ratatui::style::{Color, Modifier};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Paragraph};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::state::PaletteChoice;
@@ -191,6 +191,8 @@ pub struct RenderPlan {
     pub(crate) view_links: Vec<(usize, Rect)>,
     /// Link identities distinguish equal-size labels that execute different actions.
     pub(crate) view_link_targets: Vec<crate::ui::chrome::LinkTarget>,
+    /// The start screen's preview box, which a click opens as its card.
+    pub(crate) start_preview: Option<Rect>,
     pub nav_row_offset: usize,
     pub nav_col_offset: usize,
     pub popup_rect: Rect,
@@ -230,6 +232,7 @@ impl Default for RenderPlan {
             nav_parts: Vec::new(),
             view_links: Vec::new(),
             view_link_targets: Vec::new(),
+            start_preview: None,
             nav_row_offset: 0,
             nav_col_offset: 0,
             popup_rect: Rect::default(),
@@ -411,20 +414,21 @@ impl Switcher {
             } else {
                 plan.regions.terminal
             };
+            // The start screen's links stand in its upper half, where its list paints,
+            // and its preview box below them.
+            let area = if kind == crate::model::ViewScreen::Start {
+                let (list, preview) = start_halves(area);
+                plan.start_preview = Some(preview);
+                list
+            } else {
+                area
+            };
             if let Some(parts) = self.screen_parts(kind, state) {
                 plan.view_link_targets =
                     parts.links.iter().map(|link| link.target.clone()).collect();
                 plan.view_links = state.chrome.view_link_rects(
                     state,
-                    &crate::ui::chrome::ViewScreenRender {
-                        address: &parts.address,
-                        kind,
-                        focused: self.terminal_view,
-                        machine_screen: parts.machine_screen,
-                        links: &parts.links,
-                        link_selection: parts.selection_and_hover.0,
-                        link_hover: parts.selection_and_hover.1,
-                    },
+                    &parts.view(kind, self.terminal_view),
                     area,
                     &self.palette,
                 );
@@ -884,7 +888,11 @@ impl Switcher {
         state: &crate::state::State,
         kind: crate::model::ViewScreen,
         focused: bool,
+        grid: Option<&crate::display::grid::Grid>,
     ) -> Option<Position> {
+        if kind == crate::model::ViewScreen::Start {
+            return self.render_start_screen(frame, area, state, focused, grid);
+        }
         let Some(parts) = self.screen_parts(kind, state) else {
             if kind == crate::model::ViewScreen::Scanning && state.chrome.braille_animation {
                 crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
@@ -895,17 +903,57 @@ impl Switcher {
             frame,
             area,
             state,
-            crate::ui::chrome::ViewScreenRender {
-                address: &parts.address,
-                kind,
-                focused,
-                machine_screen: parts.machine_screen,
-                links: &parts.links,
-                link_selection: parts.selection_and_hover.0,
-                link_hover: parts.selection_and_hover.1,
-            },
+            parts.view(kind, focused),
             &self.palette,
         )
+    }
+
+    /// The start screen: its list fills the upper half, and a box in its lower half
+    /// previews the card the pointer or the selection stands on: a machine's or a host's
+    /// screen, or a session's live grid. The preview takes no keys, so it never draws as
+    /// focused and its links are not selection targets; the list above it stays the one
+    /// the user opens from.
+    fn render_start_screen(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &crate::state::State,
+        focused: bool,
+        grid: Option<&crate::display::grid::Grid>,
+    ) -> Option<Position> {
+        let (list, preview) = start_halves(area);
+        let start = crate::model::ViewScreen::Start;
+        if let Some(parts) = self.screen_parts(start, state) {
+            let view = parts.view(start, focused);
+            state
+                .chrome
+                .render_view_screen(frame, list, state, view, &self.palette);
+        }
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(state.chrome.colors.inactive))
+            .title(" preview ");
+        let inner = start_preview_inner(area);
+        frame.render_widget(block, preview);
+        match self.start_preview(state) {
+            Some(StartPreview::Screen(kind, parts)) => {
+                let view = parts.view(kind, false);
+                state
+                    .chrome
+                    .render_view_screen(frame, inner, state, view, &self.palette);
+            }
+            // The display shows the selected session once its attach lands; until then
+            // the box stays empty rather than show the session before it.
+            Some(StartPreview::Grid(address)) => {
+                let shown = state.displayed.host == address.host
+                    && state.displayed.session == address.session;
+                if let Some(grid) = grid.filter(|_| shown) {
+                    grid.render_into(frame.buffer_mut(), inner);
+                }
+            }
+            None => {}
+        }
+        None
     }
 
     pub fn render(
@@ -942,7 +990,9 @@ impl Switcher {
         // prefix hint of its own. A selected view screen still owns that region.
         if plan.nav_hidden {
             let view_caret = match plan.view_screen {
-                Some(kind) => self.render_view_screen(frame, area, state, kind, terminal_focused),
+                Some(kind) => {
+                    self.render_view_screen(frame, area, state, kind, terminal_focused, grid)
+                }
                 None => {
                     self.render_terminal_view(frame, area, grid);
                     None
@@ -991,7 +1041,7 @@ impl Switcher {
         let term_area = plan.regions.terminal;
         // A domain-selected view screen replaces the grid.
         let view_caret = if let Some(kind) = plan.view_screen {
-            self.render_view_screen(frame, term_area, state, kind, terminal_focused)
+            self.render_view_screen(frame, term_area, state, kind, terminal_focused, grid)
         } else {
             self.render_terminal_view(frame, term_area, grid);
             None
@@ -1040,7 +1090,7 @@ impl Switcher {
         palette: &palette::Palette,
     ) -> Cursor {
         let view_caret = if let Some(kind) = plan.view_screen {
-            self.render_view_screen(frame, area, state, kind, terminal_focused)
+            self.render_view_screen(frame, area, state, kind, terminal_focused, grid)
         } else {
             self.render_terminal_view(frame, area, grid);
             None
@@ -2053,4 +2103,25 @@ fn clip_line(line: &mut Line<'static>, width: usize) {
         }
     }
     line.spans = spans;
+}
+
+/// Where the start screen in the terminal view `area` runs a previewed session: inside
+/// the border of its preview box, the size the PTYs take while the start is up.
+pub fn start_preview_inner(area: Rect) -> Rect {
+    Block::bordered().inner(start_halves(area).1)
+}
+
+/// The start screen's list half above its preview half, which the paint and the link
+/// hit-test both read.
+fn start_halves(area: Rect) -> (Rect, Rect) {
+    let list = Rect {
+        height: area.height / 2,
+        ..area
+    };
+    let preview = Rect {
+        y: area.y + list.height,
+        height: area.height - list.height,
+        ..area
+    };
+    (list, preview)
 }
