@@ -9686,6 +9686,49 @@ async fn an_attachment_the_start_preview_opened_ends_when_the_preview_leaves_it(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn an_attachment_held_from_before_the_start_ends_when_the_start_closes() {
+    // The preview keeps what existed when the start opened, but only while the start is
+    // open: closing it must end those connections too, or a session the user is no
+    // longer viewing keeps xmux's client, and that client holds the session's size.
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts.insert(crate::model::Host::new(
+        crate::transport::ssh("web".to_string(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux").unwrap(),
+    ));
+    let select = |rt: &mut Runtime, host: &str| {
+        rt.model.state.selection = Selection {
+            host: host.into(),
+            session: "main".into(),
+        };
+    };
+    rt.registry.insert_fake("jup", 1);
+    select(&mut rt, "jup");
+    rt.model.switcher.open_start();
+    rt.fit_displays();
+
+    select(&mut rt, "web");
+    rt.registry.insert_fake("web", 2);
+    rt.fit_displays();
+    assert!(
+        rt.registry.contains("jup"),
+        "attached before the start, held while the preview is open"
+    );
+    assert!(rt.registry.contains("web"), "on view in the preview");
+
+    rt.model.switcher.close_start();
+    rt.fit_displays();
+    assert!(
+        !rt.registry.contains("jup"),
+        "closing the start ends the connection it held, nobody views it now"
+    );
+    assert!(
+        rt.registry.contains("web"),
+        "the selection's attachment stays for the terminal view"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_change_in_what_is_on_view_settles_who_sizes_the_session() {
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");

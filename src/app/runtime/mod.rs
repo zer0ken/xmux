@@ -1856,8 +1856,10 @@ struct Runtime {
     /// closed). It decides which display client sizes its session; see
     /// [`Runtime::fit_displays`].
     sizing: Option<(String, bool)>,
-    /// The attachments that existed when the start screen opened. One the preview
-    /// attached beyond them is torn down once the preview leaves it.
+    /// The attachments that existed when the start screen opened, held warm while the
+    /// preview is open. One the preview attached beyond them is torn down once the
+    /// preview leaves it, and closing the start screen tears down the held ones too,
+    /// the attachment the selection shows excepted.
     preview_kept: Option<HashSet<String>>,
     /// Terminal input typed for a selection whose attachment does not exist yet; see
     /// [`input_route`].
