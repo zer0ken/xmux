@@ -2392,8 +2392,10 @@ impl Runtime {
     /// takes the terminal view's size (the preview box's while the start screen is open):
     /// a resize counts as activity to the mux, so resizing a hidden client would take its
     /// session's size from the client the user is working in. An attachment the start
-    /// preview opened is torn down once the preview leaves it, and a change in what is on
-    /// view or in whether the user works in it settles which client sizes its session.
+    /// preview holds is torn down once the preview leaves it, and every attachment but
+    /// the selection's when the start screen closes, so a session the user is no longer
+    /// viewing never keeps xmux's client. A change in what is on view or in whether the
+    /// user works in it settles which client sizes its session.
     pub(super) fn fit_displays(&mut self) {
         let start = self.model.switcher.start_open();
         let selection = &self.model.state.selection;
@@ -2421,10 +2423,18 @@ impl Runtime {
             self.preview_kept = Some(held.iter().cloned().collect());
         }
         if let Some(kept) = &self.preview_kept {
-            for key in held
-                .iter()
-                .filter(|k| !kept.contains(*k) && shown.as_ref() != Some(*k))
-            {
+            // While the start screen is open the preview leaves the attachments that
+            // existed when it opened (kept) alone, and one it attached beyond them is
+            // torn down once the preview leaves it. Closing the start screen ends the
+            // preview entirely: every attachment except the selection's is torn down,
+            // whatever it was kept for.
+            for key in held.iter().filter(|k| {
+                if start {
+                    !kept.contains(*k) && shown.as_ref() != Some(*k)
+                } else {
+                    shown.as_ref() != Some(*k)
+                }
+            }) {
                 self.registry.remove(key);
                 if let Some(h) = self.hosts.get_mut(key) {
                     h.display.clear(key);

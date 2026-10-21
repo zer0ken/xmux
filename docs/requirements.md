@@ -246,8 +246,10 @@ against, naming no source file, function, or test.
   is attached to only while the user works in the terminal view (the terminal view and
   xmux's window hold the focus); otherwise it stops sizing it (`refresh-client -f
   ignore-size`). Under `window-size latest` the session then follows whichever client
-  the user typed into last. Only the attachment on view is resized, and one the preview
-  opened ends once the preview leaves it. On abduco it attaches with the lowest
+  the user typed into last. Only the attachment on view is resized, and an attachment
+  the start screen's preview holds ends once the preview or the start screen leaves it,
+  the attachment the selection shows excepted, which the terminal view takes over. On
+  abduco it attaches with the lowest
   priority (`abduco -l -a`), so it sizes the session only while no other client is
   attached. A tmux window larger than the terminal view shows the part around the
   cursor, and a smaller one shows its edge with the rest of the view filled with dots.
