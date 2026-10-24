@@ -1395,6 +1395,29 @@ Connection to host closed.
     }
 
     #[test]
+    fn an_orphaned_wide_glyph_is_written_without_its_right_half_erased() {
+        let _g = plain_outer_terminal();
+        let area = Rect::new(0, 0, 6, 1);
+        // An erase took the glyph's right half; the glyph must still be painted and
+        // its right half not blanked over, or it disappears from the view (issue
+        // #906).
+        let prev = rendered(b"abcdef", area);
+        let next = rendered("가\x1b[1;2H\x1b[K".as_bytes(), area);
+        assert_eq!(
+            cell_width(&next[(0, 0)]),
+            2,
+            "the orphaned glyph spans two columns"
+        );
+        let written: Vec<(u16, u16)> = prev.diff(&next).iter().map(|&(x, y, _)| (x, y)).collect();
+        assert!(written.contains(&(0, 0)), "{written:?}");
+        assert!(
+            !written.contains(&(1, 0)),
+            "the orphaned glyph's right half is not written over: {written:?}"
+        );
+        assert_eq!(visible_symbol(next[(0, 0)].symbol()), "가");
+    }
+
+    #[test]
     fn a_wide_vs16_emoji_is_written_without_a_blank_over_its_right_half() {
         let _g = plain_outer_terminal();
         let area = Rect::new(0, 0, 6, 1);
