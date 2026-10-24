@@ -541,12 +541,12 @@ def rapid_switch(c):
     name = f"{c.mux}1"
     app.open(f"{c.h1}/{c.mux}", name)
     app.whereami(c.path(c.h1, name))
-    # Jump to another host and back before its display can confirm a first frame.
+    # Jump to another host or session and back before its display can confirm a frame.
     # Each prefix opens nav input; Enter executes the jump's selected card.
-    for _ in range(3):
-        away = app.card(f"{c.h2}/{c.mux}", name)
+    for host, session in [(c.h2, name), (c.h1, f"{c.mux}2")] * 3:
+        away = app.card(f"{host}/{c.mux}", session)
         app.t.send("C-g", *str(away), "Enter", gap=0.02)
-        app.selected(f"{c.h2}/{c.mux}", name)
+        app.selected(f"{host}/{c.mux}", session)
         back = app.card(f"{c.h1}/{c.mux}", name)
         app.t.send("C-g", *str(back), "Enter", gap=0.02)
         app.selected(f"{c.h1}/{c.mux}", name)
