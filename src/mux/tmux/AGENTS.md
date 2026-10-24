@@ -4,7 +4,7 @@
 
 `mux/tmux` is the tmux implementation, the one shared-server mux: one aggregate server
 holds every session and serves a `-CC` control stream. The display driver keeps ONE PTY
-per host, warmed on the first session and MOVED to another session with
+per host, opened on selection and MOVED to another session with
 `switch-client`, an in-place move with no teardown. A remote shared attach records its
 OWN controlling tty to a file unique to that process run and attachment before exec, so
 a later switch targets xmux's own display client and never the user's own attached
@@ -27,16 +27,13 @@ reattaches instead.
   than tearing it down.
 - A remote in-place switch reads the tty the live attach recorded to its own file and
   never runs with an empty client tty.
-- Sync warms the host PTY on the first session and reaps it when the host has no
-  sessions.
+- Inventory sync only reaps an empty host; selection alone opens a display PTY.
 - The `-CC` metadata client sets `ignore-size` and never sends a client size, so it
   cannot shrink the session it lands in, which is often the one xmux itself runs in.
 - tmux counts the metadata client on the session it is attached to, so the session
   `%session-changed` names is reported for the app to leave that client out.
-- The display client attaches and moves with `ignore-size`, and keeps it only while
-  another window-sizing client is attached to its session: tmux honours the flag only
-  while some client without it is attached anywhere on the server, so a display client
-  that kept it alone would never size its session.
+- Display sizing changes only the local PTY dimensions. It never changes mux
+  options or display-client sizing flags.
 
 ## Common Pitfalls
 

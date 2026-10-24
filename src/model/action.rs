@@ -297,18 +297,12 @@ pub enum EventEffect {
     },
     /// `DisplayTty`: record `host`'s display-client tty (probed over the -CC connection
     /// by `list-clients`) on the Host, behind the loop's reach. With the tty known, a
-    /// session switch is an in-place `switch-client -c <tty>`. `None` clears a stale tty.
-    RecordDisplayTty { host: String, tty: Option<String> },
-    /// A client of `host` came, went, or moved, or the display tty became known: ask
-    /// which clients are attached to the session xmux's display client shows.
-    SettleDisplaySize { host: String },
-    /// `DisplaySessionClients`: set whether xmux's display client `tty` sizes the session
-    /// it shows, yielding while the session is `shared`, IFF `tty` is still the host's
-    /// display tty.
-    SizeDisplayClient {
+    /// session switch is an in-place `switch-client -c <tty>`. The attachment `id`
+    /// must still be live; `None` clears that attachment's tty.
+    RecordDisplayTty {
         host: String,
-        tty: String,
-        shared: bool,
+        id: u64,
+        tty: Option<String>,
     },
     /// `MachineProbed` (connected): resolve every host `machine` serves onto its
     /// metadata channel and, when the machine left its mux list to xmux, ask which
@@ -443,20 +437,11 @@ impl std::fmt::Debug for EventEffect {
                 .field("host", host)
                 .field("sessions", sessions)
                 .finish(),
-            EventEffect::RecordDisplayTty { host, tty } => f
+            EventEffect::RecordDisplayTty { host, id, tty } => f
                 .debug_struct("RecordDisplayTty")
                 .field("host", host)
+                .field("id", id)
                 .field("tty", tty)
-                .finish(),
-            EventEffect::SettleDisplaySize { host } => f
-                .debug_struct("SettleDisplaySize")
-                .field("host", host)
-                .finish(),
-            EventEffect::SizeDisplayClient { host, tty, shared } => f
-                .debug_struct("SizeDisplayClient")
-                .field("host", host)
-                .field("tty", tty)
-                .field("shared", shared)
                 .finish(),
             EventEffect::MachineConnected {
                 machine,

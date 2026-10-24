@@ -106,18 +106,15 @@ pub enum HostEvent {
     /// attach - or `None` if it has not registered yet. Captured OUT-OF-BAND over
     /// the control connection, not via an in-band attach-shell marker (a Windows
     /// ConPTY consumes the marker's OSC before the pump can read it). Recorded on
-    /// `Host.display_tty` so a later `switch-client -c <tty>` targets xmux's own client.
-    DisplayTty { host: String, tty: Option<String> },
+    /// `Host.display_tty` only while `id` still names its live attachment, so a later `switch-client -c <tty>` targets xmux's own client.
+    DisplayTty {
+        host: String,
+        id: u64,
+        tty: Option<String>,
+    },
     /// `%session-changed $id <name>` - the session this -CC metadata connection is itself
     /// attached to, which the mux counts as a client on that session.
     ControlSession { host: String, session: String },
-    /// The clients attached to the session xmux's display client `display_tty` shows
-    /// resolved: `shared` when one besides the display client sizes that session.
-    DisplaySessionClients {
-        host: String,
-        display_tty: String,
-        shared: bool,
-    },
     /// A machine's MUX DISCOVERY resolved: `muxes` is every mux xmux supports that
     /// answered on `machine` (empty when none did), or the reason the machine could not
     /// be asked at all. Emitted once per machine by a
@@ -214,12 +211,8 @@ pub enum PendingReply {
     /// A `list-clients` probe: the mux protocol parses the block body for xmux's own
     /// display-client tty (`ControlProtocol::parse_display_client_tty`), resolved into a
     /// [`HostEvent::DisplayTty`]. The reader names no wire format.
-    DisplayClientTty,
-    /// A `list-clients` of the session xmux's display client shows: the mux protocol
-    /// reads whether a client besides `display_tty` sizes it, resolved into a
-    /// [`HostEvent::DisplaySessionClients`].
-    SessionClients {
-        display_tty: String,
+    DisplayClientTty {
+        id: u64,
     },
     Ignore,
 }

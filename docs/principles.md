@@ -238,11 +238,12 @@ surprising place to stand.
 ## Guest Client
 
 xmux is a guest in every session it shows. The session belongs to the user, who may have
-it open in other clients too, so xmux holds a session only while the user is looking at it
-through xmux, and holds its size only while the user is working there. Showing a session
-in a preview, keeping it attached out of view, or resizing xmux's own layout never takes
-the session from a client the user is working in elsewhere. When xmux ends, however it
-ends, it leaves no client behind, so a session never keeps a size or an attachment for a
+it open in other clients too. xmux owns the dimensions and lifetime of its display PTY;
+the mux owns how attached clients determine the session's size. xmux fits its PTY to the
+visible view and leaves the mux's sizing policy and session options alone, so displaying
+a session does not become authority over the user's mux configuration. A display client
+exists only while its session is on view, including a preview. Leaving the view or
+ending xmux releases that client, so a session never keeps a size or an attachment for a
 viewer that is gone.
 
 ## Separate Selection and Execution

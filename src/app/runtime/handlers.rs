@@ -61,7 +61,6 @@ impl Runtime {
             attach_seq,
             cols,
             body_rows: rows,
-            sizing,
             ..
         } = self;
         let (cols, rows) = (*cols, *rows);
@@ -200,7 +199,7 @@ impl Runtime {
                                     &self.instance_name,
                                     attachment.id(),
                                 );
-                                control.capture_display_tty(&tty_key);
+                                control.capture_display_tty(&tty_key, attachment.id());
                             }
                         }
                     }
@@ -588,27 +587,13 @@ impl Runtime {
                 };
                 sync_host_terminals(&host_id, &sessions, &mut ctx);
             }
-            EventEffect::SettleDisplaySize { host } => settle_display_size(hosts, mgr, &host),
-            EventEffect::SizeDisplayClient { host, tty, shared } => {
-                // The answer is about the client that was asked about; a display that
-                // reattached since has a new client, and its own settle asks again.
-                // The client sizes its session only while xmux shows it, and a session
-                // the user also has open only while the user is working in xmux's view
-                // of it: the mux then follows whichever client was used last.
-                let yields = match sizing {
-                    Some((shown, in_use)) if *shown == host => shared && !*in_use,
-                    _ => true,
-                };
-                if hosts
+            EventEffect::RecordDisplayTty { host, id, tty } => {
+                if registry
                     .get(&host)
-                    .is_some_and(|h| h.matches_display_tty(&tty))
+                    .is_none_or(|attachment| attachment.id() != id)
                 {
-                    if let Some(client) = mgr.get(&host) {
-                        client.size_display_on(&tty, yields);
-                    }
+                    return (false, Vec::new());
                 }
-            }
-            EventEffect::RecordDisplayTty { host, tty } => {
                 // The -CC `list-clients` probe resolved xmux's display-client tty. Record it
                 // on the Host so a session switch is an in-place `switch-client -c <tty>`;
                 // `None` (only the control client attached so far) clears any stale tty.
@@ -627,26 +612,6 @@ impl Runtime {
             }
         }
         (false, followups)
-    }
-}
-
-/// Asks `host`'s mux which clients are attached to the session xmux's display client
-/// shows, so the answer can set whether that client sizes the session. It needs the
-/// client's tty and the session it is on; without either there is nothing to name, and
-/// the client keeps the `ignore-size` its attach set, which never resizes a client the
-/// user has attached.
-fn settle_display_size(hosts: &crate::model::Hosts, mgr: &crate::link::HostManager, host: &str) {
-    let Some(h) = hosts.get(host) else {
-        return;
-    };
-    let Some(tty) = h.display_tty.0.as_deref().filter(|t| !t.is_empty()) else {
-        return;
-    };
-    let Some(session) = h.display.shows(&host_selection_key(h)) else {
-        return;
-    };
-    if let Some(client) = mgr.get(host) {
-        client.ask_display_session_clients(tty, session);
     }
 }
 
@@ -888,8 +853,6 @@ impl Runtime {
             display_sync_held: false,
             rescan_pending: false,
             display_probe: DisplayProbe::default(),
-            sizing: None,
-            preview_kept: None,
             held_input: None,
             passthrough: Vec::new(),
             title: None,
@@ -1530,9 +1493,7 @@ impl Runtime {
                 Some(id) == displayed_attach_id
             }
             PtyEvent::DisplayTty { id, tty } => {
-                if let Some(host) = record_display_tty(&mut self.hosts, &self.registry, id, tty) {
-                    settle_display_size(&self.hosts, &self.mgr, &host);
-                }
+                record_display_tty(&mut self.hosts, &self.registry, id, tty);
                 false
             }
             PtyEvent::AuthObserved { id, method } => {
@@ -1578,6 +1539,9 @@ impl Runtime {
     /// The worker `Ready`/`Failed` arm. `HostDisplay` owns the reap/install/stale DECISION;
     /// the loop performs the registry install/teardown it alone can.
     pub(super) fn on_display_event(&mut self, ev: DisplayEvent) {
+        // A selection may move between frames while a worker is still starting.
+        // Reconcile first so an abandoned reply cannot install a hidden client.
+        self.fit_displays();
         match ev {
             DisplayEvent::Ready {
                 seq,
@@ -1587,7 +1551,13 @@ impl Runtime {
                 let hid = host_of_key(&key).to_string();
                 let id = attachment.id();
                 let output_times = attachment.output_times();
-                let hold_for_paint = self.registry.contains(&key);
+                let displayed = &self.model.state.displayed;
+                let hold_for_paint = self.registry.contains(&key)
+                    || (!displayed.is_empty()
+                        && self
+                            .registry
+                            .grid(&display_key(&self.hosts, displayed))
+                            .is_some());
                 let current_for_selection = self.attach_is_for_selection(&key)
                     && self
                         .hosts
@@ -1713,11 +1683,8 @@ impl Runtime {
         debug_assert!(effects.is_empty());
     }
 
-    /// Installs one attachment whose display gate has opened and confirms it only when
-    /// its key is the one the current selection renders through. An attachment for any
-    /// other key installs and stays warm without claiming the terminal view, so a host
-    /// warming a PTY on its own inventory cannot move the view to a machine nobody
-    /// selected.
+    /// Installs an attachment whose display gate opened and confirms the selected key.
+    /// Hidden requests are cancelled before worker replies or paint gates are handled.
     fn install_attachment(
         &mut self,
         key: String,
@@ -1754,14 +1721,10 @@ impl Runtime {
             if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
                 if let Some(client) = self.mgr.get(&hid) {
                     let tty_key = crate::mux::display_tty_key(&hid, &self.instance_name, attach_id);
-                    client.capture_display_tty(&tty_key);
+                    client.capture_display_tty(&tty_key, attach_id);
                 }
             }
         }
-        // A tty read from the attachment's own PTY is known only now, after the mux
-        // already reported the client's arrival, so the size is settled here.
-        settle_display_size(&self.hosts, &self.mgr, &hid);
-
         if key == selected_key {
             let effects = update(
                 &mut self.model,
@@ -1776,6 +1739,15 @@ impl Runtime {
 
     /// Promotes one parked attachment after its paint gate opens.
     fn promote_pending(&mut self, pending: crate::model::PendingInstall) -> bool {
+        let selection = &self.model.state.selection;
+        if selection.is_empty() || display_key(&self.hosts, selection) != pending.key {
+            self.fit_displays();
+            return false;
+        }
+        if selection.session != pending.shown {
+            self.registry.remove_pending(&pending.key);
+            return false;
+        }
         let Some(attachment) = self.registry.take_pending(&pending.key) else {
             return false;
         };
@@ -2388,70 +2360,40 @@ impl Runtime {
         true
     }
 
-    /// Fits the display attachments to what the frame shows. Only the attachment on view
-    /// takes the terminal view's size (the preview box's while the start screen is open):
-    /// a resize counts as activity to the mux, so resizing a hidden client would take its
-    /// session's size from the client the user is working in. An attachment the start
-    /// preview holds is torn down once the preview leaves it, and every attachment but
-    /// the selection's when the start screen closes, so a session the user is no longer
-    /// viewing never keeps xmux's client. A change in what is on view or in whether the
-    /// user works in it settles which client sizes its session.
+    /// Fits the visible client's PTY to the view and releases every hidden display.
+    /// Clearing in-flight requests also makes their late worker replies stale. Metadata
+    /// channels remain open; inventories never create display attachments.
     pub(super) fn fit_displays(&mut self) {
-        let start = self.model.switcher.start_open();
         let selection = &self.model.state.selection;
         let shown = (!selection.is_empty()).then(|| display_key(&self.hosts, selection));
-        if let Some(key) = &shown {
-            let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
-            self.registry.resize(key, vc, vr);
-        }
-        // An attach still in flight counts as held, so its landing is torn down too.
-        let held: Vec<String> = self
+        let prior = shown
+            .as_ref()
+            .map(|_| display_key(&self.hosts, &self.model.state.displayed));
+        let hidden: Vec<String> = self
             .hosts
             .ids()
             .iter()
-            .filter(|key| {
-                self.registry.contains(key)
-                    || self.registry.contains_pending(key)
-                    || self
-                        .hosts
-                        .get(key)
-                        .is_some_and(|h| h.display.in_flight_contains(key))
-            })
+            .filter(|key| shown.as_ref() != Some(*key))
             .cloned()
             .collect();
-        if start && self.preview_kept.is_none() {
-            self.preview_kept = Some(held.iter().cloned().collect());
-        }
-        if let Some(kept) = &self.preview_kept {
-            // While the start screen is open the preview leaves the attachments that
-            // existed when it opened (kept) alone, and one it attached beyond them is
-            // torn down once the preview leaves it. Closing the start screen ends the
-            // preview entirely: every attachment except the selection's is torn down,
-            // whatever it was kept for.
-            for key in held.iter().filter(|k| {
-                if start {
-                    !kept.contains(*k) && shown.as_ref() != Some(*k)
-                } else {
-                    shown.as_ref() != Some(*k)
+        for key in hidden {
+            if prior.as_ref() == Some(&key) {
+                // Keep only pixels while the replacement paints, never its client.
+                if let Some(id) = self.registry.get(&key).map(|att| att.id()) {
+                    self.registry.reap(id);
                 }
-            }) {
-                self.registry.remove(key);
-                if let Some(h) = self.hosts.get_mut(key) {
-                    h.display.clear(key);
-                }
+                self.registry.remove_pending(&key);
+            } else {
+                self.registry.remove(&key);
             }
-            if !start {
-                self.preview_kept = None;
+            if let Some(host) = self.hosts.get_mut(&key) {
+                host.display.clear(&key);
+                host.clear_display_tty();
             }
         }
-        let in_use = !start && self.window_focused && self.model.state.focus.is_terminal_focused();
-        let sizing = (!selection.is_empty()).then(|| (selection.host.clone(), in_use));
-        if sizing != self.sizing {
-            let was = std::mem::replace(&mut self.sizing, sizing);
-            let hosts = was.into_iter().chain(self.sizing.clone());
-            for host in hosts.map(|(host, _)| host).collect::<HashSet<_>>() {
-                settle_display_size(&self.hosts, &self.mgr, &host);
-            }
+        if let Some(key) = &shown {
+            let (cols, rows) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
+            self.registry.resize(key, cols, rows);
         }
     }
 

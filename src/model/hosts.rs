@@ -455,20 +455,13 @@ impl Hosts {
             // owns the registry + the recover-from-detach rearm); the Hosts map holds no
             // per-attach state to fold here. `ClientSessionChanged` is the same: the tty match
             // + display-belief sync + nav follow run in the supervisor's effect handler.
-            // Setting whether the display client sizes its session is a command to the host,
-            // also the supervisor's.
-            ClientDetached { .. } | ClientSessionChanged { .. } | DisplaySessionClients { .. } => {}
+            ClientDetached { .. } | ClientSessionChanged { .. } => {}
             // The metadata channel's own session is a fact the state keeps for the client
             // count; no Host-owned field holds it.
             ControlSession { .. } => {}
-            // The -CC `list-clients` probe resolved xmux's display-client tty (or None if
-            // the display attach has not registered yet). Record it so a session switch is
-            // an in-place `switch-client -c <tty>`; None clears any stale tty.
-            DisplayTty { host, tty } => {
-                if let Some(h) = self.get_mut(host) {
-                    h.record_display_tty(tty.clone());
-                }
-            }
+            // Only the registry owner can correlate a tty probe with the attachment
+            // that requested it. A departed client's late probe changes no Host here.
+            DisplayTty { .. } => {}
             // Poll-host data carriers (enumeration results), the detection probe, a
             // machine's mux-discovery answer, and a machine's reachability probe. Their
             // sessions/mux/host set are applied by the caller (apply_host_result /

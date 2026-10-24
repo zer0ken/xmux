@@ -1100,7 +1100,6 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
         | HostEvent::ClientDetached { host, .. }
         | HostEvent::ClientSessionChanged { host, .. }
         | HostEvent::DisplayTty { host, .. }
-        | HostEvent::DisplaySessionClients { host, .. }
             if model
                 .state
                 .invalid_auth
@@ -1151,8 +1150,7 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                 host: host.clone(),
                 client,
             },
-            EventEffect::Refetch { host: host.clone() },
-            EventEffect::SettleDisplaySize { host },
+            EventEffect::Refetch { host },
         ],
         HostEvent::ClientSessionChanged {
             host,
@@ -1164,29 +1162,15 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                 client,
                 session,
             },
-            EventEffect::Refetch { host: host.clone() },
-            EventEffect::SettleDisplaySize { host },
+            EventEffect::Refetch { host },
         ],
-        HostEvent::DisplayTty { host, tty } => vec![
-            EventEffect::RecordDisplayTty {
-                host: host.clone(),
-                tty,
-            },
-            EventEffect::SettleDisplaySize { host },
-        ],
+        HostEvent::DisplayTty { host, id, tty } => {
+            vec![EventEffect::RecordDisplayTty { host, id, tty }]
+        }
         HostEvent::ControlSession { host, session } => {
             model.state.control_sessions.insert(host, session);
             Vec::new()
         }
-        HostEvent::DisplaySessionClients {
-            host,
-            display_tty,
-            shared,
-        } => vec![EventEffect::SizeDisplayClient {
-            host,
-            tty: display_tty,
-            shared,
-        }],
         HostEvent::MuxesFound { machine, .. } if model.state.invalid_auth.contains(&machine) => {
             Vec::new()
         }

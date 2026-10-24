@@ -154,7 +154,7 @@ impl HostClient {
 
     /// Probes this host's display-client tty over the -CC control connection. The reply
     /// resolves to a [`HostEvent::DisplayTty`] the supervisor records on
-    /// `Host.display_tty`. Carried over the control connection, NOT via an in-band
+    /// `Host.display_tty` only while the queried attachment `id` is live. Carried over the control connection, NOT via an in-band
     /// attach-shell marker - a Windows ConPTY consumes the marker's OSC before the
     /// display pump can read it, so the marker never lands for a remote host. With the
     /// tty known, a session switch is an in-place `switch-client -c <tty>`.
@@ -163,14 +163,14 @@ impl HostClient {
     /// writer that has returned on a broken pipe has dropped the receiver, so the send
     /// reports the refusal instead of leaving a command that never went out looking
     /// delivered.
-    pub fn capture_display_tty(&self, host_key: &str) -> bool {
+    pub fn capture_display_tty(&self, host_key: &str, id: u64) -> bool {
         let lines = self.proto.display_tty_lines(host_key);
         self.cmd_tx.send(HostCmd::Send(lines.stage)).is_ok()
             && self
                 .cmd_tx
                 .send(HostCmd::Query {
                     line: lines.read,
-                    reply: PendingReply::DisplayClientTty,
+                    reply: PendingReply::DisplayClientTty { id },
                 })
                 .is_ok()
             && self.cmd_tx.send(HostCmd::Send(lines.clear)).is_ok()
@@ -205,43 +205,6 @@ impl HostClient {
     pub fn refresh_client_on(&self, display_tty: &str) -> bool {
         self.cmd_tx
             .send(HostCmd::Send(self.proto.refresh_client_line(display_tty)))
-            .is_ok()
-    }
-
-    /// Asks which clients are attached to `session`, the one xmux's display client
-    /// (`display_tty`) shows, over THIS control connection. The reply resolves to a
-    /// [`HostEvent::DisplaySessionClients`] saying whether a client besides the display
-    /// client sizes that session. Returns whether the query reached the writer thread,
-    /// on the same terms as [`HostClient::switch_client_on`].
-    pub fn ask_display_session_clients(&self, display_tty: &str, session: &str) -> bool {
-        self.cmd_tx
-            .send(HostCmd::Query {
-                line: self.proto.session_clients_line(session),
-                reply: PendingReply::SessionClients {
-                    display_tty: display_tty.to_string(),
-                },
-            })
-            .is_ok()
-    }
-
-    /// Sets whether xmux's display client (`display_tty`) sizes the session it shows: it
-    /// does not while it `yields`. Returns whether every line reached the writer thread,
-    /// on the same terms as [`HostClient::switch_client_on`].
-    pub fn size_display_on(&self, display_tty: &str, yields: bool) -> bool {
-        self.proto
-            .display_size_lines(display_tty, yields)
-            .into_iter()
-            .all(|line| self.cmd_tx.send(HostCmd::Send(line)).is_ok())
-    }
-
-    /// Stop xmux's display client (`display_tty`) from sizing the session it moves to
-    /// next, sent before a `switch-client`. Returns whether the line reached the writer
-    /// thread, on the same terms as [`HostClient::switch_client_on`].
-    pub fn yield_display_size_on(&self, display_tty: &str) -> bool {
-        self.cmd_tx
-            .send(HostCmd::Send(
-                self.proto.display_size_yield_line(display_tty),
-            ))
             .is_ok()
     }
 

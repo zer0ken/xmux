@@ -106,7 +106,7 @@ mod tests {
         let in_flight: InFlight = Default::default();
         tx.send(HostCmd::Query {
             line: "list-clients -F '#{client_name}\t#{session_name}'".into(),
-            reply: PendingReply::DisplayClientTty,
+            reply: PendingReply::DisplayClientTty { id: 7 },
         })
         .unwrap();
         tx.send(HostCmd::Shutdown).unwrap();
@@ -121,7 +121,7 @@ mod tests {
         assert!(
             matches!(
                 in_flight.lock().unwrap().front(),
-                Some(PendingReply::DisplayClientTty)
+                Some(PendingReply::DisplayClientTty { id: 7 })
             ),
             "pushes the DisplayClientTty correlator"
         );
