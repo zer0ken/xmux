@@ -1,11 +1,11 @@
-//! The tmux display driver: a shared-server mux keeps ONE PTY per host, warmed on the
-//! first session and moved to another session with `switch-client`. `Tmux::driver`
+//! The tmux display driver: a shared-server mux keeps ONE PTY per host, opened on
+//! selection and moved to another session with `switch-client`. `Tmux::driver`
 //! constructs it, so mux selection lives in the tmux implementation, not a central match.
 
 use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
-/// Shared-server mux (tmux): ONE PTY per host, warmed on the first session and moved to
+/// Shared-server mux (tmux): ONE PTY per host, opened on selection and moved to
 /// another session with `switch-client`. `Tmux::driver` constructs it for a `Shared` host.
 pub struct TmuxDriver;
 
@@ -90,7 +90,7 @@ impl MuxDriver for TmuxDriver {
             let tty = host.display_tty.0.clone().filter(|t| !t.is_empty());
             if host.transport.runs_through_shell() && tty.is_none() {
                 if let Some(client) = ctx.mgr.get(&sel.host) {
-                    client.capture_display_tty(&tty_key);
+                    client.capture_display_tty(&tty_key, attach_id);
                 }
             }
             // A shell-routed host keeps an open `-CC` control connection, so the switch
@@ -114,11 +114,7 @@ impl MuxDriver for TmuxDriver {
                 // session for the rest of the run. A refusal falls through to the reattach
                 // below instead - the same answer this arm already gives when the recorded
                 // tty plan cannot switch, and still one attempt answering one user action.
-                // The client stops sizing sessions before it moves, so landing on a session
-                // the user also has open cannot resize the user's client; the mux's
-                // session-changed notice then settles the size on the new session.
-                let sent = client.yield_display_size_on(tty.as_deref().unwrap())
-                    && client.switch_client_on(tty.as_deref().unwrap(), &sel.session)
+                let sent = client.switch_client_on(tty.as_deref().unwrap(), &sel.session)
                     && client.refresh_client_on(tty.as_deref().unwrap());
                 if !sent {
                     tracing::warn!(
@@ -199,41 +195,13 @@ impl MuxDriver for TmuxDriver {
     }
 
     fn sync(&mut self, host_id: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
-        // One PTY per host. Warm it on the first session if not yet attached; reap it
-        // (and forget its session) when the host has no sessions.
-        let Some(host) = ctx.hosts.get(host_id) else {
-            return;
-        };
-        match sessions.first() {
-            Some(first)
-                if !ctx.registry.contains(host_id) && !host.display.in_flight_contains(host_id) =>
-            {
-                // Compose the two axes: the MUX supplies the attach argv (attach_plan),
-                // the MACHINE dispatches it (ssh -t + exec / local -S) - the same composition
-                // `show()` uses. A remote shared attach records its own tty before exec
-                // (for a later in-place switch); local attaches and non-recording muxes
-                // stay bare. (Immutable host reads before the &mut host.display below.)
-                let mux_argv = host.mux.display_attach_plan(&first.name);
-                let command = host.transport.interactive_attach_argv(&mux_argv);
-                let runs_through_shell = host.transport.runs_through_shell();
-                let selection = Selection {
-                    host: host_id.to_string(),
-                    session: first.name.clone(),
-                };
-                ctx.request_attach_with_id(&selection, |id, key, instance_name| {
-                    let tty_key = super::display_tty_key(key, instance_name, id);
-                    with_display_tty_record(command, runs_through_shell, &tty_key)
-                });
+        // Inventory changes reap an empty host, but only show() opens a display.
+        if sessions.is_empty() {
+            ctx.registry.remove(host_id);
+            if let Some(host) = ctx.hosts.get_mut(host_id) {
+                host.display.clear(host_id);
+                host.clear_display_tty();
             }
-            None => {
-                ctx.registry.remove(host_id);
-                ctx.hosts
-                    .get_mut(host_id)
-                    .expect("the host exists")
-                    .display
-                    .clear(host_id);
-            }
-            _ => {}
         }
     }
 }
@@ -400,7 +368,7 @@ mod tests {
         }
         let (host_evt_tx, _host_evt_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut mgr = crate::link::HostManager::new(host_evt_tx);
-        mgr.insert_fake("jup");
+        let commands = mgr.insert_recording("jup");
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
@@ -434,6 +402,18 @@ mod tests {
             };
             assert!(driver.show(&sel, &mut ctx));
         }
+        let sent: Vec<_> = commands.try_iter().collect();
+        assert_eq!(
+            sent.len(),
+            2,
+            "switch and redraw use the live control channel"
+        );
+        assert!(
+            matches!(&sent[0], crate::link::HostCmd::Send(line) if line.contains("switch-client") && line.contains("/dev/pts/3") && line.contains("target"))
+        );
+        assert!(
+            matches!(&sent[1], crate::link::HostCmd::Send(line) if line.contains("refresh-client") && line.contains("/dev/pts/3"))
+        );
         assert!(
             hosts.get("jup").unwrap().display.in_flight_is_empty(),
             "the control-routed switch requests NO reattach"
@@ -602,10 +582,9 @@ mod tests {
         );
     }
 
-    /// The tmux driver's `sync` owns the shared warm/reap decision: an inventory with a
-    /// first session WARMS the one host-keyed PTY when nothing is attached yet.
+    /// An inventory never opens an unviewed display. Only selection attaches it.
     #[tokio::test(flavor = "current_thread")]
-    async fn tmux_driver_sync_warms_the_host_pty_on_the_first_session() {
+    async fn tmux_driver_sync_does_not_attach_an_unviewed_host() {
         let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
@@ -642,14 +621,10 @@ mod tests {
             driver.sync("local", &sessions, &mut ctx);
         }
         let h = hosts.get("local").unwrap();
-        assert_eq!(
-            h.display.shows("local"),
-            Some("api"),
-            "shared sync warms the host PTY on the first session"
-        );
+        assert_eq!(h.display.shows("local"), None);
         assert!(
-            h.display.in_flight_contains("local"),
-            "the warm is requested off-loop"
+            h.display.in_flight_is_empty(),
+            "inventory cannot open a hidden display"
         );
     }
 

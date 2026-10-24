@@ -240,19 +240,14 @@ against, naming no source file, function, or test.
   mouse mode asks for, encoded in the form the client enabled, and a drag that starts in
   the terminal view reaches it until its release, with motion past the view at the
   view's nearest edge.
-- **FR-C10** - xmux's display client leaves the size of a session the user also has open
-  to the user's own clients. On tmux it sizes a session only while the terminal view or
-  the start screen's preview shows it, and a session another client that sizes windows
-  is attached to only while the user works in the terminal view (the terminal view and
-  xmux's window hold the focus); otherwise it stops sizing it (`refresh-client -f
-  ignore-size`). Under `window-size latest` the session then follows whichever client
-  the user typed into last. Only the attachment on view is resized, and an attachment
-  the start screen's preview holds ends once the preview or the start screen leaves it,
-  the attachment the selection shows excepted, which the terminal view takes over. On
-  abduco it attaches with the lowest
-  priority (`abduco -l -a`), so it sizes the session only while no other client is
-  attached. A tmux window larger than the terminal view shows the part around the
-  cursor, and a smaller one shows its edge with the rest of the view filled with dots.
+- **FR-C10** - Only the session on view holds a display connection, at the terminal
+  view's size or the start preview's size. Leaving that session releases its display
+  connection, including a connection still starting; inventory updates never reopen
+  it. Executing the preview retains its connection and resizes its PTY to the terminal
+  view. Size changes set only PTY dimensions, without changing the mux's options or
+  display-client sizing flags. Other attached clients follow the mux's own sizing
+  policy. A tmux window larger than the terminal view shows the part around the cursor,
+  and a smaller one shows its edge with the rest of the view filled with dots.
 
 ## D. App lifecycle
 
@@ -392,13 +387,10 @@ The seamless cross-host switch is bought with these costs, accepted by design:
   psmux session its own server does not answer for, is not followed through a rename made
   inside its mux: the rename reads as a lost session and a new one, and the selection
   moves up to the host.
-- A tmux session change made inside the terminal view, into a session the user also has
-  open in their own client, resizes that client to the terminal view until xmux hears of
-  the change on the control connection and gives the size back. Nothing prevents it.
-- tmux older than 3.2 has no `ignore-size` flag, so xmux's client sizes a session the user
-  also has open like any client: under tmux's default `window-size latest`, typing in the
-  terminal view shrinks the user's client of that session until the user types there.
-  Upgrading tmux prevents it.
+- tmux applies its native window-size policy to the displayed client like any other
+  client. Under `window-size latest`, typing in the terminal view can resize a window
+  the user's own client shows until the user types there. Hidden sessions have no
+  xmux display client contributing a size.
 - screen does not resize a window that two displays show, so a window the terminal view
   showed first keeps the view's size when the user's own display shows it too, and their
   display shows it in its top-left corner. The user's `C-a F` (`fit`) gives it their size.

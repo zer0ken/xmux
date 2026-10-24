@@ -49,26 +49,6 @@ pub trait ControlProtocol: Send + Sync {
     /// fresh attach repaints fully, and this gives an in-place switch the same full repaint.
     fn refresh_client_line(&self, display_tty: &str) -> String;
 
-    /// The query listing the clients attached to `session`, whose block
-    /// [`ControlProtocol::session_shared`] reads.
-    fn session_clients_line(&self, session: &str) -> String;
-
-    /// Whether a [`ControlProtocol::session_clients_line`] block lists a client besides
-    /// `display_tty` that sizes windows: a control client sizes none, so it does not
-    /// count.
-    fn session_shared(&self, body: &[String], display_tty: &str) -> bool;
-
-    /// The lines that set whether xmux's display client `display_tty` sizes the session
-    /// it shows (it does not while it `yields`, so the user's own client keeps its size),
-    /// then have the mux size its windows again. Each line is one command answering with
-    /// one block, so the reply correlation stays in step.
-    fn display_size_lines(&self, display_tty: &str, yields: bool) -> Vec<String>;
-
-    /// Stops `display_tty` from sizing the session it lands on next, sent before the
-    /// client moves, so the move cannot resize a client the user already has there
-    /// before the session's clients have been asked.
-    fn display_size_yield_line(&self, display_tty: &str) -> String;
-
     /// The lines that resolve xmux's OWN display-client tty for `host_key`. They must
     /// identify the client by something only xmux's own display attach could have
     /// produced: a client listing cannot, because the mux reports the user's own clients

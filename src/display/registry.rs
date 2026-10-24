@@ -2,8 +2,8 @@
 //! PTY-attached mux client per session, plus one optional fresh client parked under a
 //! key while it paints. Sessions are added via `insert` (the DisplayWorker spawns and
 //! hands off the finished attachment) and removed on close (`remove`) or master EOF
-//! (`reap`); the user mandate is to keep every session attached and alive, so there is
-//! no cap or LRU eviction. All blocking PTY work lives on each `Attachment`'s control
+//! (`reap`); the runtime releases displays that are no longer on view, without a cap or
+//! LRU eviction. All blocking PTY work lives on each `Attachment`'s control
 //! and pump threads, so registry methods never block the event loop.
 //!
 //! A reaped attachment's last grid is kept beside the map, under the same key, and
@@ -11,7 +11,7 @@
 //! grid of the CONFIRMED display through this lookup, so the frame that was on screen
 //! when the client died stays there across the reattach that replaces it
 //! (stale-while-revalidate), the same rule a session change follows by holding the
-//! prior live client until the swap. Each key holds at most one such grid, and any
+//! prior grid until the swap. Each key holds at most one such grid, and any
 //! `insert` or `remove` under the key drops it.
 //!
 //! A parked attachment stays off-screen until its owner swaps it in, but it is already

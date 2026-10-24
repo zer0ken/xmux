@@ -236,10 +236,8 @@ pub trait MuxDriver {
     fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>> {
         ctx.registry.grid(&ctx.display_key(sel))
     }
-    /// Reconcile the host's display terminal with its current `sessions` (an inventory
-    /// update - a remote `%`-event refresh or a local poll). Shared keeps ONE PTY per
-    /// host: warm it on the first session, reap it when the host has no sessions.
-    /// PerSession is selected on demand: only reap the host PTY when no sessions remain.
+    /// Reap a host's display terminal when its inventory has no sessions left.
+    /// Selection opens display connections; inventory updates never warm hidden hosts.
     fn sync(&mut self, host: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx);
 }
 
@@ -702,28 +700,11 @@ pub(crate) mod tests {
             .expect("the display worker receives the attach request")
     }
 
-    /// xmux's display client joins whatever clients the user has attached to the same
-    /// session, so a mux that can keep one client from sizing a shared session attaches
-    /// xmux's client that way and the user's own client keeps its size: tmux sets
-    /// `ignore-size` on it, locally and over ssh, and abduco attaches it with the lowest
-    /// priority.
+    /// Display attaches use native attach arguments without a remote sizing command.
     #[tokio::test(flavor = "current_thread")]
-    async fn seam_show_attaches_a_display_client_that_leaves_a_shared_session_its_size() {
+    async fn seam_show_attaches_without_a_remote_size_command() {
         for (bin, expected) in [
-            (
-                "tmux",
-                vec![
-                    "tmux",
-                    "attach",
-                    "-t",
-                    "target",
-                    ";",
-                    "if-shell",
-                    "-F",
-                    "1",
-                    "refresh-client -f ignore-size",
-                ],
-            ),
+            ("tmux", vec!["tmux", "attach", "-t", "target"]),
             ("abduco", vec!["abduco", "-l", "-a", "target"]),
         ] {
             let host = crate::model::Host::new(
@@ -740,9 +721,10 @@ pub(crate) mod tests {
         let argv = display_attach_argv(remote).await;
         let remote_command = argv.last().unwrap();
         assert!(
-            remote_command.contains("if-shell -F 1")
-                && remote_command.contains("refresh-client -f ignore-size"),
-            "the remote attach sets ignore-size on its client: {argv:?}"
+            remote_command.contains("attach -t target")
+                && !remote_command.contains("refresh-client -f")
+                && !remote_command.contains("set-option"),
+            "the remote attach does not set a sizing policy: {argv:?}"
         );
     }
 

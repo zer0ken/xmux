@@ -150,19 +150,13 @@ fn resolve_block<E: FnMut(HostEvent)>(
                 sessions,
             });
         }
-        PendingReply::DisplayClientTty => {
+        PendingReply::DisplayClientTty { id } => {
             // A `list-clients` body: the mux protocol parses out the display attach's tty
             // - the reader names no wire detail.
             emit(HostEvent::DisplayTty {
                 host: host.to_string(),
+                id,
                 tty: proto.parse_display_tty(body),
-            });
-        }
-        PendingReply::SessionClients { display_tty } => {
-            emit(HostEvent::DisplaySessionClients {
-                host: host.to_string(),
-                shared: proto.session_shared(body, &display_tty),
-                display_tty,
             });
         }
         PendingReply::Ignore => {}
@@ -716,7 +710,7 @@ mod tests {
         in_flight.lock().unwrap().extend([
             PendingReply::ListSessions,
             PendingReply::Ignore,
-            PendingReply::DisplayClientTty,
+            PendingReply::DisplayClientTty { id: 7 },
             PendingReply::Ignore,
         ]);
         let lines = [
@@ -822,7 +816,7 @@ mod tests {
         let in_flight: InFlight = Default::default();
         in_flight.lock().unwrap().extend([
             PendingReply::Ignore,
-            PendingReply::DisplayClientTty,
+            PendingReply::DisplayClientTty { id: 7 },
             PendingReply::Ignore,
         ]);
         let mut events = Vec::new();
@@ -871,7 +865,7 @@ mod tests {
         let in_flight: InFlight = Default::default();
         in_flight.lock().unwrap().extend([
             PendingReply::Ignore,
-            PendingReply::DisplayClientTty,
+            PendingReply::DisplayClientTty { id: 7 },
             PendingReply::Ignore,
         ]);
         let mut events = Vec::new();
@@ -913,7 +907,7 @@ mod tests {
         in_flight
             .lock()
             .unwrap()
-            .push_back(PendingReply::DisplayClientTty);
+            .push_back(PendingReply::DisplayClientTty { id: 7 });
         let mut events = Vec::new();
         let lines = vec![
             "%begin 1 5 1".to_string(),
@@ -932,49 +926,9 @@ mod tests {
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                HostEvent::DisplayTty { host, tty: Some(t) } if host == "jupiter00" && t == "/dev/pts/3"
+                HostEvent::DisplayTty { host, id: 7, tty: Some(t) } if host == "jupiter00" && t == "/dev/pts/3"
             )),
             "the record-file read resolves to the recorded tty"
-        );
-    }
-
-    #[test]
-    fn reader_resolves_a_session_client_listing_into_whether_it_is_shared() {
-        // The listing names xmux's display client, a control client, and a user's client:
-        // the user's client sizes the session, so it is shared.
-        let state = test_state(80, 24);
-        let in_flight: InFlight = Default::default();
-        in_flight
-            .lock()
-            .unwrap()
-            .push_back(PendingReply::SessionClients {
-                display_tty: "/dev/pts/3".into(),
-            });
-        let mut events = Vec::new();
-        let lines = [
-            "%begin 1 6 1",
-            "/dev/pts/3 0",
-            "/dev/pts/2 1",
-            "/dev/pts/9 0",
-            "%end 1 6 1",
-        ]
-        .map(str::to_string)
-        .into_iter();
-        run_reader(
-            "jup",
-            test_control_proto(),
-            lines,
-            &state,
-            &in_flight,
-            |e| events.push(e),
-        );
-        assert!(
-            events.iter().any(|e| matches!(
-                e,
-                HostEvent::DisplaySessionClients { host, display_tty, shared: true }
-                    if host == "jup" && display_tty == "/dev/pts/3"
-            )),
-            "a user's client on the session makes it shared"
         );
     }
 }

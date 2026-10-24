@@ -5,8 +5,8 @@
 `app` is the application orchestration layer. It holds the application model and its
 one update transition, the runtime that owns the terminal for the whole session, the
 ctl socket server, and preference persistence. The runtime is a persistent supervisor:
-it keeps one attached mux client per session alive in a PTY across selections and
-draws the selected session's live grid beside the nav. The update transition keeps
+it attaches the session on view in a PTY and releases displays that leave the view,
+while keeping metadata channels alive across selections. The update transition keeps
 domain state, switcher state, geometry, interaction state, host tracking, and the
 render plan coherent, then returns ordered effects for the runtime to execute.
 

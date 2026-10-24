@@ -677,6 +677,7 @@ fn display_session<'a>(hosts: &'a crate::model::Hosts, id: &str) -> Option<&'a s
 /// focus the user is driving the mux, so the SELECTION goes to the client instead
 /// ([`Runtime::follow_selection_to_display`]) and this stays false, since carrying the
 /// client back would undo the switch the user just made with the mux's own keys.
+/// An explicit selection still awaiting its debounce owes a switch in either focus.
 ///
 /// WHY IT SETTLES, being a condition rather than an event. Each answer makes the two
 /// names EQUAL and nothing here makes them differ: this attaches the client to the
@@ -689,7 +690,11 @@ fn display_session<'a>(hosts: &'a crate::model::Hosts, id: &str) -> Option<&'a s
 /// gate bound the rate rather than the outcome: while an attach is under way this is not
 /// re-armed, so the client is carried once and not once per beat until it arrives.
 fn display_astray(state: &crate::state::State, hosts: &crate::model::Hosts) -> bool {
-    if state.selection.is_empty() || state.focus.is_terminal_focused() {
+    if state.selection.is_empty()
+        || (state.focus.is_terminal_focused()
+            && !state.attach_pending
+            && state.attach_deadline.is_none())
+    {
         return false;
     }
     display_session(hosts, &state.selection.host)
@@ -743,7 +748,10 @@ fn selection_attach_in_flight(hosts: &crate::model::Hosts, selection: &Selection
     let key = display_key(hosts, selection);
     hosts
         .get(&selection.host)
-        .map(|h| h.display.in_flight_contains(&key) || h.display.pending_paint_contains(&key))
+        .map(|h| {
+            h.display.shows(&key) == Some(selection.session.as_str())
+                && (h.display.in_flight_contains(&key) || h.display.pending_paint_contains(&key))
+        })
         .unwrap_or(false)
 }
 
@@ -779,7 +787,7 @@ const HELD_INPUT_MAX: std::time::Duration = std::time::Duration::from_secs(5);
 /// attachment under the same key shows another session and never takes them.
 fn input_route(state: &crate::state::State, hosts: &crate::model::Hosts) -> InputRoute {
     let selection = &state.selection;
-    if selection.is_empty() || *selection == state.displayed {
+    if selection.is_empty() {
         return InputRoute::Selected(display_key(hosts, &state.displayed));
     }
     let key = display_key(hosts, selection);
@@ -787,6 +795,10 @@ fn input_route(state: &crate::state::State, hosts: &crate::model::Hosts) -> Inpu
         return InputRoute::Shown(display_key(hosts, &state.displayed));
     };
     let fresh_for_selection = host.display.shows(&key) == Some(selection.session.as_str());
+    if *selection == state.displayed && (fresh_for_selection || host.display.shows(&key).is_none())
+    {
+        return InputRoute::Selected(key);
+    }
     if fresh_for_selection && host.display.pending_paint_contains(&key) {
         return InputRoute::Selected(key);
     }
@@ -842,11 +854,10 @@ pub(crate) fn current_grid(
 }
 
 /// Keeps a host's display terminal in sync with its sessions by delegating to the
-/// host's driver, which owns the warm/reap decision (shared warms one host PTY on the
-/// first session and reaps it when empty; per-session is selected on demand and only
-/// reaps when empty). Called whenever a host's inventory updates (a remote `%`-event
-/// refresh or a local poll), so a new session is reachable and a killed one is torn
-/// down (#5).
+/// host's driver, which reaps a display when its host becomes empty. Displays open
+/// only on selection, so an inventory refresh cannot revive a hidden client. Called
+/// whenever a host's inventory updates (a remote `%`-event refresh or a local poll),
+/// so a new session is reachable and a killed one is torn down (#5).
 fn sync_host_terminals(
     id: &str,
     sessions: &[crate::session::Session],
@@ -1851,16 +1862,6 @@ struct Runtime {
     display_sync_held: bool,
     rescan_pending: bool,
     display_probe: DisplayProbe,
-    /// The host whose display client xmux shows, and whether the user is working in that
-    /// view (the terminal view and xmux's window hold the focus, the start screen is
-    /// closed). It decides which display client sizes its session; see
-    /// [`Runtime::fit_displays`].
-    sizing: Option<(String, bool)>,
-    /// The attachments that existed when the start screen opened, held warm while the
-    /// preview is open. One the preview attached beyond them is torn down once the
-    /// preview leaves it, and closing the start screen tears down the held ones too,
-    /// the attachment the selection shows excepted.
-    preview_kept: Option<HashSet<String>>,
     /// Terminal input typed for a selection whose attachment does not exist yet; see
     /// [`input_route`].
     held_input: Option<HeldInput>,

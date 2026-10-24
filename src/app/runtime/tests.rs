@@ -2508,8 +2508,6 @@ fn test_rt(env: Env) -> Runtime {
         display_sync_held: false,
         rescan_pending: false,
         display_probe: DisplayProbe::default(),
-        sizing: None,
-        preview_kept: None,
         held_input: None,
         passthrough: Vec::new(),
         title: None,
@@ -2551,10 +2549,12 @@ fn execute_commands_runs_quit_and_attach_in_one_batch() {
 #[test]
 fn host_event_and_command_run_through_the_same_executor() {
     let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.registry.insert_fake("local", 7);
     let mut effects = update(
         &mut rt.model,
         Msg::HostEvent {
             event: HostEvent::DisplayTty {
+                id: 7,
                 host: "local".to_owned(),
                 tty: Some("/dev/pts/41".to_owned()),
             },
@@ -2689,6 +2689,10 @@ async fn invalidated_ssh_auth_reaps_display_and_pending_attach() {
 async fn display_auth_tracks_the_live_host_connection_across_session_switches() {
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
+    rt.model.state.selection = Selection {
+        host: "jup".into(),
+        session: "other".into(),
+    };
     rt.registry.insert_fake("jup", 7);
     let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     rt.on_pty_event(
@@ -2886,146 +2890,64 @@ fn sent_lines(commands: &std::sync::mpsc::Receiver<crate::link::HostCmd>) -> Vec
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn every_client_change_asks_who_shares_the_displayed_session() {
-    // A client the user attaches to the session xmux shows, or one leaving it, changes
-    // whether xmux's display client may size that session. Each report asks which clients
-    // are attached to the session the display client is on, the new one when the report
-    // is the display client's own move.
+async fn client_and_focus_changes_never_send_remote_size_commands() {
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     let commands = rt.mgr.insert_recording("jup");
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .record_display_tty(Some("/dev/pts/3".into()));
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
         .set_shows("jup", "api");
-    let proto = crate::link::test_control_proto();
-
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
+    rt.model.state.selection = Selection {
         host: "jup".into(),
-        client: "/dev/pts/9".into(),
         session: "api".into(),
-    });
-    assert_eq!(
-        sent_lines(&commands),
-        vec![proto.session_clients_line("api")],
-        "a user's client arriving on the shown session asks about that session"
-    );
-
-    rt.handle_host_event(HostEvent::ClientSessionChanged {
-        host: "jup".into(),
-        client: "/dev/pts/3".into(),
-        session: "db".into(),
-    });
-    assert_eq!(
-        sent_lines(&commands),
-        vec![proto.session_clients_line("db")],
-        "the display client's own move asks about the session it moved to"
-    );
-
-    rt.handle_host_event(HostEvent::ClientDetached {
-        host: "jup".into(),
-        client: "/dev/pts/9".into(),
-    });
-    assert_eq!(
-        sent_lines(&commands),
-        vec![proto.session_clients_line("db")],
-        "a user's client leaving asks again"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn asking_who_shares_the_displayed_session_waits_for_the_display_tty() {
-    // Without its tty the display client cannot be named, so nothing is sent and it keeps
-    // the ignore-size its attach set; the captured tty then asks.
-    let mut rt = test_rt(fake_env_with_machines(&[]));
-    rt.hosts = detach_test_hosts("jup");
-    let commands = rt.mgr.insert_recording("jup");
-    rt.hosts
-        .get_mut("jup")
-        .unwrap()
-        .display
-        .set_shows("jup", "api");
-    let proto = crate::link::test_control_proto();
-
-    rt.handle_host_event(HostEvent::ClientDetached {
-        host: "jup".into(),
-        client: "/dev/pts/9".into(),
-    });
-    assert!(sent_lines(&commands).is_empty(), "no tty, nothing to name");
-
-    rt.handle_host_event(HostEvent::DisplayTty {
-        host: "jup".into(),
-        tty: Some("/dev/pts/3".into()),
-    });
-    assert_eq!(
-        sent_lines(&commands),
-        vec![proto.session_clients_line("api")],
-        "the captured tty asks about the session the display client shows"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn the_answer_sets_whether_the_display_client_sizes_its_session() {
-    // xmux's display client sizes its session only while xmux shows it, and a session
-    // another window-sizing client shares only while the user works in xmux's view of
-    // it; otherwise it yields, so the session follows the client used last. An answer
-    // about a client that is no longer the display client changes nothing.
-    let mut rt = test_rt(fake_env_with_machines(&[]));
-    rt.hosts = detach_test_hosts("jup");
-    let commands = rt.mgr.insert_recording("jup");
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
-    let proto = crate::link::test_control_proto();
-    let answer = |rt: &mut Runtime, tty: &str, shared: bool| {
-        rt.handle_host_event(HostEvent::DisplaySessionClients {
-            host: "jup".into(),
-            display_tty: tty.into(),
-            shared,
-        });
-        sent_lines(&commands)
     };
-
-    for (sizing, shared, yields, why) in [
-        (
-            None,
-            false,
-            true,
-            "a session xmux does not show is left alone",
-        ),
-        (
-            Some(false),
-            false,
-            false,
-            "alone, a shown session follows xmux",
-        ),
-        (
-            Some(false),
-            true,
-            true,
-            "a shared session xmux only shows keeps the user's size",
-        ),
-        (
-            Some(true),
-            true,
-            false,
-            "a shared session the user works in follows xmux",
-        ),
+    for event in [
+        HostEvent::ClientSessionChanged {
+            host: "jup".into(),
+            client: "/dev/pts/9".into(),
+            session: "api".into(),
+        },
+        HostEvent::ClientDetached {
+            host: "jup".into(),
+            client: "/dev/pts/9".into(),
+        },
+        HostEvent::DisplayTty {
+            id: 7,
+            host: "jup".into(),
+            tty: Some("/dev/pts/3".into()),
+        },
     ] {
-        rt.sizing = sizing.map(|in_use| ("jup".to_string(), in_use));
-        assert_eq!(
-            answer(&mut rt, "/dev/pts/3", shared),
-            proto.display_size_lines("/dev/pts/3", yields),
-            "{why}"
+        rt.handle_host_event(event);
+        assert!(
+            sent_lines(&commands).is_empty(),
+            "client reports only refresh inventory"
         );
     }
-
-    assert!(
-        answer(&mut rt, "/dev/pts/7", false).is_empty(),
-        "an answer about a client that is no longer the display client is dropped"
-    );
+    rt.registry.insert_fake("jup", 1);
+    for start in [true, false] {
+        if start {
+            rt.model.switcher.open_start();
+        } else {
+            rt.model.switcher.close_start();
+        }
+        for focus in [
+            crate::app::focus::ViewFocus::Nav,
+            crate::app::focus::ViewFocus::Terminal,
+        ] {
+            rt.model.state.focus.set_view_focus(focus);
+            rt.fit_displays();
+            assert!(
+                sent_lines(&commands).is_empty(),
+                "geometry changes only the PTY size"
+            );
+        }
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -3060,6 +2982,7 @@ async fn a_client_session_change_before_the_tty_is_known_lands_once_it_is_captur
     );
 
     rt.handle_host_event(HostEvent::DisplayTty {
+        id: 7,
         host: "jup".into(),
         tty: Some("/dev/pts/3".into()),
     });
@@ -5988,6 +5911,11 @@ async fn ready_adopts_the_pty_name_only_where_the_child_is_the_mux_client() {
     rt.hosts = hosts;
 
     for (host, id) in [("local", 7u64), ("jup", 8u64)] {
+        rt.model.state.selection = Selection {
+            host: host.into(),
+            session: "work".into(),
+        };
+        rt.fit_displays();
         {
             let h = rt.hosts.get_mut(host).unwrap();
             h.display.set_shows(host, "work");
@@ -5999,28 +5927,23 @@ async fn ready_adopts_the_pty_name_only_where_the_child_is_the_mux_client() {
             key: host.to_string(),
             attachment: crate::display::attachment::fake_attachment_with_tty(id, "/dev/pts/3"),
         });
+        let expected = if host == "local" {
+            Some("/dev/pts/3")
+        } else {
+            None
+        };
+        assert_eq!(
+            rt.hosts.get(host).unwrap().display_tty.0.as_deref(),
+            expected,
+            "only a directly spawned mux owns the local PTY's tty"
+        );
     }
-
-    assert_eq!(
-        rt.hosts.get("local").unwrap().display_tty.0.as_deref(),
-        Some("/dev/pts/3"),
-        "the mux client runs in the PTY xmux opened, so that PTY's name is its tty"
-    );
-    assert_eq!(
-        rt.hosts.get("jup").unwrap().display_tty.0,
-        None,
-        "past a shell hop the client is elsewhere, so the local PTY names nothing here"
-    );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_warm_attach_for_another_host_does_not_take_the_terminal_view() {
-    // A shared-model host warms a PTY on a session of its OWN choosing the moment its
-    // inventory arrives, so an attach can land for a host the selection is not on. It
-    // installs, which is what makes that host instant to reach - but it names a session
-    // nobody selected, so the terminal view stays where the selection is. Confirming it
-    // would move the view to another machine mid-scan while the cursor stands still,
-    // which is exactly the two regions disagreeing at launch.
+async fn a_hidden_attach_reply_is_discarded_before_the_next_frame() {
+    // A worker can finish between a selection move and frame housekeeping. Its
+    // reply must release the abandoned request without installing a hidden client.
     let mut rt = a_settled_psmux_runtime();
     rt.hosts.insert(crate::model::Host::new(
         crate::transport::ssh("jup".into(), String::new(), "linux".into()),
@@ -6032,10 +5955,12 @@ async fn a_warm_attach_for_another_host_does_not_take_the_terminal_view() {
         jup.display.mark_in_flight("jup", 9);
         jup.display.mark_pending(OWN_CLIENT + 2, "jup");
     }
+    let (attachment, killed) =
+        crate::display::attachment::fake_attachment_with_teardown_flag(OWN_CLIENT + 2);
     rt.on_display_event(DisplayEvent::Ready {
         seq: 9,
         key: "jup".into(),
-        attachment: crate::display::attachment::fake_attachment(OWN_CLIENT + 2),
+        attachment,
     });
     assert_eq!(
         (
@@ -6046,9 +5971,11 @@ async fn a_warm_attach_for_another_host_does_not_take_the_terminal_view() {
         "the view stays on the selected session"
     );
     assert!(
-        rt.registry.contains("jup"),
-        "the warm attachment still installs, so its host stays instant to reach"
+        !rt.registry.contains("jup"),
+        "an abandoned worker reply never installs a hidden connection"
     );
+    assert!(killed.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(rt.hosts.get("jup").unwrap().display.in_flight_is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -6529,11 +6456,9 @@ fn host_event_client_detached_emits_reap_display_attach_with_no_state_change() {
             [
                 EventEffect::ReapDisplayAttach { host, client },
                 EventEffect::Refetch { host: refetched },
-                EventEffect::SettleDisplaySize { host: settled },
-            ] if host == "jup" && client == "/dev/pts/3" && refetched == "jup" && settled == "jup"
+            ] if host == "jup" && client == "/dev/pts/3" && refetched == "jup"
         ),
-        "ClientDetached forwards a ReapDisplayAttach effect, refetches the counts, and asks \
-         which clients share the displayed session: {effects:?}"
+        "ClientDetached forwards a ReapDisplayAttach effect and refetches the counts: {effects:?}"
     );
     // ClientDetached mutates no State (the tree group set is untouched).
     assert_eq!(state.groups.len(), before_groups);
@@ -6566,15 +6491,13 @@ fn host_event_client_session_changed_forwards_follow_effect_with_no_state_change
             [
                 EventEffect::FollowDisplaySession { host, client, session },
                 EventEffect::Refetch { host: refetched },
-                EventEffect::SettleDisplaySize { host: settled },
             ] if host == "jup"
                 && client == "/dev/pts/3"
                 && session == "db"
                 && refetched == "jup"
-                && settled == "jup"
+
         ),
-        "ClientSessionChanged forwards a FollowDisplaySession effect, refetches the counts, \
-         and asks which clients share the displayed session: {effects:?}"
+        "ClientSessionChanged forwards a FollowDisplaySession effect and refetches the counts: {effects:?}"
     );
     // update mutates no State here (the tree group set is untouched); the tty match +
     // selection follow are loop-owned.
@@ -9609,154 +9532,429 @@ fn newly_created_config_is_applied_without_a_second_edit() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn only_the_attachment_on_view_takes_the_view_size() {
-    // A resize counts as activity to the mux, so a hidden attachment keeps its size
-    // rather than take its session's size from the client the user works in.
-    let mut rt = test_rt(fake_env_with_machines(&[]));
-    rt.hosts = detach_test_hosts("jup");
-    rt.hosts.insert(crate::model::Host::new(
-        crate::transport::ssh("web".to_string(), String::new(), "linux".into()),
-        crate::mux::for_binary("tmux").unwrap(),
-    ));
-    rt.registry.insert_fake("jup", 1);
-    rt.registry.insert_fake("web", 2);
-    rt.model.state.selection = Selection {
-        host: "jup".into(),
-        session: "api".into(),
-    };
-    rt.fit_displays();
-    let view = terminal_view_size(rt.cols, rt.body_rows, rt.nav_size());
-    assert_eq!(rt.registry.get("jup").unwrap().size, view);
-    assert_eq!(
-        rt.registry.get("web").unwrap().size,
-        (80, 24),
-        "hidden, unresized"
-    );
+async fn display_connections_follow_the_visible_session_for_every_mux() {
+    use std::sync::atomic::Ordering;
+    for bin in [
+        "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
+    ] {
+        let mut rt = test_rt(fake_env_with_machines(&[]));
+        for host in ["first", "second"] {
+            rt.hosts.insert(crate::model::Host::new(
+                crate::transport::ssh(host.into(), String::new(), "linux".into()),
+                crate::mux::for_binary(bin).unwrap(),
+            ));
+        }
+        let (first, first_killed) =
+            crate::display::attachment::fake_attachment_with_teardown_flag(1);
+        rt.registry.insert("first", first);
+        rt.model.state.selection = Selection {
+            host: "first".into(),
+            session: "main".into(),
+        };
+        rt.model.state.displayed = rt.model.state.selection.clone();
+        rt.model.switcher.open_start();
+        rt.fit_displays();
+        assert!(
+            !first_killed.load(Ordering::SeqCst),
+            "{bin}: visible preview stays"
+        );
+        assert_eq!(
+            rt.registry.get("first").unwrap().size,
+            terminal_view_size(rt.cols, rt.body_rows, rt.nav_size()),
+            "{bin}: preview size"
+        );
+
+        let (second, second_killed) =
+            crate::display::attachment::fake_attachment_with_teardown_flag(2);
+        rt.registry.insert("second", second);
+        rt.model.state.selection.host = "second".into();
+        rt.fit_displays();
+        assert!(
+            first_killed.load(Ordering::SeqCst),
+            "{bin}: leaving the preview detaches"
+        );
+        assert!(
+            !rt.registry.contains("first"),
+            "{bin}: no hidden attachment"
+        );
+        assert!(
+            rt.registry.grid("first").is_some(),
+            "{bin}: the departed client leaves its last frame until the new one paints"
+        );
+        rt.model.state.displayed = rt.model.state.selection.clone();
+        rt.model.switcher.close_start();
+        rt.fit_displays();
+        assert!(
+            rt.registry.grid("first").is_none(),
+            "{bin}: a confirmed replacement retires the old frame"
+        );
+        assert!(
+            !second_killed.load(Ordering::SeqCst),
+            "{bin}: executing retains the client"
+        );
+        assert_eq!(
+            rt.registry.get("second").unwrap().size,
+            terminal_view_size(rt.cols, rt.body_rows, rt.nav_size()),
+            "{bin}: terminal size"
+        );
+
+        rt.model.state.selection = Selection::default();
+        rt.fit_displays();
+        assert!(
+            second_killed.load(Ordering::SeqCst),
+            "{bin}: a view screen keeps no PTY"
+        );
+        assert!(rt.registry.is_empty(), "{bin}: no display is visible");
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_attachment_the_start_preview_opened_ends_when_the_preview_leaves_it() {
-    // What the preview attaches is the user browsing, not using: it must not stay
-    // attached, holding the session, once the preview moves on or the start closes.
-    let mut rt = test_rt(fake_env_with_machines(&[]));
-    rt.hosts = detach_test_hosts("jup");
-    for alias in ["web", "db"] {
+async fn leaving_a_preview_cancels_pending_connections_for_every_mux() {
+    use std::sync::atomic::Ordering;
+    for bin in [
+        "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
+    ] {
+        let mut rt = test_rt(fake_env_with_machines(&[]));
         rt.hosts.insert(crate::model::Host::new(
-            crate::transport::ssh(alias.to_string(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux").unwrap(),
+            crate::transport::ssh("first".into(), String::new(), "linux".into()),
+            crate::mux::for_binary(bin).unwrap(),
         ));
+        let (pending, pending_killed) =
+            crate::display::attachment::fake_attachment_with_teardown_flag(2);
+        rt.registry.park_pending("first", pending);
+        let host = rt.hosts.get_mut("first").unwrap();
+        host.display.mark_in_flight("first", 3);
+        host.display.mark_pending(3, "first");
+        host.record_display_tty(Some("/dev/pts/3".into()));
+        rt.model.switcher.open_start();
+        rt.model.state.selection = Selection::default();
+        rt.fit_displays();
+        assert!(
+            pending_killed.load(Ordering::SeqCst),
+            "{bin}: pending paint is detached"
+        );
+        assert!(!rt.registry.contains_pending("first"));
+        assert!(rt.hosts.get("first").unwrap().display.in_flight_is_empty());
+        assert!(rt.hosts.get("first").unwrap().display_tty.0.is_none());
+        let (late, late_killed) = crate::display::attachment::fake_attachment_with_teardown_flag(3);
+        rt.on_display_event(DisplayEvent::Ready {
+            seq: 3,
+            key: "first".into(),
+            attachment: late,
+        });
+        assert!(
+            late_killed.load(Ordering::SeqCst),
+            "{bin}: late completion is discarded"
+        );
+        assert!(!rt.registry.contains("first"));
     }
-    let select = |rt: &mut Runtime, host: &str| {
-        rt.model.state.selection = Selection {
-            host: host.into(),
-            session: "main".into(),
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn inventory_does_not_revive_a_departed_preview_for_every_mux() {
+    for bin in [
+        "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
+    ] {
+        let mut rt = test_rt(fake_env_with_machines(&[]));
+        rt.hosts.insert(crate::model::Host::new(
+            crate::transport::ssh("first".into(), String::new(), "linux".into()),
+            crate::mux::for_binary(bin).unwrap(),
+        ));
+        let sessions = vec![crate::session::Session {
+            host: "first".into(),
+            name: "main".into(),
+            mux: bin.into(),
+            ..Default::default()
+        }];
+        rt.registry.insert_fake("first", 1);
+        rt.model.state.selection = Selection::default();
+        rt.fit_displays();
+        for start in [true, false] {
+            if start {
+                rt.model.switcher.open_start();
+            } else {
+                rt.model.switcher.close_start();
+            }
+            for effect in [
+                EventEffect::SyncInventorySessions {
+                    host: "first".into(),
+                    sessions: sessions.clone(),
+                },
+                EventEffect::SyncPollSessions {
+                    host: "first".into(),
+                    sessions: sessions.clone(),
+                },
+            ] {
+                rt.perform_host_effect(effect);
+                assert!(
+                    !rt.registry.contains("first"),
+                    "{bin}: inventory keeps the client detached"
+                );
+                assert!(
+                    rt.hosts.get("first").unwrap().display.in_flight_is_empty(),
+                    "{bin}: inventory never requests an attachment"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn keys_and_ctl_release_departed_display_connections_for_every_mux() {
+    use std::sync::atomic::Ordering;
+    for bin in [
+        "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
+    ] {
+        for keys in [true, false] {
+            let mut rt = test_rt(fake_env_with_machines(&[]));
+            let scan = Scan {
+                groups: ["first", "second"]
+                    .into_iter()
+                    .map(|host| Group {
+                        host: host.into(),
+                        err: None,
+                        sessions: vec![Session {
+                            host: host.into(),
+                            name: "main".into(),
+                            mux: bin.into(),
+                            ..Default::default()
+                        }],
+                    })
+                    .collect(),
+            };
+            (rt.model.state, rt.model.switcher) = with_switcher(scan);
+            for host in ["first", "second"] {
+                rt.hosts.insert(crate::model::Host::new(
+                    crate::transport::ssh(host.into(), String::new(), "linux".into()),
+                    crate::mux::for_binary(bin).unwrap(),
+                ));
+            }
+            rt.model
+                .switcher
+                .select_address(&crate::session::Address::new("first", "main"));
+            settled(&mut rt);
+            rt.model.switcher.open_start();
+            let (display, killed) =
+                crate::display::attachment::fake_attachment_with_teardown_flag(1);
+            rt.registry.insert("first", display);
+            if keys {
+                rt.handle_stdin_bytes(b"\r", &rt.model.state.selection.clone());
+                assert!(
+                    !rt.model.switcher.start_open(),
+                    "{bin}: Enter executes preview"
+                );
+                rt.fit_displays();
+                assert!(
+                    !killed.load(Ordering::SeqCst),
+                    "{bin}: Enter retains client"
+                );
+                rt.handle_stdin_bytes(b"\x07\t", &rt.model.state.selection.clone());
+                rt.handle_stdin_bytes(b"\x1b[1;5A", &rt.model.state.selection.clone());
+                sync_selection_from_switcher(&mut rt.model);
+                assert!(
+                    rt.model.state.selection.is_empty(),
+                    "{bin}: parent has no session"
+                );
+            } else {
+                let crate::link::control::CtlRequest::Op(action) =
+                    crate::link::control::parse_ctl_op("switch second main")
+                else {
+                    panic!("switch resolves to an action");
+                };
+                rt.dispatch_action(action);
+                sync_selection_from_switcher(&mut rt.model);
+                assert_eq!(
+                    rt.model.state.selection.host, "second",
+                    "{bin}: ctl switches"
+                );
+            }
+            rt.fit_displays();
+            assert!(killed.load(Ordering::SeqCst), "{bin}: keys={keys}");
+            assert!(!rt.registry.contains("first"), "{bin}: keys={keys}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_cross_host_ready_keeps_the_departed_frame_until_paint_for_every_mux() {
+    for bin in [
+        "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
+    ] {
+        let mut rt = test_rt(fake_env_with_machines(&[]));
+        for host in ["first", "second"] {
+            rt.hosts.insert(crate::model::Host::new(
+                crate::transport::ssh(host.into(), String::new(), "linux".into()),
+                crate::mux::for_binary(bin).unwrap(),
+            ));
+        }
+        rt.registry.insert_fake("first", 1);
+        let prior = rt.registry.grid("first").unwrap();
+        rt.model.state.displayed = Selection {
+            host: "first".into(),
+            session: "old".into(),
         };
-    };
-    rt.registry.insert_fake("jup", 1);
-    select(&mut rt, "jup");
-    rt.model.switcher.open_start();
-    rt.fit_displays();
+        rt.model.state.selection = Selection {
+            host: "second".into(),
+            session: "new".into(),
+        };
+        let host = rt.hosts.get_mut("second").unwrap();
+        host.display.set_shows("second", "new");
+        host.display.mark_in_flight("second", 2);
+        host.display.mark_pending(2, "second");
+        rt.on_display_event(DisplayEvent::Ready {
+            seq: 2,
+            key: "second".into(),
+            attachment: crate::display::attachment::fake_attachment(2),
+        });
+        assert!(
+            !rt.registry.contains("first"),
+            "{bin}: departed client closed"
+        );
+        assert!(
+            rt.registry.contains_pending("second"),
+            "{bin}: new client waits for paint"
+        );
+        assert_eq!(
+            rt.model.state.displayed.host, "first",
+            "{bin}: Ready cannot confirm an empty frame"
+        );
+        assert!(Arc::ptr_eq(&prior, &rt.registry.grid("first").unwrap()));
+        let painted = std::time::Instant::now();
+        rt.registry.mark_pending_painted_for_test(2, painted);
+        rt.note_pending_output(2);
+        assert!(rt.promote_due_pending(painted + crate::model::host::PAINT_SETTLE));
+        assert_eq!(
+            rt.model.state.displayed.host, "second",
+            "{bin}: first frame confirms the new host"
+        );
+        rt.fit_displays();
+        assert!(
+            rt.registry.grid("first").is_none(),
+            "{bin}: old frame released"
+        );
+    }
+}
 
-    select(&mut rt, "web");
-    rt.registry.insert_fake("web", 2);
-    rt.fit_displays();
-    assert!(
-        rt.registry.contains("jup"),
-        "attached before the start, kept"
-    );
-    assert!(rt.registry.contains("web"), "on view in the preview");
-
-    select(&mut rt, "db");
+#[tokio::test(flavor = "current_thread")]
+async fn a_hidden_paint_gate_cancels_the_client_before_the_next_frame() {
+    let mut rt = a_settled_psmux_runtime();
+    rt.model.state.selection.session = "b".into();
     rt.hosts
-        .get_mut("db")
+        .get_mut("local")
         .unwrap()
         .display
-        .mark_in_flight("db", 3);
-    rt.fit_displays();
-    assert!(!rt.registry.contains("web"), "the preview left it");
-
-    select(&mut rt, "jup");
-    rt.model.switcher.close_start();
-    rt.fit_displays();
-    assert!(
-        !rt.hosts.get("db").unwrap().display.in_flight_contains("db"),
-        "an attach still in flight for the preview is dropped too"
-    );
-    assert!(rt.registry.contains("jup"));
+        .set_shows("local", "b");
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .mark_in_flight("local", 9);
+    let (attachment, killed) = crate::display::attachment::fake_attachment_with_teardown_flag(9);
+    rt.on_display_event(DisplayEvent::Ready {
+        seq: 9,
+        key: "local".into(),
+        attachment,
+    });
+    assert!(rt.registry.contains_pending("local"));
+    rt.model.state.selection = Selection::default();
+    assert!(!rt.promote_due_pending(std::time::Instant::now() + std::time::Duration::from_secs(10)));
+    assert!(killed.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!rt.registry.contains("local"));
+    assert!(!rt.registry.contains_pending("local"));
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_attachment_held_from_before_the_start_ends_when_the_start_closes() {
-    // The preview keeps what existed when the start opened, but only while the start is
-    // open: closing it must end those connections too, or a session the user is no
-    // longer viewing keeps xmux's client, and that client holds the session's size.
-    let mut rt = test_rt(fake_env_with_machines(&[]));
-    rt.hosts = detach_test_hosts("jup");
-    rt.hosts.insert(crate::model::Host::new(
-        crate::transport::ssh("web".to_string(), String::new(), "linux".into()),
-        crate::mux::for_binary("tmux").unwrap(),
-    ));
-    let select = |rt: &mut Runtime, host: &str| {
-        rt.model.state.selection = Selection {
-            host: host.into(),
-            session: "main".into(),
+async fn returning_to_the_confirmed_session_supersedes_another_pending_paint_for_every_mux() {
+    for bin in [
+        "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
+    ] {
+        let mut rt = test_rt(fake_env_with_machines(&[]));
+        rt.hosts.insert(crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary(bin).unwrap(),
+        ));
+        rt.registry.insert_fake("local", 1);
+        let original = Selection {
+            host: "local".into(),
+            session: "a".into(),
         };
-    };
-    rt.registry.insert_fake("jup", 1);
-    select(&mut rt, "jup");
-    rt.model.switcher.open_start();
-    rt.fit_displays();
-
-    select(&mut rt, "web");
-    rt.registry.insert_fake("web", 2);
-    rt.fit_displays();
-    assert!(
-        rt.registry.contains("jup"),
-        "attached before the start, held while the preview is open"
-    );
-    assert!(rt.registry.contains("web"), "on view in the preview");
-
-    rt.model.switcher.close_start();
-    rt.fit_displays();
-    assert!(
-        !rt.registry.contains("jup"),
-        "closing the start ends the connection it held, nobody views it now"
-    );
-    assert!(
-        rt.registry.contains("web"),
-        "the selection's attachment stays for the terminal view"
-    );
+        rt.model.state.displayed = original.clone();
+        rt.model.state.selection = Selection {
+            session: "b".into(),
+            ..original.clone()
+        };
+        let host = rt.hosts.get_mut("local").unwrap();
+        host.display.set_shows("local", "b");
+        host.display.mark_in_flight("local", 9);
+        rt.on_display_event(DisplayEvent::Ready {
+            seq: 9,
+            key: "local".into(),
+            attachment: crate::display::attachment::fake_attachment(9),
+        });
+        assert!(rt.registry.contains_pending("local"));
+        rt.model
+            .state
+            .apply(crate::model::Action::Select(original.clone()));
+        rt.model.state.focus = crate::state::Focus::Terminal;
+        assert!(
+            !selection_attach_in_flight(&rt.hosts, &original),
+            "{bin}: another session's request cannot block this selection"
+        );
+        assert!(
+            display_astray(&rt.model.state, &rt.hosts),
+            "{bin}: an explicit selection still owes a switch in terminal focus"
+        );
+        assert_eq!(
+            input_route(&rt.model.state, &rt.hosts),
+            InputRoute::Hold,
+            "{bin}: input cannot reach the superseded pending client"
+        );
+        assert!(
+            !rt.promote_due_pending(std::time::Instant::now() + std::time::Duration::from_secs(10))
+        );
+        assert_eq!(
+            rt.model.state.displayed, original,
+            "{bin}: obsolete paint cannot confirm another session"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_change_in_what_is_on_view_settles_who_sizes_the_session() {
+async fn a_late_tty_probe_cannot_retarget_a_replaced_display_connection() {
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
-    let commands = rt.mgr.insert_recording("jup");
-    let host = rt.hosts.get_mut("jup").unwrap();
-    host.display_tty = crate::model::DisplayTty(Some("/dev/pts/3".into()));
-    host.display.set_shows("jup", "api");
-    rt.model.state.selection = Selection {
+    rt.registry.insert_fake("jup", 8);
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .record_display_tty(Some("/dev/pts/8".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "new");
+    for tty in [Some("/dev/pts/7".into()), None] {
+        rt.handle_host_event(HostEvent::DisplayTty {
+            host: "jup".into(),
+            id: 7,
+            tty,
+        });
+        assert_eq!(
+            rt.hosts.get("jup").unwrap().display_tty.0.as_deref(),
+            Some("/dev/pts/8")
+        );
+        assert_eq!(
+            rt.hosts.get("jup").unwrap().display.shows("jup"),
+            Some("new")
+        );
+    }
+    rt.handle_host_event(HostEvent::DisplayTty {
         host: "jup".into(),
-        session: "api".into(),
-    };
-    rt.model
-        .state
-        .focus
-        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
-    let proto = crate::link::test_control_proto();
-    rt.fit_displays();
+        id: 8,
+        tty: Some("/dev/pts/9".into()),
+    });
     assert_eq!(
-        sent_lines(&commands),
-        vec![proto.session_clients_line("api")]
-    );
-    rt.fit_displays();
-    assert!(sent_lines(&commands).is_empty(), "nothing changed");
-    rt.model.switcher.open_start();
-    rt.fit_displays();
-    assert_eq!(
-        sent_lines(&commands),
-        vec![proto.session_clients_line("api")],
-        "the start screen's preview is not the user working in the session"
+        rt.hosts.get("jup").unwrap().display_tty.0.as_deref(),
+        Some("/dev/pts/9")
     );
 }

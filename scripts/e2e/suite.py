@@ -471,6 +471,71 @@ def first_launch(c):
     app.whereami(c.path(c.h1, f"{m}1"))
 
 
+def preview_lifetime(c):
+    """Only the visible preview owns a PTY; Enter reuses it at the full view size."""
+    app = c.launch(c.h1, c.h2)
+    app.t.wait_text("machines scanned", 30)
+    app.card(f"{c.h2}/{c.mux}", f"{c.mux}1", 40)
+
+    def preview(host):
+        section, name = f"{host}/{c.mux}", f"{c.mux}1"
+        for _ in range(100):
+            if (driver.find_card(app.t.lines(), section, name) or (0, False))[1]:
+                app.t.wait_text(c.path(host, name), 20)
+                return
+            app.t.send("Down", gap=0.15)
+        raise Failure(f"preview never reached {section}/{name}")
+
+    def clients(host):
+        # Servers have no controlling PTY. The tmux metadata channel also uses a PTY,
+        # but its -CC client carries notifications rather than a display.
+        rows = c.hosts.sh(host, "ps -u dev -o pid=,tty=,args=").splitlines()
+        return {int(pid) for row in rows for pid, tty, args in [row.split(None, 2)]
+                if tty.startswith("pts/") and os.path.basename(args.split()[0]) in MUXES
+                and "-CC" not in args.split()}
+
+    def wait_clients(host, count):
+        end = time.monotonic() + 15
+        while True:
+            found = clients(host)
+            if len(found) == count:
+                return found
+            if time.monotonic() >= end:
+                raise Failure(f"{host} has display clients {found}; expected {count}")
+            time.sleep(0.2)
+
+    preview(c.h1)
+    wait_clients(c.h1, 1)
+    wait_clients(c.h2, 0)
+    preview(c.h2)
+    wait_clients(c.h1, 0)
+    shown = wait_clients(c.h2, 1)
+    pid = next(iter(shown))
+
+    def size():
+        return tuple(map(int, c.hosts.sh(c.h2, f"stty -F /proc/{pid}/fd/0 size").split()))
+
+    preview_size = size()
+    app.t.send("Enter")
+    app.t.wait_gone("machines scanned", 10)
+    app.whereami(c.path(c.h2, f"{c.mux}1"))
+    if wait_clients(c.h2, 1) != shown:
+        raise Failure("executing the preview replaced its display client")
+    full_size = size()
+    if full_size[0] <= preview_size[0]:
+        raise Failure(f"PTY did not grow from preview {preview_size} to view {full_size}")
+    for _ in range(3):
+        time.sleep(0.3)
+        if size() != full_size:
+            raise Failure("PTY dimensions oscillated after executing the preview")
+    app.t.send("C-g", "Tab", gap=0.3)
+    app.t.send("\x1b[1;5A")
+    wait_clients(c.h2, 0)
+    time.sleep(2)
+    wait_clients(c.h1, 0)
+    wait_clients(c.h2, 0)
+
+
 def switch(c):
     # The second session is shown once first, so the return attaches at the size it
     # already has and a mux that repaints only on a resize leaves the view blank.
@@ -786,6 +851,7 @@ CREATE = {"tmux": "tmux new-session -d -s {s} -x 100 -y 30", "screen": "screen -
 GROUPS = {
     "xmux behavior": {
         "first-launch": first_launch,
+        "preview-lifetime": preview_lifetime,
         "switch": switch,
         "new-session": new_session,
         "password-login": password_login,
