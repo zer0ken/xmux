@@ -65,6 +65,7 @@ The xmux behavior group:
 | `first-launch` | the start screen appears, choosing a session attaches it, and typed input runs in that session |
 | `preview-lifetime` | moving previews releases hidden display clients; executing retains the client, grows its PTY, and keeps its dimensions stable; leaving the session releases it |
 | `switch` | after both sessions of a mux were shown, moving to a session of another mux on another host and back to the second session shows each one and runs what is typed there |
+| `rapid-switch` | jumping to another host and back before its display paints, then typing into the returned session |
 | `new-session` | `prefix n` creates a session that becomes selected, attached, and live on the host |
 | `password-login` | logging in to the password-only host lists its sessions, and logging out, confirming the removal of the ssh config entry xmux did not write, removes that entry and leaves one host card; a subsequent login with public-key registration permits a fresh key-only SSH connection |
 | `unreachable` | a stopped host shows as one unreachable host card after a re-scan, and returns as sections once it starts again |

@@ -795,7 +795,11 @@ fn input_route(state: &crate::state::State, hosts: &crate::model::Hosts) -> Inpu
         return InputRoute::Shown(display_key(hosts, &state.displayed));
     };
     let fresh_for_selection = host.display.shows(&key) == Some(selection.session.as_str());
-    if *selection == state.displayed && (fresh_for_selection || host.display.shows(&key).is_none())
+    if *selection == state.displayed
+        && (fresh_for_selection
+            || (host.display.shows(&key).is_none()
+                && !state.attach_pending
+                && state.attach_deadline.is_none()))
     {
         return InputRoute::Selected(key);
     }

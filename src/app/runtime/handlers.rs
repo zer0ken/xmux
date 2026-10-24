@@ -2100,11 +2100,21 @@ impl Runtime {
     /// `now` is injected rather than read here, the same way `apply` takes it, so a
     /// caller can drive the debounce across its whole span.
     pub(super) fn drive_attach_beat(&mut self, now: std::time::Instant) {
-        let in_flight = selection_attach_in_flight(&self.hosts, &self.model.state.selection);
+        let state = &self.model.state;
+        let selection = &state.selection;
+        let in_flight = selection_attach_in_flight(&self.hosts, selection);
+        // A quick round trip can return to the confirmed pixels after fit_displays
+        // released their client. Explicit selection still owes an attach, even though
+        // selection == displayed. A client that dies without a selection stays ended.
+        let reconnect_requested = !selection.is_empty()
+            && (state.attach_pending || state.attach_deadline.is_some())
+            && !in_flight
+            && !self.registry.contains(&display_key(&self.hosts, selection));
+        let display_astray = display_astray(state, &self.hosts) || reconnect_requested;
         let _ = self.dispatch_action(crate::model::Action::Tick {
             now,
             in_flight,
-            display_astray: display_astray(&self.model.state, &self.hosts),
+            display_astray,
         });
     }
 

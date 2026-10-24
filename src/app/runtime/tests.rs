@@ -9776,6 +9776,102 @@ async fn keys_and_ctl_release_departed_display_connections_for_every_mux() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_rapid_ctl_round_trip_reconnects_the_confirmed_session_for_every_mux() {
+    for bin in [
+        "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
+    ] {
+        for focus in [crate::state::Focus::Nav, crate::state::Focus::Terminal] {
+            let mut rt = test_rt(fake_env_with_machines(&[]));
+            let scan = Scan {
+                groups: ["first", "second"]
+                    .into_iter()
+                    .map(|host| Group {
+                        host: host.into(),
+                        err: None,
+                        sessions: vec![Session {
+                            host: host.into(),
+                            name: "main".into(),
+                            mux: bin.into(),
+                            ..Default::default()
+                        }],
+                    })
+                    .collect(),
+            };
+            (rt.model.state, rt.model.switcher) = with_switcher(scan);
+            for host in ["first", "second"] {
+                rt.hosts.insert(crate::model::Host::new(
+                    crate::transport::ssh(host.into(), String::new(), "linux".into()),
+                    crate::mux::for_binary(bin).unwrap(),
+                ));
+            }
+            rt.model
+                .switcher
+                .select_address(&crate::session::Address::new("first", "main"));
+            settled(&mut rt);
+            rt.model.state.focus = focus;
+            let (first, killed) =
+                crate::display::attachment::fake_attachment_with_teardown_flag(99);
+            first.grid.lock().unwrap().feed(b"last confirmed frame");
+            rt.registry.insert("first", first);
+            rt.hosts
+                .get_mut("first")
+                .unwrap()
+                .display
+                .set_shows("first", "main");
+            for target in ["second", "first"] {
+                let crate::link::control::CtlRequest::Op(action) =
+                    crate::link::control::parse_ctl_op(&format!("switch {target} main"))
+                else {
+                    panic!("switch resolves to an action");
+                };
+                rt.dispatch_action(action);
+                sync_selection_from_switcher(&mut rt.model);
+                rt.fit_displays();
+            }
+            assert!(killed.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(rt.model.state.selection, rt.model.state.displayed);
+            let frame = rt
+                .registry
+                .grid("first")
+                .expect("retain the last confirmed frame");
+            rt.forward_input(b"typed while reconnecting".to_vec());
+            assert!(
+                rt.held_input.is_some(),
+                "{bin}: returning to a released display must hold input"
+            );
+            let now = std::time::Instant::now();
+            rt.drive_attach_beat(now);
+            rt.drive_attach_beat(
+                now + std::time::Duration::from_millis(crate::state::ATTACH_DEBOUNCE_MS + 1),
+            );
+            let seq = rt
+                .hosts
+                .get("first")
+                .unwrap()
+                .display
+                .in_flight_seq("first")
+                .expect("returning to a released display must reconnect");
+            let (fresh, input) = crate::display::attachment::fake_attachment_with_input_log(100);
+            rt.on_display_event(DisplayEvent::Ready {
+                seq,
+                key: "first".into(),
+                attachment: fresh,
+            });
+            rt.flush_held_input();
+            // herdr intentionally waits until its first frame before accepting input.
+            let painted = std::time::Instant::now();
+            rt.registry.mark_pending_painted_for_test(100, painted);
+            rt.note_pending_output(100);
+            assert!(rt.promote_due_pending(painted + crate::model::host::PAINT_SETTLE));
+            rt.flush_held_input();
+            assert_eq!(logged(&input), b"typed while reconnecting");
+            assert!(!Arc::ptr_eq(&frame, &rt.registry.grid("first").unwrap()));
+            assert_eq!(rt.registry.get("first").unwrap().id(), 100);
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_cross_host_ready_keeps_the_departed_frame_until_paint_for_every_mux() {
     for bin in [
         "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
