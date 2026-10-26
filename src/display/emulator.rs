@@ -780,11 +780,18 @@ impl<'a> View<'a> {
             && col > 0
             && flags(col - 1).contains(Flags::WIDE_CHAR);
         let orphan = flags(col).contains(Flags::WIDE_CHAR) && !wide;
+        // An orphaned glyph still reads as itself while the cell to its right holds
+        // nothing: a row a width-0 jamo shifted leaves a padding blank there, and
+        // the glyph is what the client wrote (issue #906). A character in the right
+        // half shows instead, keeping the border a client writes beside the glyph
+        // visible (issue #889).
+        let orphan_shows = orphan && col + 1 < usize::from(cols) && line[Column(col + 1)].c == ' ';
         Some(Cell {
             cell: &line[Column(col)],
             wide,
             continuation,
             orphan,
+            orphan_shows,
         })
     }
 
@@ -877,8 +884,12 @@ pub struct Cell<'a> {
     wide: bool,
     /// The right half of a wide character that is there.
     continuation: bool,
-    /// A wide character whose right half is gone, read as blank.
+    /// A wide character whose right half is gone, read as blank while the cell to
+    /// its right holds something.
     orphan: bool,
+    /// An orphaned wide character whose right half holds nothing, read as its
+    /// glyph.
+    orphan_shows: bool,
 }
 
 impl Cell<'_> {
@@ -900,7 +911,8 @@ impl Cell<'_> {
     }
 
     pub fn has_contents(&self) -> bool {
-        !self.orphan && (self.cell.c != ' ' || self.cell.zerowidth().is_some())
+        (!self.orphan || self.orphan_shows)
+            && (self.cell.c != ' ' || self.cell.zerowidth().is_some())
     }
 
     pub fn fgcolor(&self) -> Color {
@@ -939,7 +951,7 @@ impl Cell<'_> {
 
     /// Whether the cell holds a character two columns wide.
     pub fn is_wide(&self) -> bool {
-        self.wide
+        self.wide || self.orphan_shows
     }
 
     /// Whether the cell is the right half of a wide character.
@@ -1189,13 +1201,16 @@ mod tests {
     }
 
     #[test]
-    fn a_half_erased_wide_char_reads_as_blank() {
+    fn a_half_erased_wide_char_keeps_its_glyph_while_its_right_half_is_blank() {
+        // An erase that takes a wide glyph's right half orphans it; the glyph still
+        // reads as itself while the cell to its right holds nothing, which is what
+        // a row shifted by a width-0 jamo leaves there (issue #906).
         for erase in ["\x1b[1;2H\x1b[X", "\x1b[1;2H\x1b[K"] {
             let mut p = Parser::new(1, 6, ());
             p.process(format!("가b{erase}").as_bytes());
             let s = p.screen();
-            assert!(!s.cell(0, 0).unwrap().is_wide(), "{erase:?}");
-            assert!(!s.cell(0, 0).unwrap().has_contents(), "{erase:?}");
+            assert!(s.cell(0, 0).unwrap().is_wide(), "{erase:?}");
+            assert_eq!(s.cell(0, 0).unwrap().contents(), "가", "{erase:?}");
             assert!(!s.cell(0, 1).unwrap().is_wide_continuation(), "{erase:?}");
         }
         let mut p = Parser::new(1, 6, ());
@@ -1204,6 +1219,20 @@ mod tests {
             !p.screen().cell(0, 1).unwrap().is_wide_continuation(),
             "a right half whose wide char is gone is a blank cell"
         );
+    }
+
+    #[test]
+    fn a_character_in_the_right_half_keeps_an_orphaned_wide_char_blank() {
+        // A character written into the right half shows instead of the orphaned
+        // glyph, so the border cell a client writes next to a half-erased glyph
+        // still draws (issue #889).
+        let mut p = Parser::new(1, 6, ());
+        p.process("가 \x1b[1;2H│".as_bytes());
+        assert!(
+            !p.screen().cell(0, 0).unwrap().has_contents(),
+            "an orphan with a character in its right half reads blank"
+        );
+        assert_eq!(p.screen().cell(0, 1).unwrap().contents(), "│");
     }
 
     /// A 3x6 screen of rows `abcdef`, `ghijkl`, and `mnopqr`, with left and right
