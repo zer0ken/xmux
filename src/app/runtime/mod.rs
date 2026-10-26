@@ -240,6 +240,7 @@ impl Runtime {
                     self.registry.remove(&key);
                     if let Some(host) = self.hosts.get_mut(&selection.host) {
                         host.display.clear(&key);
+                        host.clear_display_tty(&key);
                     }
                 }
                 // Both key steps run over the machine's transport, before the logout
