@@ -9,6 +9,7 @@ usage: python3 suite.py [--client linux|windows] [--os debian,alpine]
                         [--mux tmux,...] [--scenario first-launch,...] [--out DIR]
 """
 import argparse
+import glob
 import os
 import random
 import re
@@ -48,6 +49,9 @@ NOT_APPLICABLE = {("in-client-switch", "screen"), ("in-client-switch", "abduco")
                   ("native-keys", "abduco")}
 # Only herdr moves its client to a session on another host from inside it.
 NOT_APPLICABLE |= {("in-client-away", m) for m in MUXES if m != "herdr"}
+# herdr keeps one display client per host, since its clients on one machine share one
+# saved-machine selection.
+NOT_APPLICABLE |= {("kept-clients", "herdr")}
 
 # The in-client keys that detach a mux's own client, and the input that moves the client
 # from <mux>1 to <mux>2 from inside it: tmux's next-session key, zellij's action, which
@@ -552,14 +556,16 @@ def kept_clients(c):
         app.open(f"{host}/{c.mux}", name)
         app.whereami(c.path(host, name))
     time.sleep(1)
+    # A jump previews the cards its digits name on the way, so other cards may hold a
+    # client too; what matters is that the shown sessions keep theirs.
     before = {host: display_clients(c, host) for host in (c.h1, c.h2)}
-    if (len(before[c.h1]), len(before[c.h2])) != (2, 1):
-        raise Failure(f"expected one client per shown session, found {before}")
+    if len(before[c.h1]) < 2 or not before[c.h2]:
+        raise Failure(f"expected a client for each shown session, found {before}")
     for host, name in stops + stops:
         app.open(f"{host}/{c.mux}", name)
         app.whereami(c.path(host, name), timeout=5)
     after = {host: display_clients(c, host) for host in (c.h1, c.h2)}
-    if after != before:
+    if any(not before[host] <= after[host] for host in before):
         raise Failure(f"returning to a shown session replaced its client: {before} -> {after}")
 
 
@@ -938,6 +944,11 @@ def run_cell(scenario, cell, out):
             f.write(f"{result}\n{traceback.format_exc()}\n")
             for app in cell.apps:
                 f.write("\n" + "\n".join(l.rstrip() for l in app.t.lines()) + "\n")
+                # The log rolls daily, so its name carries the date.
+                for path in sorted(glob.glob(os.path.join(app.home, ".xmux", "xmux.log*")))[-1:]:
+                    with open(path, encoding="utf-8", errors="replace") as logf:
+                        f.write(f"\n--- {os.path.basename(path)} (last 300 lines) ---\n")
+                        f.writelines(logf.readlines()[-300:])
         log(f"{result}: {scenario} {cell.mux}/{cell.system}: {str(e).splitlines()[0]}")
     finally:
         for app in cell.apps:

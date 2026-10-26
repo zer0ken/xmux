@@ -24,9 +24,12 @@ session, and uses `herdr --session <name> client` to connect to its server.
 - Every entry without a connection error becomes a session, a stopped entry a stopped
   session, except the stopped reserved `default` entry, which herdr lists on every
   machine.
-- A session's first selection creates its attachment; no in-place switch is claimed.
-  herdr sizes a session by the client that last had input and has no way to leave one
-  out. An attachment whose client the user moved to another session is re-keyed to it.
+- The host keeps one display client: every herdr client of the user on one machine
+  follows one saved-machine selection, so a second client would move the first. A
+  session change ends the other client and attaches afresh; no in-place switch is
+  claimed. herdr sizes a session by the client that last had input and has no way to
+  leave one out. An attachment whose client the user moved to another session is
+  re-keyed to it.
 - The endpoint selection is attributed to xmux's client only while it is the user's one
   herdr client on that machine. A saved machine on the client's own machine is one of
   the host's sessions; any other is a place no card covers.

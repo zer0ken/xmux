@@ -380,6 +380,10 @@ The seamless cross-host switch is bought with these costs, accepted by design:
 - Every session xmux has shown keeps an xmux client attached until xmux ends, so the
   mux counts that client among the session's clients and applies its sizing policy to
   it at the size the session was last shown at.
+- herdr keeps one xmux client per host, not per session: every herdr client of a user on
+  one machine follows one saved-machine selection, so a second client would move the
+  first. A switch between two herdr sessions of one host attaches afresh, and the view
+  keeps the previous frame until the new client paints.
 - Handing the display from one mux client to another can flash a repaint.
 - On Windows, ssh has no ControlMaster multiplexing, so each remote round trip opens a
   fresh connection.
