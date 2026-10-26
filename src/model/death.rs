@@ -1,4 +1,4 @@
-//! Free helpers for death-as-a-push, all over the `DeathSignal`/`DisplayTty`
+//! Free helpers for death-as-a-push, all over the `DeathSignal` and display tty
 //! (defined in `crate::model::plan`, NOT here): the tty-match detach filter, the
 //! psmux `.port` liveness backing `DeathSignal::PathStat`, and the
 //! identity-preserving display-tty capture (the marker our OWN attach shell
@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crate::model::{DeathSignal, DisplayTty};
+use crate::model::DeathSignal;
 
 /// The unique marker our attach shell wraps its self-reported tty in: an OSC-style
 /// `ESC ] … BEL` sequence so it is inert as terminal output and unmistakable in the
@@ -29,9 +29,9 @@ pub(crate) const DISPLAY_TTY_MARKER_MAX: usize = MARKER_OPEN.len() + 128;
 pub fn matches_display_tty(
     signal: &DeathSignal,
     detached_tty: &str,
-    display_tty: &DisplayTty,
+    display_tty: Option<&str>,
 ) -> bool {
-    matches!(signal, DeathSignal::ControlNotice) && display_tty.0.as_deref() == Some(detached_tty)
+    matches!(signal, DeathSignal::ControlNotice) && display_tty == Some(detached_tty)
 }
 
 /// `~/.psmux/<session>.port` — psmux's per-session liveness marker (one server per
@@ -81,29 +81,29 @@ pub fn parse_display_tty_marker(bytes: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DeathSignal, DisplayTty};
+    use crate::model::DeathSignal;
 
     // --- the tty-match filter (the detach side) ---
 
     #[test]
     fn matches_only_for_control_notice_and_only_our_tty() {
-        let ours = DisplayTty(Some("/dev/pts/3".into()));
+        let ours = Some("/dev/pts/3");
         // ControlNotice (tmux): matches ONLY our own tty.
         assert!(matches_display_tty(
             &DeathSignal::ControlNotice,
             "/dev/pts/3",
-            &ours
+            ours
         ));
         assert!(!matches_display_tty(
             &DeathSignal::ControlNotice,
             "/dev/pts/9",
-            &ours
+            ours
         ));
         // An unknown/empty display tty never matches → an unrelated detach is inert.
         assert!(!matches_display_tty(
             &DeathSignal::ControlNotice,
             "/dev/pts/3",
-            &DisplayTty(None)
+            None
         ));
     }
 
@@ -111,19 +111,15 @@ mod tests {
     fn non_control_notice_signals_never_match_a_detach() {
         // psmux death is EOF/PathStat, never a %client-detached — a ControlNotice
         // filter must not fire for a PerSession mux even if the ttys are equal.
-        let ours = DisplayTty(Some("/dev/pts/3".into()));
-        assert!(!matches_display_tty(&DeathSignal::Eof, "/dev/pts/3", &ours));
-        assert!(!matches_display_tty(
-            &DeathSignal::None,
-            "/dev/pts/3",
-            &ours
-        ));
+        let ours = Some("/dev/pts/3");
+        assert!(!matches_display_tty(&DeathSignal::Eof, "/dev/pts/3", ours));
+        assert!(!matches_display_tty(&DeathSignal::None, "/dev/pts/3", ours));
         assert!(!matches_display_tty(
             &DeathSignal::PathStat {
                 dir_is_psmux_registry: true
             },
             "/dev/pts/3",
-            &ours
+            ours
         ));
     }
 

@@ -12,7 +12,7 @@ session, and uses `herdr --session <name> client` to connect to its server.
 ## Module Seams
 
 - The implementation root owns identity, command plans, JSON parsing, and enumeration.
-- The display driver owns reattachment.
+- The display driver owns the per-session clients.
 - The client query owns where xmux's own client is: herdr moves a client between saved
   SSH machines from inside it and records the choice in one endpoint selection per user
   and machine, so the query reads that selection together with the user's herdr
@@ -24,10 +24,9 @@ session, and uses `herdr --session <name> client` to connect to its server.
 - Every entry without a connection error becomes a session, a stopped entry a stopped
   session, except the stopped reserved `default` entry, which herdr lists on every
   machine.
-- A session change xmux makes creates a fresh attachment; no in-place switch is claimed.
+- A session's first selection creates its attachment; no in-place switch is claimed.
   herdr sizes a session by the client that last had input and has no way to leave one
-  out.
-  An attachment whose client the user already moved to the selected session is kept.
+  out. An attachment whose client the user moved to another session is re-keyed to it.
 - The endpoint selection is attributed to xmux's client only while it is the user's one
   herdr client on that machine. A saved machine on the client's own machine is one of
   the host's sessions; any other is a place no card covers.

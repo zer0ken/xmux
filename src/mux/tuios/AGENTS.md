@@ -5,13 +5,14 @@
 `mux/tuios` owns both tuios-facing paths: JSON session enumeration and the display
 driver that attaches a real tuios client for the selected session. One tuios daemon per
 user owns every session, but no command can name and retarget a particular client, so
-every selection is shown with a fresh `tuios attach <name>` client. There is no control
+each session is shown through its own `tuios attach <name>` client, kept while xmux
+runs. There is no control
 stream, so inventory changes arrive only on an asked-for poll.
 
 ## Module Seams
 
 - The implementation root owns identity, command plans, JSON parsing, and enumeration.
-- The display driver owns reattachment.
+- The display driver owns the per-session clients.
 - The per-session server model describes display behavior here, not daemon topology.
 
 ## Invariants
@@ -20,7 +21,7 @@ stream, so inventory changes arrive only on an asked-for poll.
 - Exit 3 means no live daemon. Its stdout still lists the sessions the daemon saved,
   and each saved record becomes a stopped session; a stdout that is no listing lists
   nothing.
-- Every display selection creates a fresh attachment; no in-place switch is claimed.
+- A session's first selection creates its attachment; no in-place switch is claimed.
 - No attach flag keeps a client from sizing a session; `daemon.window_size` alone decides.
 - An attachment ending is not reported as a session ending.
 

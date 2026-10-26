@@ -1,5 +1,5 @@
 //! tmux: one aggregate server (`ServerModel::Shared`), a `-CC` control stream, and
-//! a `switch-client` move of one host attachment.
+//! one display client per session.
 
 use super::*;
 
@@ -98,7 +98,7 @@ pub(super) fn record_prefix(host_key: &str) -> String {
 }
 
 /// tmux: one aggregate server (`ServerModel::Shared`), a `-CC` control stream, and
-/// a `switch-client` move of one host attachment.
+/// one display client per session.
 pub struct Tmux {
     pub bin: String,
 }

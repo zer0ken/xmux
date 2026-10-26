@@ -92,32 +92,32 @@ fn selection_from_empty_target_is_empty() {
 }
 
 #[test]
-fn display_key_is_per_host_for_shared_and_reattach_psmux() {
-    // Shared tmux and reattach psmux both use one PTY per HOST. The key is shaped
-    // by mux behavior, read off the Host - never the transport's remote flag.
-    let mut hosts = crate::model::Hosts::default();
-    hosts.insert(crate::model::Host::new(
-        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
-        crate::mux::for_binary("tmux").unwrap(), // Shared
-    ));
-    hosts.insert(crate::model::Host::new(
-        crate::transport::local(None),            // host id == "local"
-        crate::mux::for_binary("psmux").unwrap(), // PerSession
-    ));
-    let rsel = Selection {
-        host: "jup".into(),
-        session: "api".into(),
-    };
-    assert_eq!(display_key(&hosts, &rsel), "jup", "shared → per-host key");
-    let lsel = Selection {
-        host: "local".into(),
-        session: "work".into(),
-    };
-    assert_eq!(
-        display_key(&hosts, &lsel),
-        "local",
-        "reattach per-session muxes use a per-host key"
-    );
+fn display_key_is_per_session_for_every_mux() {
+    // Every mux gets one display connection per session, so the key names the host and
+    // the session whatever the mux or the transport.
+    for bin in [
+        "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
+    ] {
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(crate::model::Host::new(
+            crate::transport::ssh("jup".into(), String::new(), "linux".into()),
+            crate::mux::for_binary(bin).unwrap(),
+        ));
+        hosts.insert(crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary(bin).unwrap(),
+        ));
+        for (host, session) in [("jup", "api"), ("local", "work")] {
+            let sel = Selection {
+                host: host.into(),
+                session: session.into(),
+            };
+            let key = display_key(&hosts, &sel);
+            assert_eq!(key, format!("{host}/{session}"), "{bin}");
+            assert_eq!(crate::driver::host_of_key(&key), host, "{bin}");
+            assert_eq!(crate::driver::session_of_key(&key), session, "{bin}");
+        }
+    }
 }
 
 #[test]
@@ -1317,7 +1317,7 @@ fn draw_observer_reports_change_only_on_new_fingerprint() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
+async fn sessions_of_one_host_attach_under_their_own_keys() {
     let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
@@ -1341,7 +1341,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
         session: "b".into(),
     };
 
-    // First attach (session a): requests off-loop, latches display.current[jup]=a, marks in-flight.
+    // First attach (session a): requests off-loop under a's key and marks it in flight.
     assert!(select_attach(
         &sel_a,
         &mut crate::driver::DriverCtx {
@@ -1355,14 +1355,18 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             viewport: (31, 25),
         }
     ));
-    assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"));
+    assert_eq!(hosts.get("jup").unwrap().display.shows("jup/a"), Some("a"));
     assert!(
-        hosts.get("jup").unwrap().display.in_flight_contains("jup"),
+        hosts
+            .get("jup")
+            .unwrap()
+            .display
+            .in_flight_contains("jup/a"),
         "first attach is in flight"
     );
 
-    // Select session b of the SAME host before a's Ready arrives: must NOT overwrite the
-    // shown session (else the switch-client to b after a lands would never fire).
+    // Select session b of the SAME host before a's Ready arrives: b gets its own
+    // connection, and a's attach stays in flight.
     assert!(select_attach(
         &sel_b,
         &mut crate::driver::DriverCtx {
@@ -1376,15 +1380,17 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             viewport: (31, 25),
         }
     ));
-    assert_eq!(
-        hosts.get("jup").unwrap().display.shows("jup"),
-        Some("a"),
-        "an in-flight attach must not latch the shown session to the new target"
+    let h = hosts.get("jup").unwrap();
+    assert_eq!(h.display.shows("jup/a"), Some("a"));
+    assert_eq!(h.display.shows("jup/b"), Some("b"));
+    assert!(
+        h.display.in_flight_contains("jup/a") && h.display.in_flight_contains("jup/b"),
+        "each session's attach is in flight under its own key"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn psmux_selection_replaces_the_single_display_attachment() {
+async fn psmux_selection_opens_its_own_connection_and_keeps_the_first() {
     let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
@@ -1448,9 +1454,12 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
     } else {
         panic!("expected ready");
     }
-    assert!(registry.contains("local"), "psmux display is keyed by host");
+    assert!(
+        registry.contains("local/test2"),
+        "psmux display is keyed by session"
+    );
     assert_eq!(
-        hosts.get("local").unwrap().display.shows("local"),
+        hosts.get("local").unwrap().display.shows("local/test2"),
         Some("test2")
     );
 
@@ -1469,11 +1478,11 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
     ));
 
     let h = hosts.get("local").unwrap();
-    assert_eq!(h.display.shows("local"), Some("test"));
-    assert!(h.display.in_flight_contains("local"));
+    assert_eq!(h.display.shows("local/test"), Some("test"));
+    assert!(h.display.in_flight_contains("local/test"));
     assert!(
-        registry.contains("local"),
-        "old psmux display attach is HELD on screen until the reattach paints"
+        registry.contains("local/test2"),
+        "the first session keeps its connection"
     );
 }
 
@@ -1489,7 +1498,7 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
         .get_mut("local")
         .unwrap()
         .display
-        .set_shows("local", "target");
+        .set_shows("local/target", "target");
 
     let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
     let worker = crate::display::DisplayWorker::with_spawner(
@@ -1499,7 +1508,11 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
         }),
     );
     let mut registry = AttachRegistry::new();
-    registry.insert("local", crate::display::attachment::fake_attachment(99));
+    // The only live connection is another session's: the bookkeeping alone names target.
+    registry.insert(
+        "local/other",
+        crate::display::attachment::fake_attachment(99),
+    );
     let mut attach_seq = 0u64;
     let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
@@ -1523,11 +1536,11 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
     ));
 
     let h = hosts.get("local").unwrap();
-    assert!(h.display.in_flight_contains("local"));
     assert!(
-        registry.contains("local"),
-        "psmux select_attach requests a reattach while holding the prior grid until paint"
+        h.display.in_flight_contains("local/target"),
+        "bookkeeping without a held connection still attaches"
     );
+    assert!(registry.contains("local/other"));
 }
 
 #[test]
@@ -1556,16 +1569,15 @@ fn should_attach_fires_on_change_and_never_storms_in_flight() {
     assert!(gate(&b, &a, false, false));
     // An attach for the key is already in flight → never re-fire (no storm).
     assert!(!gate(&b, &a, true, false));
-    // Everything xmux itself recorded agrees - the selection is what it last put on
-    // screen - and the client is on another session anyway. Only the astray leg can see
-    // it, and this is the split it closes.
+    // The selection is what xmux last put on screen, yet it was explicitly selected and
+    // its client is gone. Only the astray leg can see it, and it owes an attach.
     assert!(gate(&a, &a, false, true));
     // Even then, not on top of an attach already carrying the display there.
     assert!(!gate(&a, &a, true, true));
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn psmux_select_attach_supersedes_in_flight_attach() {
+async fn psmux_select_attach_is_not_blocked_by_another_sessions_attach() {
     let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
@@ -1576,7 +1588,7 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
         .get_mut("local")
         .unwrap()
         .display
-        .mark_in_flight("local", 7);
+        .mark_in_flight("local/other", 7);
 
     let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
     let worker = crate::display::DisplayWorker::with_spawner(
@@ -1609,7 +1621,12 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
     ));
 
     let h = hosts.get("local").unwrap();
-    assert_eq!(h.display.in_flight_seq("local"), Some(8));
+    assert_eq!(h.display.in_flight_seq("local/target"), Some(8));
+    assert_eq!(
+        h.display.in_flight_seq("local/other"),
+        Some(7),
+        "another session's attach stays in flight"
+    );
 }
 
 /// A headless `Runtime` for exercising the `&mut self` arm/effect methods: a fake
@@ -2508,6 +2525,8 @@ fn test_rt(env: Env) -> Runtime {
         display_sync_held: false,
         rescan_pending: false,
         display_probe: DisplayProbe::default(),
+        client_moved: None,
+        display_repairs: HashMap::new(),
         preview_opened: HashSet::new(),
         held_input: None,
         passthrough: Vec::new(),
@@ -2550,7 +2569,7 @@ fn execute_commands_runs_quit_and_attach_in_one_batch() {
 #[test]
 fn host_event_and_command_run_through_the_same_executor() {
     let mut rt = test_rt(fake_env_with_machines(&["local"]));
-    rt.registry.insert_fake("local", 7);
+    rt.registry.insert_fake("local/work", 7);
     let mut effects = update(
         &mut rt.model,
         Msg::HostEvent {
@@ -2571,7 +2590,7 @@ fn host_event_and_command_run_through_the_same_executor() {
 
     assert_eq!(outcome, (true, false, false));
     assert_eq!(
-        rt.hosts.get("local").unwrap().display_tty.0.as_deref(),
+        rt.hosts.get("local").unwrap().display_tty("local/work"),
         Some("/dev/pts/41")
     );
 }
@@ -2673,16 +2692,16 @@ fn detach_test_hosts(alias: &str) -> crate::model::Hosts {
 async fn invalidated_ssh_auth_reaps_display_and_pending_attach() {
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
-    rt.registry.insert_fake("jup", 7);
+    rt.registry.insert_fake("jup/api", 7);
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
-        .mark_in_flight("jup", 9);
+        .mark_in_flight("jup/db", 9);
     rt.execute_host_effect_for_test(crate::model::EventEffect::DisconnectMachine {
         machine: "jup".into(),
     });
-    assert!(!rt.registry.contains("jup"));
+    assert!(!rt.registry.contains("jup/api"));
     assert!(rt.hosts.get("jup").unwrap().display.in_flight_is_empty());
 }
 
@@ -2694,7 +2713,7 @@ async fn display_auth_tracks_the_live_host_connection_across_session_switches() 
         host: "jup".into(),
         session: "other".into(),
     };
-    rt.registry.insert_fake("jup", 7);
+    rt.registry.insert_fake("jup/other", 7);
     let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     rt.on_pty_event(
         PtyEvent::AuthObserved {
@@ -2711,13 +2730,13 @@ async fn display_auth_tracks_the_live_host_connection_across_session_switches() 
         .get_mut("jup")
         .unwrap()
         .display
-        .set_shows("jup", "other");
+        .set_shows("jup/other", "other");
     assert_eq!(
         rt.model.state.display_auth_methods.get("jup"),
         Some(&crate::model::AuthMethod::PublicKey)
     );
     rt.registry
-        .park_pending("jup", crate::display::attachment::fake_attachment(8));
+        .park_pending("jup/other", crate::display::attachment::fake_attachment(8));
     rt.on_pty_event(
         PtyEvent::AuthObserved {
             id: 8,
@@ -2729,15 +2748,15 @@ async fn display_auth_tracks_the_live_host_connection_across_session_switches() 
         rt.model.state.display_auth_methods.get("jup"),
         Some(&crate::model::AuthMethod::PublicKey)
     );
-    rt.registry.remove_pending("jup");
+    rt.registry.remove_pending("jup/other");
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
-        .mark_in_flight("jup", 9);
+        .mark_in_flight("jup/other", 9);
     rt.on_display_event(DisplayEvent::Ready {
         seq: 9,
-        key: "jup".into(),
+        key: "jup/other".into(),
         attachment: crate::display::attachment::fake_attachment(9),
     });
     assert!(rt.promote_due_pending(std::time::Instant::now() + std::time::Duration::from_secs(10)));
@@ -2767,17 +2786,17 @@ async fn display_auth_tracks_the_live_host_connection_across_session_switches() 
 async fn display_tty_event_records_on_the_owning_host() {
     let mut hosts = detach_test_hosts("jup");
     let mut registry = AttachRegistry::new();
-    registry.insert_fake("jup", 7); // Shared key == host id
+    registry.insert_fake("jup/api", 7);
     record_display_tty(&mut hosts, &registry, 7, "/dev/pts/3".into());
     assert_eq!(
-        hosts.get("jup").unwrap().display_tty.0.as_deref(),
+        hosts.get("jup").unwrap().display_tty("jup/api"),
         Some("/dev/pts/3"),
-        "the captured tty lands on the host that owns the attach id"
+        "the captured tty lands on the attachment that owns the attach id"
     );
     // An id with no attachment is ignored (no panic, no write).
     record_display_tty(&mut hosts, &registry, 999, "/dev/pts/9".into());
     assert_eq!(
-        hosts.get("jup").unwrap().display_tty.0.as_deref(),
+        hosts.get("jup").unwrap().display_tty("jup/api"),
         Some("/dev/pts/3")
     );
 }
@@ -2791,10 +2810,12 @@ async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
     rt.model.state = state;
     rt.model.switcher = switcher;
 
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
-    rt.registry.insert_fake("jup", 7); // live attach under key = host id (Shared)
-    assert!(rt.registry.contains("jup"));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .record_display_tty("jup/api", Some("/dev/pts/3".into()));
+    rt.registry.insert_fake("jup/api", 7);
+    assert!(rt.registry.contains("jup/api"));
 
     // An UNRELATED client detaches → inert.
     let rearm = rt.handle_host_event(HostEvent::ClientDetached {
@@ -2803,11 +2824,11 @@ async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
     });
     assert!(!rearm, "an unrelated client's detach must not rearm");
     assert!(
-        rt.registry.contains("jup"),
+        rt.registry.contains("jup/api"),
         "an unrelated client's detach must not reap our attach"
     );
     assert_eq!(
-        rt.hosts.get("jup").unwrap().display_tty.0.as_deref(),
+        rt.hosts.get("jup").unwrap().display_tty("jup/api"),
         Some("/dev/pts/3"),
         "an unrelated detach must not clear our captured tty"
     );
@@ -2819,21 +2840,25 @@ async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
     });
     assert!(rearm, "our own client's detach must rearm recovery");
     assert!(
-        !rt.registry.contains("jup"),
+        !rt.registry.contains("jup/api"),
         "our display attach is reaped so it cannot persist dead"
     );
     assert!(
-        rt.hosts.get("jup").unwrap().display_tty.0.is_none(),
-        "the dead client's tty is forgotten so no later switch-client targets it"
+        rt.hosts
+            .get("jup")
+            .unwrap()
+            .display_tty("jup/api")
+            .is_none(),
+        "the dead client's tty is forgotten"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn client_session_changed_matching_our_tty_syncs_display_belief() {
+async fn client_session_changed_matching_our_tty_rekeys_the_attachment() {
     // The mux moved a client to another session (e.g. the user pressed prefix+s in the
-    // terminal view). When that client is OUR display attach (its tty == Host.display_tty),
-    // sync the display belief so the next reconcile's show() guard dispatches NO switch-client;
-    // a third party's own client can never match, so it is inert.
+    // terminal view). When that client is OUR display attach (its tty is recorded for one
+    // of our keys), the attachment now serves that session and goes by its key; a third
+    // party's own client can never match, so it is inert.
     let mut state = crate::state::State::from_hosts(vec!["jup".into()]);
     let switcher = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut rt = test_rt(fake_env_with_machines(&[]));
@@ -2841,38 +2866,50 @@ async fn client_session_changed_matching_our_tty_syncs_display_belief() {
     rt.model.state = state;
     rt.model.switcher = switcher;
 
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
-    // The one per-host PTY (Shared key == host id) is currently believed on session "api".
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .record_display_tty("jup/api", Some("/dev/pts/3".into()));
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
-        .set_shows("jup", "api");
+        .set_shows("jup/api", "api");
+    rt.registry.insert_fake("jup/api", 7);
 
-    // An UNRELATED client switched sessions → inert: our display belief is untouched.
+    // An UNRELATED client switched sessions → inert: our attachment is untouched.
     rt.handle_host_event(HostEvent::ClientSessionChanged {
         host: "jup".into(),
         client: "/dev/pts/9".into(),
         session: "db".into(),
     });
     assert_eq!(
-        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        rt.hosts.get("jup").unwrap().display.shows("jup/api"),
         Some("api"),
-        "an unrelated client's switch must not move our display belief"
+        "an unrelated client's switch must not move our attachment"
     );
+    assert!(rt.registry.contains("jup/api"));
 
-    // OUR display client (the captured tty) switched to "db" via the mux → sync the belief.
+    // OUR display client (the captured tty) switched to "db" via the mux → re-keyed.
     rt.handle_host_event(HostEvent::ClientSessionChanged {
         host: "jup".into(),
         client: "/dev/pts/3".into(),
         session: "db".into(),
     });
+    let h = rt.hosts.get("jup").unwrap();
+    assert_eq!(h.display.shows("jup/db"), Some("db"));
+    assert_eq!(h.display.shows("jup/api"), None);
     assert_eq!(
-        rt.hosts.get("jup").unwrap().display.shows("jup"),
-        Some("db"),
-        "our own client's mux-driven switch syncs the display belief to the new session"
+        h.display_tty("jup/db"),
+        Some("/dev/pts/3"),
+        "the client keeps its tty under its new key"
     );
+    assert_eq!(
+        rt.registry.get("jup/db").map(|a| a.id()),
+        Some(7),
+        "the same client now goes by the session it serves"
+    );
+    assert!(!rt.registry.contains("jup/api"));
 }
 
 /// The command lines a recording control client received, in order, leaving out the
@@ -2898,12 +2935,12 @@ async fn client_and_focus_changes_never_send_remote_size_commands() {
     rt.hosts
         .get_mut("jup")
         .unwrap()
-        .record_display_tty(Some("/dev/pts/3".into()));
+        .record_display_tty("jup/api", Some("/dev/pts/3".into()));
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
-        .set_shows("jup", "api");
+        .set_shows("jup/api", "api");
     rt.model.state.selection = Selection {
         host: "jup".into(),
         session: "api".into(),
@@ -2930,7 +2967,7 @@ async fn client_and_focus_changes_never_send_remote_size_commands() {
             "client reports only refresh inventory"
         );
     }
-    rt.registry.insert_fake("jup", 1);
+    rt.registry.insert_fake("jup/api", 1);
     for start in [true, false] {
         if start {
             rt.model.switcher.open_start();
@@ -2956,15 +2993,15 @@ async fn a_client_session_change_before_the_tty_is_known_lands_once_it_is_captur
     // A remote attach records its tty on the machine before it execs the mux client, so the
     // capture made as the attach starts can find nothing, and the mux reports the client
     // before xmux knows it is its own. The report is kept until the tty is captured; only
-    // xmux's own client's report then moves the display belief.
+    // xmux's own client's report then re-keys its attachment.
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
-    rt.registry.insert_fake("jup", 7);
+    rt.registry.insert_fake("jup/api", 7);
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
-        .set_shows("jup", "api");
+        .set_shows("jup/api", "api");
 
     rt.handle_host_event(HostEvent::ClientSessionChanged {
         host: "jup".into(),
@@ -2977,7 +3014,7 @@ async fn a_client_session_change_before_the_tty_is_known_lands_once_it_is_captur
         session: "web".into(),
     });
     assert_eq!(
-        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        rt.hosts.get("jup").unwrap().display.shows("jup/api"),
         Some("api"),
         "a report about a client not yet known to be ours moves nothing"
     );
@@ -2988,9 +3025,14 @@ async fn a_client_session_change_before_the_tty_is_known_lands_once_it_is_captur
         tty: Some("/dev/pts/3".into()),
     });
     assert_eq!(
-        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        rt.hosts.get("jup").unwrap().display.shows("jup/db"),
         Some("db"),
         "once the tty is captured, our own client's earlier move is recorded"
+    );
+    assert_eq!(
+        rt.registry.get("jup/db").map(|a| a.id()),
+        Some(7),
+        "the client goes by the session the mux moved it to"
     );
 }
 
@@ -3049,14 +3091,16 @@ async fn a_mux_side_switch_in_terminal_focus_moves_the_nav_to_that_session() {
     switcher.select_address(&crate::session::Address::new("jup", "api")); // deterministic start (ignore any last_session)
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .record_display_tty("jup/api", Some("/dev/pts/3".into()));
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
-        .set_shows("jup", "api");
-    rt.registry.insert_fake("jup", 7);
+        .set_shows("jup/api", "api");
+    rt.registry.insert_fake("jup/api", 7);
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.model
@@ -3083,8 +3127,8 @@ async fn a_mux_side_switch_in_terminal_focus_moves_the_nav_to_that_session() {
         "the terminal-focused nav follows the mux switch to db's card"
     );
     assert_eq!(
-        rt.hosts.get("jup").unwrap().display.shows("jup"),
-        Some("db"),
+        rt.registry.get("jup/db").map(|a| a.id()),
+        Some(7),
         "the two regions name one session: the client is where the nav now is"
     );
 }
@@ -3117,14 +3161,16 @@ async fn a_switch_onto_a_session_with_no_card_yet_moves_the_nav_when_its_card_ap
     switcher.select_address(&crate::session::Address::new("jup", "api"));
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .record_display_tty("jup/api", Some("/dev/pts/3".into()));
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
-        .set_shows("jup", "api");
-    rt.registry.insert_fake("jup", 7);
+        .set_shows("jup/api", "api");
+    rt.registry.insert_fake("jup/api", 7);
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.model
@@ -3169,14 +3215,16 @@ async fn a_card_appearing_for_a_session_the_client_has_left_moves_nothing() {
     switcher.select_address(&crate::session::Address::new("jup", "api"));
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
-    rt.hosts.get_mut("jup").unwrap().display_tty =
-        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .record_display_tty("jup/api", Some("/dev/pts/3".into()));
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
-        .set_shows("jup", "api");
-    rt.registry.insert_fake("jup", 7);
+        .set_shows("jup/api", "api");
+    rt.registry.insert_fake("jup/api", 7);
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.model
@@ -3239,13 +3287,15 @@ fn psmux_scan() -> crate::ui::switcher::Scan {
     }
 }
 
-/// Puts a live client on the display key that answers `session` for the variable psmux
-/// carries its session in. Replacing the entry with one answering another session is what
-/// a psmux client does to itself when it moves: the same client, a rewritten environment,
-/// and no server anywhere the wiser.
+/// Puts a live client on the displayed session's key that answers `session` for the
+/// variable psmux carries its session in. Replacing the entry with one answering another
+/// session is what a psmux client does to itself when it moves: the same client, still
+/// under the key it was attached for, a rewritten environment, and no server anywhere the
+/// wiser.
 fn the_client_reports(rt: &mut Runtime, id: u64, session: &str) {
+    let key = display_key(&rt.hosts, &rt.model.state.displayed);
     rt.registry.insert(
-        "local",
+        &key,
         crate::display::attachment::fake_attachment_answering_env(
             id,
             "PSMUX_SESSION_NAME",
@@ -3274,25 +3324,26 @@ fn a_settled_psmux_runtime() -> Runtime {
         .get_mut("local")
         .unwrap()
         .display
-        .set_shows("local", "a");
-    the_client_reports(&mut rt, OWN_CLIENT, "a");
+        .set_shows("local/a", "a");
     settled(&mut rt);
+    the_client_reports(&mut rt, OWN_CLIENT, "a");
     rt
 }
 
-/// Completes the reattach a pass requested: the worker's Ready reply installs the fresh
+/// Completes the attach a pass requested: the worker's Ready reply installs the fresh
 /// client, which answers for the session it was attached to.
 fn the_reattach_lands(rt: &mut Runtime, session: &str) {
+    let key = crate::driver::session_display_key("local", session);
     let seq = rt
         .hosts
         .get("local")
         .unwrap()
         .display
-        .in_flight_seq("local")
-        .expect("a reattach is in flight");
+        .in_flight_seq(&key)
+        .expect("an attach is in flight");
     rt.on_display_event(DisplayEvent::Ready {
         seq,
-        key: "local".into(),
+        key,
         attachment: crate::display::attachment::fake_attachment_answering_env(
             OWN_CLIENT + 1,
             "PSMUX_SESSION_NAME",
@@ -3316,7 +3367,7 @@ async fn a_settled_display_attaches_nothing_however_long_it_runs() {
         "nothing is attached while the two already name one session"
     );
     assert_eq!(
-        rt.registry.get("local").map(|a| a.id()),
+        rt.registry.get("local/a").map(|a| a.id()),
         Some(OWN_CLIENT),
         "the client on screen is the one that was there"
     );
@@ -3367,9 +3418,9 @@ fn a_settled_zellij_runtime() -> Runtime {
         .get_mut("local")
         .unwrap()
         .display
-        .set_shows("local", "a");
+        .set_shows("local/a", "a");
     rt.registry.insert(
-        "local",
+        "local/a",
         crate::display::attachment::fake_attachment(OWN_CLIENT),
     );
     settled(&mut rt);
@@ -3410,9 +3461,9 @@ async fn a_queried_zellij_switch_in_terminal_focus_moves_the_nav() {
 
     assert_eq!(rt.model.state.selection.session, "b");
     assert_eq!(
-        rt.registry.get("local").map(|a| a.id()),
+        rt.registry.get("local/b").map(|a| a.id()),
         Some(OWN_CLIENT),
-        "the moved client is kept, not reattached"
+        "the moved client is kept under b's key, not reattached"
     );
     assert!(rt.hosts.get("local").unwrap().display.in_flight_is_empty());
 }
@@ -3425,14 +3476,14 @@ async fn a_query_answer_about_another_client_or_mid_reattach_is_not_recorded() {
     let mut rt = a_settled_zellij_runtime();
     the_query_answers(&mut rt, OWN_CLIENT + 7, Some("b"));
     assert_eq!(
-        rt.hosts.get("local").unwrap().display.shows("local"),
+        rt.hosts.get("local").unwrap().display.shows("local/a"),
         Some("a"),
         "an answer about a client that is not the live one is dropped"
     );
 
     the_query_answers(&mut rt, OWN_CLIENT, None);
     assert_eq!(
-        rt.hosts.get("local").unwrap().display.shows("local"),
+        rt.hosts.get("local").unwrap().display.shows("local/a"),
         Some("a"),
         "no answer is no signal"
     );
@@ -3441,10 +3492,10 @@ async fn a_query_answer_about_another_client_or_mid_reattach_is_not_recorded() {
         .get_mut("local")
         .unwrap()
         .display
-        .mark_in_flight("local", 9);
+        .mark_in_flight("local/a", 9);
     the_query_answers(&mut rt, OWN_CLIENT, Some("b"));
     assert_eq!(
-        rt.hosts.get("local").unwrap().display.shows("local"),
+        rt.hosts.get("local").unwrap().display.shows("local/a"),
         Some("a"),
         "an answer arriving mid-reattach is dropped"
     );
@@ -3489,9 +3540,9 @@ fn a_settled_herdr_runtime() -> Runtime {
         .get_mut("local")
         .unwrap()
         .display
-        .set_shows("local", "a");
+        .set_shows("local/a", "a");
     rt.registry.insert(
-        "local",
+        "local/a",
         crate::display::attachment::fake_attachment(OWN_CLIENT),
     );
     settled(&mut rt);
@@ -3515,7 +3566,7 @@ async fn the_cursor_takes_the_session_clients_shape_only_while_its_view_has_focu
     // An editor in the session asks for a bar cursor. The terminal shows that shape
     // only while the cursor it shows is the session's; the nav keeps the default.
     let mut rt = a_settled_herdr_runtime();
-    let grid = rt.registry.grid("local").expect("the displayed grid");
+    let grid = rt.registry.grid("local/a").expect("the displayed grid");
     grid.lock().unwrap().feed(b"\x1b[6 q");
     nav_text(&mut rt);
     assert_eq!(rt.cursor_shape, 0, "nav focus keeps the terminal's default");
@@ -3556,9 +3607,9 @@ async fn a_herdr_move_to_a_session_here_in_terminal_focus_moves_the_nav_and_keep
 
     assert_eq!(rt.model.state.selection.session, "b");
     assert_eq!(
-        rt.registry.get("local").map(|a| a.id()),
+        rt.registry.get("local/b").map(|a| a.id()),
         Some(OWN_CLIENT),
-        "the moved client is kept, not reattached"
+        "the moved client is kept under b's key, not reattached"
     );
     assert!(rt.hosts.get("local").unwrap().display.in_flight_is_empty());
 }
@@ -3585,7 +3636,7 @@ async fn a_herdr_move_elsewhere_names_the_place_on_the_card_and_moves_nothing() 
         }
 
         assert_eq!(rt.model.state.selection.session, "a");
-        assert_eq!(rt.registry.get("local").map(|a| a.id()), Some(OWN_CLIENT));
+        assert_eq!(rt.registry.get("local/a").map(|a| a.id()), Some(OWN_CLIENT));
         assert!(rt.hosts.get("local").unwrap().display.in_flight_is_empty());
         let out = nav_text(&mut rt);
         assert!(out.contains("a \u{2192} web/agents"), "{out}");
@@ -3621,7 +3672,7 @@ async fn a_herdr_client_that_starts_on_another_session_is_named_not_carried_back
     }
     assert_eq!(rt.model.state.selection.session, "a");
     assert_eq!(
-        rt.registry.get("local").map(|a| a.id()),
+        rt.registry.get("local/a").map(|a| a.id()),
         Some(OWN_CLIENT),
         "no reattach chases the start"
     );
@@ -3643,7 +3694,7 @@ async fn a_herdr_client_that_starts_on_another_session_is_named_not_carried_back
     );
     one_pass(&mut rt, now);
     assert_eq!(rt.model.state.selection.session, "b");
-    assert_eq!(rt.registry.get("local").map(|a| a.id()), Some(OWN_CLIENT));
+    assert_eq!(rt.registry.get("local/b").map(|a| a.id()), Some(OWN_CLIENT));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -3655,7 +3706,7 @@ async fn the_away_note_goes_with_the_attachment_it_is_about() {
         crate::mux::ClientAt::Away("web/agents".into()),
     );
     assert!(nav_text(&mut rt).contains("web/agents"));
-    rt.registry.remove("local");
+    rt.registry.remove("local/a");
     assert!(rt.drop_stale_display_away());
     assert!(!nav_text(&mut rt).contains("web/agents"));
 }
@@ -3674,7 +3725,7 @@ async fn one_display_query_runs_at_a_time_on_its_cadence() {
         .get_mut("local")
         .unwrap()
         .display
-        .set_shows("local", "a");
+        .set_shows("local/a", "a");
     rt.hosts = hosts;
     let t0 = std::time::Instant::now();
 
@@ -3703,19 +3754,20 @@ fn the_client_detaches(rt: &mut Runtime, id: u64) {
     rt.on_pty_event(PtyEvent::Exited { id }, &mut rx);
 }
 
-/// Completes the reattach the beat requested for the local host: the worker's Ready
-/// installs the fresh client, which answers for the session it was attached to.
+/// Completes the attach the beat requested for `session` on the local host: the worker's
+/// Ready installs the fresh client, which answers for the session it was attached to.
 fn the_zellij_reattach_lands(rt: &mut Runtime, session: &str) {
+    let key = crate::driver::session_display_key("local", session);
     let seq = rt
         .hosts
         .get("local")
         .unwrap()
         .display
-        .in_flight_seq("local")
-        .expect("a reattach is in flight");
+        .in_flight_seq(&key)
+        .expect("an attach is in flight");
     rt.on_display_event(DisplayEvent::Ready {
         seq,
-        key: "local".into(),
+        key,
         attachment: crate::display::attachment::fake_attachment_answering_env(
             OWN_CLIENT + 1,
             "ZELLIJ_SESSION_NAME",
@@ -3748,11 +3800,11 @@ async fn a_detached_zellij_display_serves_its_last_frame_and_reattaches_nothing(
 
         the_client_detaches(&mut rt, OWN_CLIENT);
         assert!(
-            !rt.registry.contains("local"),
+            !rt.registry.contains("local/a"),
             "the dead attachment leaves the live map"
         );
         assert!(
-            rt.registry.grid("local").is_some(),
+            rt.registry.grid("local/a").is_some(),
             "its last frame still serves the view - the pane does not go blank"
         );
         assert!(
@@ -3770,7 +3822,7 @@ async fn a_detached_zellij_display_serves_its_last_frame_and_reattaches_nothing(
             "ten beats on, nothing has reconnected (terminal_focus={terminal_focus})"
         );
         assert!(
-            rt.registry.grid("local").is_some(),
+            rt.registry.grid("local/a").is_some(),
             "and the last frame is still what the view holds"
         );
     }
@@ -3802,7 +3854,7 @@ async fn selecting_the_card_again_is_what_reattaches_a_dead_display() {
             .get("local")
             .unwrap()
             .display
-            .in_flight_contains("local"),
+            .in_flight_contains("local/a"),
         "the user's own selection attaches the session again"
     );
     the_zellij_reattach_lands(&mut rt, "a");
@@ -3835,12 +3887,9 @@ fn passes_attach_anything(rt: &mut Runtime, from: std::time::Instant) -> bool {
     false
 }
 
+/// Whether an attach is in flight for any session of the local host.
 fn local_in_flight(rt: &Runtime) -> bool {
-    rt.hosts
-        .get("local")
-        .unwrap()
-        .display
-        .in_flight_contains("local")
+    !rt.hosts.get("local").unwrap().display.in_flight_is_empty()
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -3871,7 +3920,7 @@ async fn a_zellij_client_dropped_right_after_it_attaches_is_reattached_once() {
         "a second early end reattaches nothing"
     );
     assert!(
-        rt.registry.grid("local").is_some(),
+        rt.registry.grid("local/b").is_some(),
         "the pane keeps the last frame it drew"
     );
 }
@@ -3917,11 +3966,11 @@ async fn a_failed_attach_waits_for_the_user_to_ask_again() {
                 .get("local")
                 .unwrap()
                 .display
-                .in_flight_seq("local")
+                .in_flight_seq("local/b")
                 .expect("an attach is in flight");
             rt.on_display_event(DisplayEvent::Failed {
                 seq,
-                key: "local".into(),
+                key: "local/b".into(),
                 message: "spawn failed".into(),
             });
         };
@@ -4049,10 +4098,8 @@ async fn a_stale_herdr_card_reports_attach_failure_from_keys_and_ctl_without_spa
 #[tokio::test(flavor = "current_thread")]
 async fn a_mux_side_switch_in_terminal_focus_keeps_the_client_the_user_moved() {
     // The other half of the same rule, on the mux that has to be READ for a switch. The
-    // nav follows the client to `b`, which makes the selection differ from what is
-    // confirmed on screen, so an attach fires for `b` - and a per-session mux reaches a
-    // session by reattaching, which would kill the very client the user just moved. It is
-    // held instead, on the client's own report that it is already there.
+    // client's own report re-keys it to `b` and the nav follows it there; `b`'s
+    // connection is then the one xmux holds, so nothing is spawned for it.
     let mut rt = a_settled_psmux_runtime();
     rt.model
         .state
@@ -4075,18 +4122,18 @@ async fn a_mux_side_switch_in_terminal_focus_keeps_the_client_the_user_moved() {
         "nothing is spawned: the client is already on the selected session"
     );
     assert_eq!(
-        rt.registry.get("local").map(|a| a.id()),
+        rt.registry.get("local/b").map(|a| a.id()),
         Some(OWN_CLIENT),
-        "the client the user moved stays on screen"
+        "the client the user moved stays on screen under b's key"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_mux_side_switch_in_nav_focus_ends_with_the_client_back_on_the_selection() {
-    // In nav focus the selection is the user's own, so it is the CLIENT that yields: psmux
-    // moved xmux's own client inside the client process, nothing was pushed anywhere, and
-    // the beat that reads the client is what makes the difference visible. The nav stays
-    // where the user left it and the client is carried back to it.
+async fn a_mux_side_switch_in_nav_focus_attaches_the_selection_again() {
+    // In nav focus the selection is the user's own and stands: psmux moved xmux's own
+    // client inside the client process, nothing was pushed anywhere, and the beat that
+    // reads the client is what makes the difference visible. The moved client now serves
+    // `b` and stays open, and the selected session is attached again.
     let mut rt = a_settled_psmux_runtime();
     assert!(
         !rt.model.state.focus.is_terminal_focused(),
@@ -4113,13 +4160,13 @@ async fn a_mux_side_switch_in_nav_focus_ends_with_the_client_back_on_the_selecti
             .get("local")
             .unwrap()
             .display
-            .in_flight_contains("local"),
-        "the client is carried back by a fresh attach for the selected session"
+            .in_flight_contains("local/a"),
+        "the selected session is attached again under its own key"
     );
     assert_eq!(
-        rt.hosts.get("local").unwrap().display.shows("local"),
-        Some("a"),
-        "which is where the display then is"
+        rt.registry.get("local/b").map(|a| a.id()),
+        Some(OWN_CLIENT),
+        "the moved client stays open for the session it now serves"
     );
 
     the_reattach_lands(&mut rt, "a");
@@ -4127,7 +4174,7 @@ async fn a_mux_side_switch_in_nav_focus_ends_with_the_client_back_on_the_selecti
     assert_eq!(
         (
             rt.model.switcher.terminal_view_target().target.as_str(),
-            rt.hosts.get("local").unwrap().display.shows("local")
+            rt.hosts.get("local").unwrap().display.shows("local/a")
         ),
         ("a", Some("a")),
         "the nav and the display name one session, and the reconcile is over"
@@ -4168,7 +4215,7 @@ async fn a_switch_asked_for_in_terminal_focus_is_not_dragged_back() {
         "and after the attach runs"
     );
     assert_eq!(
-        rt.hosts.get("local").unwrap().display.shows("local"),
+        rt.hosts.get("local").unwrap().display.shows("local/b"),
         Some("b"),
         "which is what carried the display there"
     );
@@ -4225,7 +4272,7 @@ async fn a_pick_on_the_selected_card_leaves_the_nav_and_the_display_naming_one_s
         "the nav is on the card the user picked"
     );
     assert_eq!(
-        rt.hosts.get("local").unwrap().display.shows("local"),
+        rt.hosts.get("local").unwrap().display.shows("local/a"),
         Some("a"),
         "and the display is on that same session, seconds later"
     );
@@ -5917,15 +5964,16 @@ async fn ready_adopts_the_pty_name_only_where_the_child_is_the_mux_client() {
             session: "work".into(),
         };
         rt.fit_displays();
+        let key = crate::driver::session_display_key(host, "work");
         {
             let h = rt.hosts.get_mut(host).unwrap();
-            h.display.set_shows(host, "work");
-            h.display.mark_in_flight(host, 1);
-            h.display.mark_pending(id, host);
+            h.display.set_shows(&key, "work");
+            h.display.mark_in_flight(&key, 1);
+            h.display.mark_pending(id, &key);
         }
         rt.on_display_event(crate::display::DisplayEvent::Ready {
             seq: 1,
-            key: host.to_string(),
+            key: key.clone(),
             attachment: crate::display::attachment::fake_attachment_with_tty(id, "/dev/pts/3"),
         });
         let expected = if host == "local" {
@@ -5934,7 +5982,7 @@ async fn ready_adopts_the_pty_name_only_where_the_child_is_the_mux_client() {
             None
         };
         assert_eq!(
-            rt.hosts.get(host).unwrap().display_tty.0.as_deref(),
+            rt.hosts.get(host).unwrap().display_tty(&key),
             expected,
             "only a directly spawned mux owns the local PTY's tty"
         );
@@ -5952,15 +6000,15 @@ async fn an_attach_reply_off_view_installs_without_taking_the_view() {
     ));
     {
         let jup = rt.hosts.get_mut("jup").unwrap();
-        jup.display.set_shows("jup", "if-0");
-        jup.display.mark_in_flight("jup", 9);
-        jup.display.mark_pending(OWN_CLIENT + 2, "jup");
+        jup.display.set_shows("jup/if-0", "if-0");
+        jup.display.mark_in_flight("jup/if-0", 9);
+        jup.display.mark_pending(OWN_CLIENT + 2, "jup/if-0");
     }
     let (attachment, killed) =
         crate::display::attachment::fake_attachment_with_teardown_flag(OWN_CLIENT + 2);
     rt.on_display_event(DisplayEvent::Ready {
         seq: 9,
-        key: "jup".into(),
+        key: "jup/if-0".into(),
         attachment,
     });
     let painted = std::time::Instant::now();
@@ -5977,7 +6025,7 @@ async fn an_attach_reply_off_view_installs_without_taking_the_view() {
         "the view stays on the selected session"
     );
     assert_eq!(
-        rt.registry.get("jup").map(|att| att.id()),
+        rt.registry.get("jup/if-0").map(|att| att.id()),
         Some(OWN_CLIENT + 2),
         "the connection off view stays open"
     );
@@ -5993,16 +6041,16 @@ async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
         .get_mut("local")
         .unwrap()
         .display
-        .set_shows("local", "b");
+        .set_shows("local/b", "b");
     the_reattach_lands_for(&mut rt, 11, "b");
 
     assert_eq!(
-        rt.registry.get("local").map(|att| att.id()),
+        rt.registry.get("local/a").map(|att| att.id()),
         Some(OWN_CLIENT)
     );
     assert_eq!(
         rt.registry.pending_address_of_id(OWN_CLIENT + 3).as_deref(),
-        Some("local")
+        Some("local/b")
     );
     assert_eq!(
         rt.model.state.displayed.session, "a",
@@ -6016,7 +6064,7 @@ async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
     );
     assert_eq!(
         rt.registry.pending_address_of_id(OWN_CLIENT + 3).as_deref(),
-        Some("local"),
+        Some("local/b"),
         "the attach debounce treats a paint-pending client as work already underway"
     );
     assert_eq!(
@@ -6040,9 +6088,14 @@ async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
     rt.note_pending_output(OWN_CLIENT + 3);
     assert!(rt.promote_due_pending(output_at + crate::model::host::PAINT_SETTLE));
     assert_eq!(
-        rt.registry.get("local").map(|att| att.id()),
+        rt.registry.get("local/b").map(|att| att.id()),
         Some(OWN_CLIENT + 3),
-        "the painted attachment replaces the stale one"
+        "the painted attachment is installed under its session's key"
+    );
+    assert_eq!(
+        rt.registry.get("local/a").map(|att| att.id()),
+        Some(OWN_CLIENT),
+        "the session that served the stale frame keeps its connection"
     );
     assert_eq!(
         rt.model.state.displayed.session, "b",
@@ -6053,7 +6106,7 @@ async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
 #[tokio::test(flavor = "current_thread")]
 async fn first_display_installs_immediately_without_a_stale_attachment() {
     let mut rt = a_settled_psmux_runtime();
-    rt.registry.remove("local");
+    rt.registry.remove("local/a");
     rt.model.state.selection = Selection {
         host: "local".into(),
         session: "b".into(),
@@ -6062,12 +6115,12 @@ async fn first_display_installs_immediately_without_a_stale_attachment() {
         .get_mut("local")
         .unwrap()
         .display
-        .set_shows("local", "b");
+        .set_shows("local/b", "b");
 
     the_reattach_lands_for(&mut rt, 11, "b");
 
     assert_eq!(
-        rt.registry.get("local").map(|att| att.id()),
+        rt.registry.get("local/b").map(|att| att.id()),
         Some(OWN_CLIENT + 3)
     );
     assert!(rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_none());
@@ -6075,7 +6128,7 @@ async fn first_display_installs_immediately_without_a_stale_attachment() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn pending_exit_retires_the_stale_attachment_and_applies_the_exit() {
+async fn pending_exit_applies_the_exit_and_keeps_the_stale_session_open() {
     let mut rt = a_settled_psmux_runtime();
     rt.model.state.selection = Selection {
         host: "local".into(),
@@ -6085,17 +6138,21 @@ async fn pending_exit_retires_the_stale_attachment_and_applies_the_exit() {
         .get_mut("local")
         .unwrap()
         .display
-        .set_shows("local", "b");
+        .set_shows("local/b", "b");
     the_reattach_lands_for(&mut rt, 11, "b");
     let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
     rt.on_pty_event(PtyEvent::Exited { id: OWN_CLIENT + 3 }, &mut rx);
 
-    assert!(!rt.registry.contains("local"));
-    assert_eq!(rt.registry.address_of_id(OWN_CLIENT), None);
+    assert!(!rt.registry.contains("local/b"));
+    assert_eq!(
+        rt.registry.address_of_id(OWN_CLIENT).as_deref(),
+        Some("local/a"),
+        "the session that served the stale frame keeps its connection"
+    );
     assert_eq!(rt.registry.address_of_id(OWN_CLIENT + 3), None);
     assert!(
-        rt.registry.grid("local").is_some(),
+        rt.registry.grid("local/b").is_some(),
         "the exited fresh attachment leaves its own final grid"
     );
     assert_eq!(rt.model.state.displayed.session, "b");
@@ -6108,7 +6165,7 @@ async fn newer_request_tears_down_the_older_pending_attachment() {
         .get_mut("local")
         .unwrap()
         .display
-        .set_shows("local", "b");
+        .set_shows("local/b", "b");
     the_reattach_lands_for(&mut rt, 11, "b");
     assert!(rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_some());
 
@@ -6141,22 +6198,23 @@ async fn newer_request_tears_down_the_older_pending_attachment() {
             .get("local")
             .unwrap()
             .display
-            .in_flight_seq("local"),
+            .in_flight_seq("local/b"),
         Some(rt.attach_seq)
     );
     assert_ne!(id, OWN_CLIENT + 3);
 }
 
-/// Lands a worker `Ready` on the local host under `seq`, answering for `session`.
+/// Lands a worker `Ready` for `session` on the local host under `seq`.
 fn the_reattach_lands_for(rt: &mut Runtime, seq: u64, session: &str) {
+    let key = crate::driver::session_display_key("local", session);
     rt.hosts
         .get_mut("local")
         .unwrap()
         .display
-        .mark_in_flight("local", seq);
+        .mark_in_flight(&key, seq);
     rt.on_display_event(DisplayEvent::Ready {
         seq,
-        key: "local".into(),
+        key,
         attachment: crate::display::attachment::fake_attachment_answering_env(
             OWN_CLIENT + 3,
             "PSMUX_SESSION_NAME",
@@ -8838,12 +8896,12 @@ async fn alerts_reach_the_terminal_and_mark_a_session_not_on_screen() {
     use crate::display::grid::Alert;
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
-    rt.registry.insert_fake("jup", 7);
+    rt.registry.insert_fake("jup/work", 7);
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
-        .set_shows("jup", "work");
+        .set_shows("jup/work", "work");
     let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let records = |rt: &Runtime| rt.model.state.notify.history.len();
     let before = records(&rt);
@@ -8937,9 +8995,14 @@ async fn alerts_reach_the_terminal_and_mark_a_session_not_on_screen() {
 async fn the_terminal_title_follows_the_session_on_screen() {
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
-    rt.registry.insert_fake("jup", 7);
+    rt.registry.insert_fake("jup/work", 7);
     let feed = |rt: &Runtime, bytes: &[u8]| {
-        rt.registry.grid("jup").unwrap().lock().unwrap().feed(bytes);
+        rt.registry
+            .grid("jup/work")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .feed(bytes);
     };
     let synced = |rt: &mut Runtime| {
         rt.passthrough.clear();
@@ -8980,12 +9043,12 @@ async fn live_display_attachments_are_counted_as_xmuxs_own_clients() {
         .get_mut("jup")
         .unwrap()
         .display
-        .set_shows("jup", "api");
+        .set_shows("jup/api", "api");
     assert!(
         !rt.sync_display_clients(),
         "a record with no live attachment counts nothing"
     );
-    rt.registry.insert_fake("jup", 7);
+    rt.registry.insert_fake("jup/api", 7);
     assert!(rt.sync_display_clients());
     let api = crate::session::Address::new("jup", "api");
     assert_eq!(rt.model.state.display_clients.get(&api), Some(&1));
@@ -9270,7 +9333,7 @@ async fn a_held_synchronized_update_keeps_the_frame_cadence_drawing() {
     // The session began an update and went quiet: the frame timer keeps redrawing so
     // its live screen appears when the hold runs out, and stops once nothing is held.
     let mut rt = a_settled_herdr_runtime();
-    let grid = rt.registry.grid("local").expect("the displayed grid");
+    let grid = rt.registry.grid("local/a").expect("the displayed grid");
     grid.lock().unwrap().feed(b"\x1b[?2026h");
     nav_text(&mut rt);
     assert!(rt.display_sync_held);
@@ -9553,10 +9616,10 @@ async fn display_connections_stay_open_off_view_for_every_mux() {
         }
         let (first, first_killed) =
             crate::display::attachment::fake_attachment_with_teardown_flag(1);
-        rt.registry.insert("first", first);
+        rt.registry.insert("first/main", first);
         let (second, second_killed) =
             crate::display::attachment::fake_attachment_with_teardown_flag(2);
-        rt.registry.insert("second", second);
+        rt.registry.insert("second/main", second);
         rt.model.state.selection = Selection {
             host: "first".into(),
             session: "main".into(),
@@ -9564,7 +9627,7 @@ async fn display_connections_stay_open_off_view_for_every_mux() {
         rt.model.state.displayed = rt.model.state.selection.clone();
         rt.fit_displays();
         assert_eq!(
-            rt.registry.get("first").unwrap().size,
+            rt.registry.get("first/main").unwrap().size,
             terminal_view_size(rt.cols, rt.body_rows, rt.nav_size()),
             "{bin}: the session on view takes the view's size"
         );
@@ -9579,7 +9642,7 @@ async fn display_connections_stay_open_off_view_for_every_mux() {
             "{bin}: leaving a session keeps its connection"
         );
         assert!(
-            rt.registry.contains("first") && rt.registry.contains("second"),
+            rt.registry.contains("first/main") && rt.registry.contains("second/main"),
             "{bin}: both connections stay registered"
         );
     }
@@ -9600,7 +9663,7 @@ async fn only_the_connections_the_start_preview_opened_end_for_every_mux() {
         }
         let (first, first_killed) =
             crate::display::attachment::fake_attachment_with_teardown_flag(1);
-        rt.registry.insert("first", first);
+        rt.registry.insert("first/main", first);
         rt.model.state.selection = Selection {
             host: "first".into(),
             session: "main".into(),
@@ -9612,15 +9675,15 @@ async fn only_the_connections_the_start_preview_opened_end_for_every_mux() {
         // The preview opens a connection for the second host and moves on to the third.
         let (second, second_killed) =
             crate::display::attachment::fake_attachment_with_teardown_flag(2);
-        rt.registry.insert("second", second);
-        rt.preview_opened.insert("second".into());
+        rt.registry.insert("second/main", second);
+        rt.preview_opened.insert("second/main".into());
         rt.model.state.selection.host = "second".into();
         rt.fit_displays();
         rt.model.state.displayed = rt.model.state.selection.clone();
         let (third, third_killed) =
             crate::display::attachment::fake_attachment_with_teardown_flag(3);
-        rt.registry.insert("third", third);
-        rt.preview_opened.insert("third".into());
+        rt.registry.insert("third/main", third);
+        rt.preview_opened.insert("third/main".into());
         rt.model.state.selection.host = "third".into();
         rt.fit_displays();
         assert!(
@@ -9628,11 +9691,11 @@ async fn only_the_connections_the_start_preview_opened_end_for_every_mux() {
             "{bin}: the preview's own connection ends once the preview leaves it"
         );
         assert!(
-            !rt.registry.contains("second"),
+            !rt.registry.contains("second/main"),
             "{bin}: no client stays registered for it"
         );
         assert!(
-            rt.registry.grid("second").is_some(),
+            rt.registry.grid("second/main").is_some(),
             "{bin}: its last frame stays until the new one paints"
         );
         assert!(
@@ -9650,7 +9713,7 @@ async fn only_the_connections_the_start_preview_opened_end_for_every_mux() {
         );
         assert!(rt.preview_opened.is_empty(), "{bin}: the preview is over");
         assert_eq!(
-            rt.registry.get("third").unwrap().size,
+            rt.registry.get("third/main").unwrap().size,
             terminal_view_size(rt.cols, rt.body_rows, rt.nav_size()),
             "{bin}: terminal size"
         );
@@ -9676,33 +9739,38 @@ async fn leaving_a_preview_cancels_its_pending_connections_for_every_mux() {
         ));
         let (pending, pending_killed) =
             crate::display::attachment::fake_attachment_with_teardown_flag(2);
-        rt.registry.park_pending("first", pending);
+        rt.registry.park_pending("first/a", pending);
         let host = rt.hosts.get_mut("first").unwrap();
-        host.display.mark_in_flight("first", 3);
-        host.display.mark_pending(3, "first");
-        host.record_display_tty(Some("/dev/pts/3".into()));
+        host.display.mark_in_flight("first/a", 3);
+        host.display.mark_pending(3, "first/a");
+        host.record_display_tty("first/a", Some("/dev/pts/3".into()));
         rt.model.switcher.open_start();
-        rt.preview_opened.insert("first".into());
+        rt.preview_opened.insert("first/a".into());
         rt.model.state.selection = Selection::default();
         rt.fit_displays();
         assert!(
             pending_killed.load(Ordering::SeqCst),
             "{bin}: pending paint is detached"
         );
-        assert!(!rt.registry.contains_pending("first"));
+        assert!(!rt.registry.contains_pending("first/a"));
         assert!(rt.hosts.get("first").unwrap().display.in_flight_is_empty());
-        assert!(rt.hosts.get("first").unwrap().display_tty.0.is_none());
+        assert!(rt
+            .hosts
+            .get("first")
+            .unwrap()
+            .display_tty("first/a")
+            .is_none());
         let (late, late_killed) = crate::display::attachment::fake_attachment_with_teardown_flag(3);
         rt.on_display_event(DisplayEvent::Ready {
             seq: 3,
-            key: "first".into(),
+            key: "first/a".into(),
             attachment: late,
         });
         assert!(
             late_killed.load(Ordering::SeqCst),
             "{bin}: late completion is discarded"
         );
-        assert!(!rt.registry.contains("first"));
+        assert!(!rt.registry.contains("first/a"));
     }
 }
 
@@ -9725,7 +9793,7 @@ async fn inventory_neither_opens_nor_closes_a_connection_for_every_mux() {
         rt.model.state.selection = Selection::default();
         for held in [false, true] {
             if held {
-                rt.registry.insert_fake("first", 1);
+                rt.registry.insert_fake("first/main", 1);
             }
             for effect in [
                 EventEffect::SyncInventorySessions {
@@ -9739,7 +9807,7 @@ async fn inventory_neither_opens_nor_closes_a_connection_for_every_mux() {
             ] {
                 rt.perform_host_effect(effect);
                 assert_eq!(
-                    rt.registry.contains("first"),
+                    rt.registry.contains("first/main"),
                     held,
                     "{bin}: inventory leaves the connection as it was"
                 );
@@ -9789,7 +9857,7 @@ async fn keys_and_ctl_keep_departed_display_connections_open_for_every_mux() {
             rt.model.switcher.open_start();
             let (display, killed) =
                 crate::display::attachment::fake_attachment_with_teardown_flag(1);
-            rt.registry.insert("first", display);
+            rt.registry.insert("first/main", display);
             if keys {
                 rt.handle_stdin_bytes(b"\r", &rt.model.state.selection.clone());
                 assert!(
@@ -9823,7 +9891,7 @@ async fn keys_and_ctl_keep_departed_display_connections_open_for_every_mux() {
             }
             rt.fit_displays();
             assert!(!killed.load(Ordering::SeqCst), "{bin}: keys={keys}");
-            assert!(rt.registry.contains("first"), "{bin}: keys={keys}");
+            assert!(rt.registry.contains("first/main"), "{bin}: keys={keys}");
         }
     }
 }
@@ -9864,12 +9932,12 @@ async fn a_rapid_ctl_round_trip_returns_to_the_open_connection_for_every_mux() {
             rt.model.state.focus = focus;
             let (first, input) = crate::display::attachment::fake_attachment_with_input_log(99);
             first.mark_painted_for_test(std::time::Instant::now());
-            rt.registry.insert("first", first);
+            rt.registry.insert("first/main", first);
             rt.hosts
                 .get_mut("first")
                 .unwrap()
                 .display
-                .set_shows("first", "main");
+                .set_shows("first/main", "main");
             for target in ["second", "first"] {
                 let crate::link::control::CtlRequest::Op(action) =
                     crate::link::control::parse_ctl_op(&format!("switch {target} main"))
@@ -9891,14 +9959,14 @@ async fn a_rapid_ctl_round_trip_returns_to_the_open_connection_for_every_mux() {
                     .get("first")
                     .unwrap()
                     .display
-                    .in_flight_seq("first")
+                    .in_flight_seq("first/main")
                     .is_none(),
                 "{bin}: returning to an open connection attaches nothing"
             );
             rt.forward_input(b"typed after the round trip".to_vec());
             assert!(rt.held_input.is_none(), "{bin}: nothing waits");
             assert_eq!(logged(&input), b"typed after the round trip");
-            assert_eq!(rt.registry.get("first").unwrap().id(), 99);
+            assert_eq!(rt.registry.get("first/main").unwrap().id(), 99);
         }
     }
 }
@@ -9915,8 +9983,8 @@ async fn a_cross_host_ready_keeps_the_departed_session_on_view_until_paint_for_e
                 crate::mux::for_binary(bin).unwrap(),
             ));
         }
-        rt.registry.insert_fake("first", 1);
-        let prior = rt.registry.grid("first").unwrap();
+        rt.registry.insert_fake("first/old", 1);
+        let prior = rt.registry.grid("first/old").unwrap();
         rt.model.state.displayed = Selection {
             host: "first".into(),
             session: "old".into(),
@@ -9926,27 +9994,27 @@ async fn a_cross_host_ready_keeps_the_departed_session_on_view_until_paint_for_e
             session: "new".into(),
         };
         let host = rt.hosts.get_mut("second").unwrap();
-        host.display.set_shows("second", "new");
-        host.display.mark_in_flight("second", 2);
-        host.display.mark_pending(2, "second");
+        host.display.set_shows("second/new", "new");
+        host.display.mark_in_flight("second/new", 2);
+        host.display.mark_pending(2, "second/new");
         rt.on_display_event(DisplayEvent::Ready {
             seq: 2,
-            key: "second".into(),
+            key: "second/new".into(),
             attachment: crate::display::attachment::fake_attachment(2),
         });
         assert!(
-            rt.registry.contains("first"),
+            rt.registry.contains("first/old"),
             "{bin}: the departed client stays open"
         );
         assert!(
-            rt.registry.contains_pending("second"),
+            rt.registry.contains_pending("second/new"),
             "{bin}: new client waits for paint"
         );
         assert_eq!(
             rt.model.state.displayed.host, "first",
             "{bin}: Ready cannot confirm an empty frame"
         );
-        assert!(Arc::ptr_eq(&prior, &rt.registry.grid("first").unwrap()));
+        assert!(Arc::ptr_eq(&prior, &rt.registry.grid("first/old").unwrap()));
         let painted = std::time::Instant::now();
         rt.registry.mark_pending_painted_for_test(2, painted);
         rt.note_pending_output(2);
@@ -9957,7 +10025,7 @@ async fn a_cross_host_ready_keeps_the_departed_session_on_view_until_paint_for_e
         );
         rt.fit_displays();
         assert!(
-            rt.registry.contains("first"),
+            rt.registry.contains("first/old"),
             "{bin}: the departed client stays open off view"
         );
     }
@@ -9971,25 +10039,25 @@ async fn a_paint_gate_off_view_installs_the_client_without_taking_the_view() {
         .get_mut("local")
         .unwrap()
         .display
-        .set_shows("local", "b");
+        .set_shows("local/b", "b");
     rt.hosts
         .get_mut("local")
         .unwrap()
         .display
-        .mark_in_flight("local", 9);
+        .mark_in_flight("local/b", 9);
     let (attachment, killed) = crate::display::attachment::fake_attachment_with_teardown_flag(9);
     rt.on_display_event(DisplayEvent::Ready {
         seq: 9,
-        key: "local".into(),
+        key: "local/b".into(),
         attachment,
     });
-    assert!(rt.registry.contains_pending("local"));
+    assert!(rt.registry.contains_pending("local/b"));
     rt.model.state.selection = Selection::default();
     let displayed = rt.model.state.displayed.clone();
     assert!(rt.promote_due_pending(std::time::Instant::now() + std::time::Duration::from_secs(10)));
     assert!(!killed.load(std::sync::atomic::Ordering::SeqCst));
-    assert_eq!(rt.registry.get("local").map(|att| att.id()), Some(9));
-    assert!(!rt.registry.contains_pending("local"));
+    assert_eq!(rt.registry.get("local/b").map(|att| att.id()), Some(9));
+    assert!(!rt.registry.contains_pending("local/b"));
     assert_eq!(
         rt.model.state.displayed, displayed,
         "nothing off view is confirmed"
@@ -9997,7 +10065,10 @@ async fn a_paint_gate_off_view_installs_the_client_without_taking_the_view() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn returning_to_the_confirmed_session_supersedes_another_pending_paint_for_every_mux() {
+async fn returning_to_the_confirmed_session_leaves_another_pending_paint_off_view_for_every_mux() {
+    // Returning to the confirmed session before another session's fresh client paints:
+    // the confirmed session's own connection takes the input at once, and the other
+    // client installs off view without taking the view.
     for bin in [
         "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
     ] {
@@ -10006,7 +10077,7 @@ async fn returning_to_the_confirmed_session_supersedes_another_pending_paint_for
             crate::transport::local(None),
             crate::mux::for_binary(bin).unwrap(),
         ));
-        rt.registry.insert_fake("local", 1);
+        rt.registry.insert_fake("local/a", 1);
         let original = Selection {
             host: "local".into(),
             session: "a".into(),
@@ -10017,14 +10088,15 @@ async fn returning_to_the_confirmed_session_supersedes_another_pending_paint_for
             ..original.clone()
         };
         let host = rt.hosts.get_mut("local").unwrap();
-        host.display.set_shows("local", "b");
-        host.display.mark_in_flight("local", 9);
+        host.display.set_shows("local/a", "a");
+        host.display.set_shows("local/b", "b");
+        host.display.mark_in_flight("local/b", 9);
         rt.on_display_event(DisplayEvent::Ready {
             seq: 9,
-            key: "local".into(),
+            key: "local/b".into(),
             attachment: crate::display::attachment::fake_attachment(9),
         });
-        assert!(rt.registry.contains_pending("local"));
+        assert!(rt.registry.contains_pending("local/b"));
         rt.model
             .state
             .apply(crate::model::Action::Select(original.clone()));
@@ -10033,22 +10105,20 @@ async fn returning_to_the_confirmed_session_supersedes_another_pending_paint_for
             !selection_attach_in_flight(&rt.hosts, &original),
             "{bin}: another session's request cannot block this selection"
         );
-        assert!(
-            display_astray(&rt.model.state, &rt.hosts),
-            "{bin}: an explicit selection still owes a switch in terminal focus"
-        );
         assert_eq!(
             input_route(&rt.model.state, &rt.hosts),
-            InputRoute::Hold,
-            "{bin}: input cannot reach the superseded pending client"
+            InputRoute::Selected("local/a".into()),
+            "{bin}: input reaches the confirmed session's own client"
         );
         assert!(
-            !rt.promote_due_pending(std::time::Instant::now() + std::time::Duration::from_secs(10))
+            rt.promote_due_pending(std::time::Instant::now() + std::time::Duration::from_secs(10))
         );
         assert_eq!(
             rt.model.state.displayed, original,
-            "{bin}: obsolete paint cannot confirm another session"
+            "{bin}: the paint off view cannot confirm another session"
         );
+        assert_eq!(rt.registry.get("local/b").map(|att| att.id()), Some(9));
+        assert_eq!(rt.registry.get("local/a").map(|att| att.id()), Some(1));
     }
 }
 
@@ -10056,16 +10126,16 @@ async fn returning_to_the_confirmed_session_supersedes_another_pending_paint_for
 async fn a_late_tty_probe_cannot_retarget_a_replaced_display_connection() {
     let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
-    rt.registry.insert_fake("jup", 8);
+    rt.registry.insert_fake("jup/new", 8);
     rt.hosts
         .get_mut("jup")
         .unwrap()
-        .record_display_tty(Some("/dev/pts/8".into()));
+        .record_display_tty("jup/new", Some("/dev/pts/8".into()));
     rt.hosts
         .get_mut("jup")
         .unwrap()
         .display
-        .set_shows("jup", "new");
+        .set_shows("jup/new", "new");
     for tty in [Some("/dev/pts/7".into()), None] {
         rt.handle_host_event(HostEvent::DisplayTty {
             host: "jup".into(),
@@ -10073,11 +10143,11 @@ async fn a_late_tty_probe_cannot_retarget_a_replaced_display_connection() {
             tty,
         });
         assert_eq!(
-            rt.hosts.get("jup").unwrap().display_tty.0.as_deref(),
+            rt.hosts.get("jup").unwrap().display_tty("jup/new"),
             Some("/dev/pts/8")
         );
         assert_eq!(
-            rt.hosts.get("jup").unwrap().display.shows("jup"),
+            rt.hosts.get("jup").unwrap().display.shows("jup/new"),
             Some("new")
         );
     }
@@ -10087,7 +10157,148 @@ async fn a_late_tty_probe_cannot_retarget_a_replaced_display_connection() {
         tty: Some("/dev/pts/9".into()),
     });
     assert_eq!(
-        rt.hosts.get("jup").unwrap().display_tty.0.as_deref(),
+        rt.hosts.get("jup").unwrap().display_tty("jup/new"),
         Some("/dev/pts/9")
     );
+}
+
+/// A runtime whose host `first` lists `main` and `side`, showing `main`, with `side`'s
+/// client open off view, for the repair tests.
+fn repair_rt() -> Runtime {
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    let scan = Scan {
+        groups: vec![Group {
+            host: "first".into(),
+            err: None,
+            sessions: ["main", "side"]
+                .into_iter()
+                .map(|name| Session {
+                    host: "first".into(),
+                    name: name.into(),
+                    mux: "tmux".into(),
+                    ..Default::default()
+                })
+                .collect(),
+        }],
+    };
+    (rt.model.state, rt.model.switcher) = with_switcher(scan);
+    rt.hosts.insert(crate::model::Host::new(
+        crate::transport::ssh("first".into(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux").unwrap(),
+    ));
+    rt.model
+        .switcher
+        .select_address(&crate::session::Address::new("first", "main"));
+    settled(&mut rt);
+    for (key, id) in [("first/main", 1), ("first/side", 2)] {
+        rt.registry.insert_fake(key, id);
+        rt.hosts
+            .get_mut("first")
+            .unwrap()
+            .display
+            .set_shows(key, crate::driver::session_of_key(key));
+    }
+    rt.model.state.displayed = rt.model.state.selection.clone();
+    rt
+}
+
+/// The `PtyEvent::Exited` of attachment `id`.
+fn exit_of(rt: &mut Runtime, id: u64) {
+    let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.on_pty_event(PtyEvent::Exited { id }, &mut rx);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_connection_off_view_that_ends_is_attached_again_after_a_wait() {
+    let mut rt = repair_rt();
+    exit_of(&mut rt, 2);
+    let now = std::time::Instant::now();
+    assert!(!rt.registry.contains("first/side"));
+    assert!(
+        !rt.repair_displays(now),
+        "the attach waits instead of answering the end at once"
+    );
+    assert!(rt.repair_displays(now + super::REPAIR_FIRST));
+    assert!(
+        rt.hosts
+            .get("first")
+            .unwrap()
+            .display
+            .in_flight_contains("first/side"),
+        "the session is attached again under its own key"
+    );
+    assert_eq!(
+        rt.model.state.displayed.session, "main",
+        "the view stays where it was"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_connection_on_view_that_ends_is_left_to_the_user() {
+    // Its client may have ended because the user detached it inside the terminal view.
+    let mut rt = repair_rt();
+    exit_of(&mut rt, 1);
+    assert!(rt.display_repairs.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_session_no_longer_listed_is_not_repaired() {
+    let mut rt = repair_rt();
+    let now = std::time::Instant::now();
+    exit_of(&mut rt, 2);
+    rt.model.state.groups[0]
+        .sessions
+        .retain(|s| s.name != "side");
+    assert!(!rt.repair_displays(now + super::REPAIR_MAX));
+    assert!(rt.display_repairs.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_client_that_keeps_ending_early_is_retried_ever_less_often() {
+    let mut rt = repair_rt();
+    exit_of(&mut rt, 2);
+    for attempts in 1..4u32 {
+        let wait = super::repair_delay(attempts - 1);
+        let now = std::time::Instant::now();
+        assert!(!rt.repair_displays(now), "attempt {attempts} waits");
+        assert!(rt.repair_displays(now + wait), "attempt {attempts}");
+        let seq = rt
+            .hosts
+            .get("first")
+            .unwrap()
+            .display
+            .in_flight_seq("first/side")
+            .unwrap();
+        let id = 10 + u64::from(attempts);
+        rt.hosts
+            .get_mut("first")
+            .unwrap()
+            .display
+            .mark_pending(id, "first/side");
+        rt.on_display_event(DisplayEvent::Ready {
+            seq,
+            key: "first/side".into(),
+            attachment: crate::display::attachment::fake_attachment(id),
+        });
+        if !rt.registry.contains("first/side") {
+            let painted = std::time::Instant::now();
+            rt.registry.mark_pending_painted_for_test(id, painted);
+            rt.note_pending_output(id);
+            rt.promote_due_pending(painted + crate::model::host::PAINT_SETTLE);
+        }
+        exit_of(&mut rt, id);
+        assert_eq!(
+            rt.display_repairs["first/side"].attempts, attempts,
+            "an early end stretches the wait"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_rescan_repairs_at_once() {
+    let mut rt = repair_rt();
+    let now = std::time::Instant::now();
+    exit_of(&mut rt, 2);
+    rt.repair_now(Some("first"), now);
+    assert!(rt.repair_displays(now));
 }

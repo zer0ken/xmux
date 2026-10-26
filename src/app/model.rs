@@ -586,6 +586,11 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             model
                 .switcher
                 .mark_machine_scanning(&machine, &mut model.state);
+            // Re-scanning the selection's machine re-attaches its display too, as a full
+            // re-scan does.
+            if crate::session::machine_of(&model.state.selection.host) == machine {
+                model.switcher.kick_reattach();
+            }
             Some(Effect::Command(Command::RescanMachine(machine)))
         }
         Command::Logout(machine) => {
@@ -2302,7 +2307,9 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 model.state.apply(Action::RearmAttachNow { now });
                 return vec![Effect::ReattachDisplay(selection)];
             }
-            if model.switcher.take_reattach_kick() && !model.state.selection.is_empty() {
+            // The kick waits for a selection: a re-scan clears the cards, so the selection
+            // can be empty when the kick is first looked at.
+            if !model.state.selection.is_empty() && model.switcher.take_reattach_kick() {
                 let selection = model.state.selection.clone();
                 model.state.attach_held = None;
                 model.state.apply(Action::ClearDisplay);
@@ -4687,6 +4694,48 @@ mod tests {
         assert_eq!(
             m.state.notify.toasts[1].notes[0].text,
             "no changes · 1 machine, 2 sessions"
+        );
+    }
+
+    #[test]
+    fn a_machine_rescan_reattaches_the_selected_display() {
+        let mut m = AppModel::from_hosts(vec!["a".to_owned(), "b".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        answer(&mut m, "b", &["y"], None);
+        update(&mut m, Msg::SyncSelection);
+        let selected = m.state.selection.clone();
+        assert_eq!(selected.host, "a");
+
+        update(&mut m, lower_r());
+        let effects = update(
+            &mut m,
+            Msg::ConsumeReattach {
+                now: std::time::Instant::now(),
+            },
+        );
+        assert!(
+            matches!(effects.as_slice(), [Effect::ReattachDisplay(s)] if *s == selected),
+            "{effects:?}"
+        );
+    }
+
+    #[test]
+    fn a_reattach_kick_waits_for_a_selection() {
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
+        m.switcher.kick_reattach();
+        let now = std::time::Instant::now();
+        assert!(
+            update(&mut m, Msg::ConsumeReattach { now }).is_empty(),
+            "nothing is selected to attach"
+        );
+        answer(&mut m, "a", &["x"], None);
+        update(&mut m, Msg::SyncSelection);
+        let selected = m.state.selection.clone();
+        assert!(!selected.is_empty());
+        let effects = update(&mut m, Msg::ConsumeReattach { now });
+        assert!(
+            matches!(effects.as_slice(), [Effect::ReattachDisplay(s)] if *s == selected),
+            "the kick outlives the empty selection: {effects:?}"
         );
     }
 

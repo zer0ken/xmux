@@ -211,10 +211,11 @@ against, naming no source file, function, or test.
 
 ## C. Switching (the keystone)
 
-- **FR-C1** - A same-server pick lands on the picked session, by `switch-client` when
-  the mux can name xmux's own client and otherwise by reattaching by session name.
+- **FR-C1** - A pick lands on the picked session through that session's own display
+  client: one xmux already holds is put on view at once, with nothing attached and no
+  client moved, and a session not yet held is attached by session name.
 - **FR-C2** - A cross-host pick switches entirely in process, with no picker and no
-  detach, by handing the display to the target host's live attachment.
+  detach, by handing the display to the target session's live attachment.
 - **FR-C3** - An unreachable host is marked `▲` with a view screen stating the verdict
   and diagnostics, and nothing reconnects until the user re-scans or selects the card.
 - **FR-C4** - Every dispatched switch or select command logs its exact argv and result,
@@ -240,8 +241,10 @@ against, naming no source file, function, or test.
   mouse mode asks for, encoded in the form the client enabled, and a drag that starts in
   the terminal view reaches it until its release, with motion past the view at the
   view's nearest edge.
-- **FR-C10** - A display connection xmux opened stays open when its session leaves the
-  view, so returning to it shows it at once without attaching again. Only the session
+- **FR-C10** - Each session has its own display connection, and one xmux opened stays
+  open when its session leaves the view, so returning to it shows it at once without
+  attaching again. A client the mux moves to another session becomes that session's
+  connection. Only the session
   on view is sized, at the terminal view's size or the start preview's size. A
   connection the start screen's preview opened ends once the preview leaves it,
   including a connection still starting, and when the start screen closes unless the
@@ -335,7 +338,10 @@ only session changes it makes.
   non-POSIX remote is never sent POSIX-only syntax.
 - **FR-G7** - xmux reaches a machine only for the launch scan, a user action, or an
   already open push stream, and no failure triggers its own retry except the one
-  reattach per selection of a display client that zellij drops right after attaching.
+  reattach per selection of a display client that zellij drops right after attaching,
+  and the re-attach of a display client off view that ended while its session is still
+  listed, after a wait that doubles from 1 s to 30 s while its clients keep ending
+  right after starting.
 - **FR-G8** - A machine is asked one thing at a time, while separate machines are asked
   in parallel.
 
@@ -346,7 +352,7 @@ only session changes it makes.
 - **UC-1, jump from my laptop to a remote dev session.** Move the cursor to a remote
   session and land in it in one action. *(FR-B1, FR-C2, FR-D1/D2)*
 - **UC-2, hop between two same-server sessions.** Select a session on the current server
-  for an instant switch-client. *(FR-C1)*
+  and it is on view at once. *(FR-C1)*
 - **UC-3, survey then stay put.** Look around the nav, then quit, leaving the current
   session untouched. *(FR-B5)*
 - **UC-4, find one session among many then go.** Filter, then press Enter on the visible
@@ -371,6 +377,9 @@ only session changes it makes.
 The seamless cross-host switch is bought with these costs, accepted by design:
 
 - One live app per terminal owns the display, and a second one cannot share it.
+- Every session xmux has shown keeps an xmux client attached until xmux ends, so the
+  mux counts that client among the session's clients and applies its sizing policy to
+  it at the size the session was last shown at.
 - Handing the display from one mux client to another can flash a repaint.
 - On Windows, ssh has no ControlMaster multiplexing, so each remote round trip opens a
   fresh connection.

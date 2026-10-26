@@ -8,8 +8,8 @@ CLI is one process per query. Enumeration runs `list-sessions -n`, then
 `--session <name> action list-tabs --json` for each live session to count its windows
 without a display attachment. JSON counts tabs independently of their names. zellij
 moves a client between sessions inside the client process with `switch-session`, so
-the display reattaches on every session change and no zellij command reports where a
-client went. On Windows xmux reads `ZELLIJ_SESSION_NAME` out of its own client. On
+the display keeps one client per session and no zellij command reports where a client
+went. On Windows xmux reads `ZELLIJ_SESSION_NAME` out of its own client. On
 Linux it asks the kernel, once a second over the machine's open path, which session's
 server socket is the peer of its client's sockets (`ss -xn`). The client is named by
 process id, which an attach run through the machine's shell records before `exec`.
@@ -28,8 +28,10 @@ process id, which an attach run through the machine's shell records before `exec
   one out.
 - A session listed as exited is a stopped session: it is asked for no tab count, and
   only an execution of its card attaches, which resurrects it.
-- An attachment already recorded as showing the selected session is left alone.
-- A query answer counts only for the attachment it asked about, and never mid-reattach.
+- A session's client is kept while xmux runs; a client zellij moved to another session
+  is re-keyed to it.
+- A query answer counts only for the attachment it asked about, and never while that
+  attachment is still starting.
 
 ## Common Pitfalls
 

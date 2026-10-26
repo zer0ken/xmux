@@ -442,9 +442,10 @@ impl Hosts {
                     h.liveness = Liveness::Live;
                 }
             }
+            // The display clients outlive the control channel, and each one's tty is
+            // forgotten when its own PTY ends.
             Exited { host, .. } => {
                 if let Some(h) = self.get_mut(host) {
-                    h.clear_display_tty();
                     h.liveness = Liveness::Unreachable;
                 }
             }
@@ -900,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_exited_clears_tty_and_marks_unreachable() {
+    fn apply_exited_keeps_display_ttys_and_marks_unreachable() {
         let mut hosts = Hosts::build(
             &tmux_on(&["jup"]),
             &["jup".to_string()],
@@ -913,16 +914,17 @@ mod tests {
         hosts
             .get_mut("jup")
             .unwrap()
-            .record_display_tty(Some("/dev/pts/9".into()));
+            .record_display_tty("jup/api", Some("/dev/pts/9".into()));
         hosts.apply_host_event(&HostEvent::Exited {
             host: "jup".into(),
             reason: None,
             detached: false,
         });
         let h = hosts.get("jup").unwrap();
-        assert!(
-            h.display_tty.0.is_none(),
-            "death clears the tty so no switch-client targets it"
+        assert_eq!(
+            h.display_tty("jup/api"),
+            Some("/dev/pts/9"),
+            "the display clients outlive the control channel, so their ttys stay"
         );
         assert_eq!(h.liveness, Liveness::Unreachable);
     }

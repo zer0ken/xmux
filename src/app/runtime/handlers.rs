@@ -133,7 +133,7 @@ impl Runtime {
                 for host_id in &host_ids {
                     mgr.reap(host_id);
                     if let Some(host) = hosts.get_mut(host_id) {
-                        host.clear_display_tty();
+                        host.clear_display_ttys();
                         host.liveness = crate::model::Liveness::Unreachable;
                         host.display = Default::default();
                     }
@@ -158,17 +158,13 @@ impl Runtime {
                 // Reap our display attach ONLY when the detaching client is OUR display client
                 // (matched against the in-memory Host.display_tty). An unrelated client's detach
                 // can never match, so it is structurally inert - no blanket reap.
-                let Some(h) = hosts.get(&host) else {
+                let Some(key) = hosts.get(&host).and_then(|h| h.own_display_key(&client)) else {
                     return (false, Vec::new());
                 };
-                if !h.matches_display_tty(&client) {
-                    return (false, Vec::new());
-                }
-                let key = host_selection_key(h); // Shared ⇒ key == host id
                 registry.remove(&key);
                 if let Some(h) = hosts.get_mut(&host) {
                     h.display.clear(&key); // forget the shown session + any in-flight spawn
-                    h.clear_display_tty(); // the dead client's tty is gone
+                    h.clear_display_tty(&key); // the dead client's tty is gone
                 }
                 return (true, Vec::new()); // rearm recovery
             }
@@ -177,53 +173,49 @@ impl Runtime {
                 client,
                 session,
             } => {
-                // Follow ONLY when the switched client is OUR display attach (matched against
-                // Host.display_tty). A third party's own client (e.g. the user's separate tmux
-                // client on a real server) can never match, so it is structurally inert - the
-                // nav never chases someone else's switch.
+                // Follow ONLY when the switched client is one of OUR display attachments
+                // (matched against the ttys recorded per attachment). A third party's own
+                // client (e.g. the user's separate tmux client on a real server) can never
+                // match, so it is structurally inert - the nav never chases someone else's
+                // switch.
                 let Some(h) = hosts.get_mut(&host) else {
                     return (false, Vec::new());
                 };
-                if !h.matches_display_tty(&client) {
-                    // With no tty known yet, the report cannot be judged. A remote attach
+                let Some(key) = h.own_display_key(&client) else {
+                    // A client whose tty is not known yet cannot be judged. A remote attach
                     // records its tty before it execs the mux client, and the mux reports
                     // that client the moment it attaches, so the record exists by now:
-                    // read it, and keep the report until the reply says whose it was.
-                    if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
-                        let key = host_selection_key(h);
-                        if let Some(attachment) = registry.get(&key) {
+                    // read every unknown one, and keep the report until a reply says
+                    // whose it was.
+                    if h.transport.runs_through_shell() {
+                        let unknown: Vec<(String, u64)> = registry
+                            .addresses()
+                            .into_iter()
+                            .filter(|key| host_of_key(key) == host && h.display_tty(key).is_none())
+                            .filter_map(|key| registry.get(&key).map(|att| (key, att.id())))
+                            .collect();
+                        if !unknown.is_empty() {
                             h.note_reported_session(&client, &session);
-                            if let Some(control) = mgr.get(&host) {
-                                let tty_key = crate::mux::display_tty_key(
-                                    &key,
-                                    &self.instance_name,
-                                    attachment.id(),
-                                );
-                                control.capture_display_tty(&tty_key, attachment.id());
+                        }
+                        if let Some(control) = mgr.get(&host) {
+                            for (key, id) in unknown {
+                                let tty_key =
+                                    crate::mux::display_tty_key(&key, &self.instance_name, id);
+                                control.capture_display_tty(&tty_key, id);
                             }
                         }
                     }
                     return (false, Vec::new());
-                }
-                let h = &*h;
-                // xmux's own display PTY was moved to `session` by the mux itself (e.g.
-                // the user's prefix+s). RECORD IT AND NOTHING ELSE: this is where a mux
-                // with a control channel makes known where its client actually is, and
-                // what follows from the client and the selection naming different
-                // sessions is one comparison the loop makes continuously, in one place
-                // for every mux (`display_astray` / `follow_selection_to_display`). The
-                // record also keeps the next show() from dispatching a switch-client to a
-                // session the client is already on.
-                let key = host_selection_key(h); // Shared ⇒ key == host id
-                if let Some(h) = hosts.get_mut(&host) {
-                    h.display.set_shows(&key, &session);
-                }
+                };
+                // xmux's own display client was moved to `session` by the mux itself (e.g.
+                // the user's prefix+s): it now serves that session.
                 tracing::info!(
                     host = %host,
                     session = %session,
                     client = %client,
                     "display_client_session_changed"
                 );
+                self.move_display(&key, &session);
             }
             EventEffect::AddDiscoveredHosts { machine, muxes } => {
                 if model.state.invalid_auth.contains(&machine) {
@@ -536,9 +528,11 @@ impl Runtime {
                 from,
                 to,
             } => {
-                if let Some(h) = hosts.get_mut(&host_id) {
-                    h.display.rename_session(&from, &to);
-                }
+                // The session was renamed under its client, which still shows it: the
+                // connection now goes by the new name.
+                let from = crate::driver::session_display_key(&host_id, &from);
+                let to = crate::driver::session_display_key(&host_id, &to);
+                self.rekey_display(&from, &to);
             }
             EventEffect::SyncInventorySessions {
                 host: host_id,
@@ -567,11 +561,13 @@ impl Runtime {
                 // here would only ever see successes.
                 // PerSession psmux: a session whose registry .port disappeared is dead even
                 // if its PTY has not EOF'd. Drop the stale attach so it cannot show a dead grid.
-                if let Some(h) = hosts.get(&host_id) {
+                if let Some(h) = hosts.get_mut(&host_id) {
                     for s in &sessions {
                         if !h.session_is_live(&s.name) {
-                            // The host-keyed display attachment (one per-host PTY, reattached).
-                            registry.remove(&host_selection_key(h));
+                            let key = crate::driver::session_display_key(&host_id, &s.name);
+                            registry.remove(&key);
+                            h.display.clear(&key);
+                            h.clear_display_tty(&key);
                         }
                     }
                 }
@@ -588,26 +584,29 @@ impl Runtime {
                 sync_host_terminals(&host_id, &sessions, &mut ctx);
             }
             EventEffect::RecordDisplayTty { host, id, tty } => {
-                if registry
-                    .get(&host)
-                    .is_none_or(|attachment| attachment.id() != id)
-                {
+                // The answer is about attachment `id` and is recorded only while it is
+                // still the live one under its key.
+                let Some(key) = registry
+                    .address_of_id(id)
+                    .filter(|key| host_of_key(key) == host)
+                    .filter(|key| registry.get(key).is_some_and(|att| att.id() == id))
+                else {
                     return (false, Vec::new());
+                };
+                // The -CC `list-clients` probe resolved this attachment's display-client
+                // tty, so a control notice naming that client can be matched to it; `None`
+                // (only the control client attached so far) clears any stale tty.
+                let Some(h) = hosts.get_mut(&host) else {
+                    return (false, Vec::new());
+                };
+                if tty.is_some() {
+                    tracing::info!(host, key, ?tty, "display_tty_recorded");
                 }
-                // The -CC `list-clients` probe resolved xmux's display-client tty. Record it
-                // on the Host so a session switch is an in-place `switch-client -c <tty>`;
-                // `None` (only the control client attached so far) clears any stale tty.
-                if let Some(h) = hosts.get_mut(&host) {
-                    if tty.is_some() {
-                        tracing::info!(host, ?tty, "display_tty_recorded");
-                    }
-                    h.record_display_tty(tty);
-                    // A move the mux reported before the tty was known lands now.
-                    if let Some(session) = h.take_reported_session() {
-                        let key = host_selection_key(h);
-                        h.display.set_shows(&key, &session);
-                        tracing::info!(host, session, "display_client_session_changed");
-                    }
+                h.record_display_tty(&key, tty);
+                // A move the mux reported before the tty was known lands now.
+                if let Some(session) = h.take_reported_session(&key) {
+                    tracing::info!(host, session, "display_client_session_changed");
+                    self.move_display(&key, &session);
                 }
             }
         }
@@ -853,6 +852,8 @@ impl Runtime {
             display_sync_held: false,
             rescan_pending: false,
             display_probe: DisplayProbe::default(),
+            client_moved: None,
+            display_repairs: HashMap::new(),
             preview_opened: HashSet::new(),
             held_input: None,
             passthrough: Vec::new(),
@@ -1461,18 +1462,35 @@ impl Runtime {
                             .get(host_of_key(&key))
                             .is_some_and(|h| h.display.ended_early(&key, id, now))
                 });
+                // The host's display authentication is known while any of its
+                // connections stands; the last one ending forgets it.
                 if let Some(address) = self.registry.address_of_id(id) {
-                    let effects = update(
-                        &mut self.model,
-                        Msg::DisplayAuth {
-                            host: address,
-                            method: None,
-                        },
-                    );
-                    debug_assert!(effects.is_empty());
+                    let host = host_of_key(&address);
+                    let others = self.registry.addresses().into_iter().any(|key| {
+                        key != address
+                            && host_of_key(&key) == host
+                            && self.registry.get(&key).is_some()
+                    });
+                    if !others {
+                        let effects = update(
+                            &mut self.model,
+                            Msg::DisplayAuth {
+                                host: host.to_string(),
+                                method: None,
+                            },
+                        );
+                        debug_assert!(effects.is_empty());
+                    }
                 }
                 // Read before the reap: the reap drops the grid the reason is written on.
                 let last = last_pane_line(&self.registry, id);
+                let ended = self.registry.installed_address_of_id(id).map(|key| {
+                    let early = self
+                        .hosts
+                        .get(host_of_key(&key))
+                        .is_some_and(|h| h.display.ended_early(&key, id, now));
+                    (key, early)
+                });
                 clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
                 if !self.registry.reap(id) {
                     // pre-Ready Exited: registry has no id yet. Attribute to the owning host
@@ -1490,6 +1508,9 @@ impl Runtime {
                     if ended_early {
                         self.on_selection_attach_lost(id, true, now, last);
                     }
+                    if let Some((key, early)) = ended {
+                        self.schedule_repair(&key, early, now);
+                    }
                 }
                 Some(id) == displayed_attach_id
             }
@@ -1506,7 +1527,7 @@ impl Runtime {
                     let effects = update(
                         &mut self.model,
                         Msg::DisplayAuth {
-                            host: address,
+                            host: host_of_key(&address).to_string(),
                             method: Some(method),
                         },
                     );
@@ -1716,12 +1737,12 @@ impl Runtime {
 
         if let Some(h) = self.hosts.get_mut(&hid) {
             if let Some(tty) = child_tty.filter(|_| !h.transport.runs_through_shell()) {
-                tracing::info!(host = %hid, tty, "display_tty_from_pty");
-                h.record_display_tty(Some(tty));
+                tracing::info!(host = %hid, key, tty, "display_tty_from_pty");
+                h.record_display_tty(&key, Some(tty));
             }
-            if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
+            if h.display_tty(&key).is_none() && h.transport.runs_through_shell() {
                 if let Some(client) = self.mgr.get(&hid) {
-                    let tty_key = crate::mux::display_tty_key(&hid, &self.instance_name, attach_id);
+                    let tty_key = crate::mux::display_tty_key(&key, &self.instance_name, attach_id);
                     client.capture_display_tty(&tty_key, attach_id);
                 }
             }
@@ -2107,15 +2128,15 @@ impl Runtime {
     pub(super) fn drive_attach_beat(&mut self, now: std::time::Instant) {
         let state = &self.model.state;
         let selection = &state.selection;
-        let in_flight = selection_attach_in_flight(&self.hosts, selection);
-        // A quick round trip can return to the confirmed pixels after fit_displays
-        // released their client. Explicit selection still owes an attach, even though
-        // selection == displayed. A client that dies without a selection stays ended.
-        let reconnect_requested = !selection.is_empty()
+        let in_flight =
+            selection_attach_in_flight(&self.hosts, selection) || self.following_client();
+        // An explicit selection of the confirmed session whose client is gone still owes
+        // an attach, even though selection == displayed. A client that dies without a
+        // selection stays ended.
+        let display_astray = !selection.is_empty()
             && (state.attach_pending || state.attach_deadline.is_some())
             && !in_flight
             && !self.registry.contains(&display_key(&self.hosts, selection));
-        let display_astray = display_astray(state, &self.hosts) || reconnect_requested;
         let _ = self.dispatch_action(crate::model::Action::Tick {
             now,
             in_flight,
@@ -2123,52 +2144,44 @@ impl Runtime {
         });
     }
 
-    /// Moves the NAV SELECTION to the session the display client is on, while the
-    /// terminal holds the focus. Returns true when the selection moved.
+    /// Moves the NAV SELECTION to the session the mux moved the client on view to, while
+    /// the terminal holds the focus. Returns true when the selection moved.
     ///
     /// The user is driving the mux, so a session change the mux made is theirs and the
-    /// nav is what yields: the selection goes to the client, and the ordinary reconcile
-    /// then has nothing to do, because the client is already where the selection names.
-    /// The other direction ([`display_astray`]) belongs to nav focus, where the selection
-    /// is the user's own and the client is what comes back. One of the two regions moves,
-    /// never both, so the pair cannot chase each other.
+    /// nav is what yields. In the nav's focus the selection is the user's own and stands:
+    /// the beat attaches it again, since the moved client now serves the other session.
     ///
-    /// NOTHING IS REMEMBERED WHEN THE MOVE CANNOT LAND. A session created moments ago has
-    /// no card yet and the selection has nowhere to go; the client is still on it, and
-    /// this runs again on the next pass, so the move lands on the first pass after the
-    /// enumeration that brings the card in. The client itself is the record, which is why
-    /// there is none here to go stale, to be retried, or to be cancelled.
-    ///
-    /// WHICH OF THE TWO MOVED FIRST is the one thing the difference alone cannot say, and
-    /// an attach still owed for the selection is what says it. While one is owed, the
-    /// difference is a selection that moved and a display that has not been carried to it
-    /// yet - a ctl `switch` while the terminal holds the focus is exactly that - and
-    /// answering it here would drag the selection back to where the display still is and
-    /// undo the switch that was just asked for. Every driver records the session it is
-    /// showing as it acts, so the debt is settled in the same breath as the display, and
-    /// a difference outliving the debt is the mux's own doing.
+    /// A move made while an attach was still owed for the selection is not recorded (see
+    /// [`move_display`](Self::move_display)). A move whose session has no card yet is
+    /// kept until the enumeration that brings the card in, and the attach beat holds the
+    /// selection meanwhile ([`following_client`](Self::following_client)).
     pub(super) fn follow_selection_to_display(&mut self) -> bool {
-        if !self.model.state.focus.is_terminal_focused() || self.model.state.selection.is_empty() {
-            return false;
-        }
-        let in_flight = selection_attach_in_flight(&self.hosts, &self.model.state.selection);
-        if self.model.state.attach_pending
-            || self.model.state.attach_deadline.is_some()
-            || in_flight
-        {
-            return false;
-        }
-        let Some(shown) = display_session(&self.hosts, &self.model.state.selection.host) else {
+        let Some(moved) = self.client_moved.clone() else {
             return false;
         };
-        if shown == self.model.state.selection.session {
+        let state = &self.model.state;
+        // A selection made since the move (a ctl `switch`) supersedes it.
+        if !state.focus.is_terminal_focused()
+            || state.selection.is_empty()
+            || state.displayed != moved
+            || state.attach_pending
+        {
+            self.client_moved = None;
             return false;
         }
-        let addr = crate::session::Address::new(&self.model.state.selection.host, shown);
+        if state.selection == moved {
+            self.client_moved = None;
+            return false;
+        }
+        let addr = crate::session::Address::new(&moved.host, &moved.session);
         let before = self.model.switcher.terminal_view_target();
         let effects = update(&mut self.model, Msg::FollowDisplay(addr));
         debug_assert!(effects.is_empty());
-        before != self.model.switcher.terminal_view_target()
+        let followed = before != self.model.switcher.terminal_view_target();
+        if followed {
+            self.client_moved = None;
+        }
+        followed
     }
 
     /// Reads xmux's own display client for the session it is on and records it, for a mux
@@ -2214,31 +2227,30 @@ impl Runtime {
     /// round trip per beat to save nothing. The test guards the conclusion rather than the
     /// figure: it fails only when a read costs a visible share of a beat.
     pub(super) fn observe_display_session(&mut self) -> bool {
-        if self.model.state.selection.is_empty() {
+        let displayed = &self.model.state.displayed;
+        if displayed.is_empty() {
             return false;
         }
-        let id = self.model.state.selection.host.clone();
+        let id = displayed.host.clone();
+        let key = display_key(&self.hosts, displayed);
         let Some(host) = self.hosts.get(&id) else {
             return false;
         };
-        let key = host_selection_key(host);
         if host.display.in_flight_contains(&key) || host.display.pending_paint_contains(&key) {
             return false;
         }
-        let Some(session) = crate::driver::live_client_session(host, &self.registry) else {
+        let Some(session) = crate::driver::live_client_session(host, &key, &self.registry) else {
             return false;
         };
         if host.display.shows(&key) == Some(session.as_str()) {
             return false;
-        }
-        if let Some(h) = self.hosts.get_mut(&id) {
-            h.display.set_shows(&key, &session);
         }
         tracing::info!(
             host = %id,
             session = %session,
             "display_client_session_changed"
         );
+        self.move_display(&key, &session);
         true
     }
 
@@ -2253,21 +2265,22 @@ impl Runtime {
     /// slowly is asked less often rather than more. No query starts while a reattach is
     /// in flight for the display key, for the same reason the local read refuses one.
     pub(super) fn start_display_probe(&mut self, now: std::time::Instant) {
+        let displayed = &self.model.state.displayed;
         if self.display_probe.in_flight
             || self.display_probe.next.is_some_and(|next| now < next)
-            || self.model.state.selection.is_empty()
+            || displayed.is_empty()
         {
             return;
         }
-        let Some(host) = self.hosts.get(&self.model.state.selection.host) else {
+        let key = display_key(&self.hosts, displayed);
+        let Some(host) = self.hosts.get(&displayed.host) else {
             return;
         };
-        let key = host_selection_key(host);
         if host.display.in_flight_contains(&key) || host.display.pending_paint_contains(&key) {
             return;
         }
         let Some((id, command)) =
-            crate::driver::display_client_probe(host, &self.registry, &self.instance_name)
+            crate::driver::display_client_probe(host, &key, &self.registry, &self.instance_name)
         else {
             return;
         };
@@ -2341,14 +2354,12 @@ impl Runtime {
                 }
                 if self.display_probe.held.as_ref() != Some(&(id, session.clone())) {
                     self.display_probe.held = None;
-                    if let Some(h) = self.hosts.get_mut(&host_id) {
-                        h.display.set_shows(&key, &session);
-                    }
                     tracing::info!(
                         host = %host_id,
                         session = %session,
                         "display_client_session_changed"
                     );
+                    self.move_display(&key, &session);
                     self.clear_display_away();
                     return true;
                 }
@@ -2403,9 +2414,9 @@ impl Runtime {
             } else {
                 self.registry.remove(&key);
             }
-            if let Some(host) = self.hosts.get_mut(&key) {
+            if let Some(host) = self.hosts.get_mut(host_of_key(&key)) {
                 host.display.clear(&key);
-                host.clear_display_tty();
+                host.clear_display_tty(&key);
             }
         }
         if !self.model.switcher.start_open() {
@@ -2415,6 +2426,191 @@ impl Runtime {
             let (cols, rows) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
             self.registry.resize(key, cols, rows);
         }
+    }
+
+    /// Moves the connection under key `from` to key `to` with every record of it,
+    /// ending whatever `to` held. The client is unchanged; only the session it is known
+    /// by moves.
+    pub(super) fn rekey_display(&mut self, from: &str, to: &str) {
+        if from == to {
+            return;
+        }
+        self.registry.rekey(from, to);
+        if let Some(host) = self.hosts.get_mut(host_of_key(from)) {
+            host.rekey_display(from, to);
+        }
+        // The client left `from` on its own: nothing there is owed a repair.
+        self.display_repairs.remove(from);
+        self.display_repairs.remove(to);
+        if self.preview_opened.remove(from) {
+            self.preview_opened.insert(to.to_string());
+        }
+    }
+
+    /// Records that the mux moved xmux's client under `from` to `session`, so the client
+    /// now serves that session: its connection goes by that session's key, and one xmux
+    /// already held there ends. A client on view carries the view with it, and the nav
+    /// follows it while the user works in the terminal view; in the nav's focus the
+    /// selection stands and is attached again.
+    pub(super) fn move_display(&mut self, from: &str, session: &str) {
+        let host = host_of_key(from).to_string();
+        let to = crate::driver::session_display_key(&host, session);
+        if from == to {
+            return;
+        }
+        let state = &self.model.state;
+        let on_view = display_key(&self.hosts, &state.displayed) == from;
+        // An attach still owed for the selection means the selection moved first (a ctl
+        // `switch` while the terminal holds the focus); that switch stands.
+        let owed = state.attach_pending
+            || state.attach_deadline.is_some()
+            || selection_attach_in_flight(&self.hosts, &state.selection);
+        self.rekey_display(from, &to);
+        if on_view {
+            let moved = Selection {
+                host,
+                session: session.to_string(),
+            };
+            let effects = update(
+                &mut self.model,
+                Msg::Action(crate::model::Action::ConfirmDisplay(moved.clone())),
+            );
+            debug_assert!(effects.is_empty());
+            self.client_moved = (!owed).then_some(moved);
+            self.dirty = true;
+        }
+    }
+
+    /// Queues the connection under `key`, which ended on its own, to be attached again.
+    /// The connection on view is the user's to recover (selecting it again, or a
+    /// re-scan): its client may have ended because the user detached it inside the
+    /// terminal view. One the start preview opened ends with the preview anyway.
+    pub(super) fn schedule_repair(&mut self, key: &str, early: bool, now: std::time::Instant) {
+        let displayed = &self.model.state.displayed;
+        if (!displayed.is_empty() && display_key(&self.hosts, displayed) == key)
+            || self.preview_opened.contains(key)
+        {
+            self.display_repairs.remove(key);
+            return;
+        }
+        let attempts = match self.display_repairs.get(key) {
+            Some(repair) if early => repair.attempts.saturating_add(1),
+            _ => 0,
+        };
+        tracing::info!(key, attempts, "display_repair_scheduled");
+        self.display_repairs.insert(
+            key.to_string(),
+            super::Repair {
+                attempts,
+                at: Some(now + super::repair_delay(attempts)),
+            },
+        );
+    }
+
+    /// Makes every queued repair due now, with its wait reset: the user asked for the
+    /// connections to be checked (a re-scan of `machine`, or of every machine).
+    pub(super) fn repair_now(&mut self, machine: Option<&str>, now: std::time::Instant) {
+        for (key, repair) in self.display_repairs.iter_mut() {
+            if machine.is_none_or(|m| crate::session::machine_of(host_of_key(key)) == m) {
+                *repair = super::Repair {
+                    attempts: 0,
+                    at: Some(now),
+                };
+            }
+        }
+    }
+
+    /// Attaches again every queued connection whose wait is over, off view and without
+    /// moving the view. A session no longer listed is dropped from the queue; a host whose
+    /// listing failed is waited for. Returns whether an attach was requested.
+    pub(super) fn repair_displays(&mut self, now: std::time::Instant) -> bool {
+        // An attach that failed, or whose client ended before it was installed, leaves
+        // nothing held: it waits again, longer.
+        let lost: Vec<String> = self
+            .display_repairs
+            .iter()
+            .filter(|(key, repair)| repair.at.is_none() && !self.holds_display(key))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in lost {
+            if let Some(repair) = self.display_repairs.get_mut(&key) {
+                repair.attempts = repair.attempts.saturating_add(1);
+                repair.at = Some(now + super::repair_delay(repair.attempts));
+            }
+        }
+        let due: Vec<String> = self
+            .display_repairs
+            .iter()
+            .filter(|(_, repair)| repair.at.is_some_and(|at| at <= now))
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut requested = false;
+        for key in due {
+            let host = host_of_key(&key).to_string();
+            let session = crate::driver::session_of_key(&key).to_string();
+            let group = self.model.state.groups.iter().find(|g| g.host == host);
+            let listed = group.and_then(|g| {
+                g.err
+                    .is_none()
+                    .then(|| g.sessions.iter().find(|s| s.name == session))
+                    .flatten()
+            });
+            match (group, listed) {
+                (Some(g), None) if g.err.is_none() => {
+                    self.display_repairs.remove(&key);
+                    continue;
+                }
+                (_, Some(s)) if s.stopped => {
+                    self.display_repairs.remove(&key);
+                    continue;
+                }
+                (_, None) => {
+                    if let Some(repair) = self.display_repairs.get_mut(&key) {
+                        repair.at = Some(now + super::repair_delay(repair.attempts));
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            if self.holds_display(&key) {
+                if let Some(repair) = self.display_repairs.get_mut(&key) {
+                    repair.at = None;
+                }
+                continue;
+            }
+            let selection = Selection { host, session };
+            let nav = self.nav_size();
+            tracing::info!(key, "display_repair");
+            select_attach(
+                &selection,
+                &mut crate::driver::DriverCtx {
+                    registry: &mut self.registry,
+                    hosts: &mut self.hosts,
+                    instance_name: &self.instance_name,
+                    mgr: &self.mgr,
+                    worker: &self.worker,
+                    pty_tx: &self.driver_pty_tx,
+                    attach_seq: &mut self.attach_seq,
+                    viewport: terminal_view_size(self.cols, self.body_rows, nav),
+                },
+            );
+            if let Some(repair) = self.display_repairs.get_mut(&key) {
+                repair.at = None;
+            }
+            requested = true;
+        }
+        requested
+    }
+
+    /// Whether the nav is waiting to follow the client on view to a session the mux moved
+    /// it to, so the attach beat must not carry the view back to the selection.
+    pub(super) fn following_client(&self) -> bool {
+        self.model.state.focus.is_terminal_focused()
+            && !self.model.state.attach_pending
+            && self
+                .client_moved
+                .as_ref()
+                .is_some_and(|moved| *moved == self.model.state.displayed)
     }
 
     /// Whether xmux holds a display connection under `key`, live, painting, or starting.
@@ -2488,6 +2684,9 @@ impl Runtime {
             self.dirty = true;
         }
         self.start_display_probe(std::time::Instant::now());
+        if self.repair_displays(std::time::Instant::now()) {
+            self.dirty = true;
+        }
         // Spinner set = the selected session if its PTY is still connecting.
         let mut sp = HashSet::new();
         if !self.model.state.selection.is_empty() {

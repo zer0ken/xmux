@@ -34,7 +34,8 @@ and returns commands; the clock and runtime attach facts enter as data on the ti
   dimension is reconciled from it on every loop pass.
 - The attach debounce re-arms on every pending selection and arms on the same
   condition the attach gate fires on.
-- A display PTY that died while the selection stands attaches nothing.
+- A display PTY that died while the selection stands attaches nothing here; the
+  runtime re-attaches only display clients off view.
 - No IO, spawning, channel sends, registry mutation, or clock reads happen here;
   return a command for the loop to run instead.
 - The action reducer folds intents without a match on mux kind; the mux enters here

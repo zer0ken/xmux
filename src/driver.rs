@@ -166,18 +166,72 @@ impl DriverCtx<'_> {
     }
 }
 
-/// The display key for a host. Every supported server model uses one display PTY per
-/// host, either switching it in place or reattaching it.
-pub fn host_selection_key(host: &Host) -> String {
-    host.id().to_string()
+/// The attachment key for a session of a host. Every mux gets one display connection
+/// per session, so a switch to a session xmux already holds is only a change of which
+/// grid is on view.
+pub fn session_display_key(host: &str, session: &str) -> String {
+    format!("{host}/{session}")
+}
+
+/// The session a display key names. A host id has no `/`, so the session is everything
+/// after the first one.
+pub fn session_of_key(key: &str) -> &str {
+    key.split_once('/').map_or("", |(_, session)| session)
+}
+
+/// The host id a display key belongs to: the part before the first `/`.
+pub fn host_of_key(key: &str) -> &str {
+    key.split_once('/').map_or(key, |(host, _)| host)
+}
+
+/// Whether xmux already holds, or is opening, the display connection for `sel`'s
+/// session, so showing it attaches nothing and the caller confirms the display.
+pub fn holds_connection(ctx: &DriverCtx, sel: &Selection) -> bool {
+    let key = ctx.display_key(sel);
+    ctx.registry.contains(&key)
+        || ctx.hosts.get(&sel.host).is_some_and(|host| {
+            host.display.in_flight_contains(&key) || host.display.pending_paint_contains(&key)
+        })
+}
+
+/// Ends the display connections of `host_id` whose session the inventory no longer
+/// lists. A listed session keeps its connection, and none is opened here.
+pub fn reap_ended_sessions(
+    host_id: &str,
+    sessions: &[crate::session::Session],
+    ctx: &mut DriverCtx,
+) {
+    let Some(host) = ctx.hosts.get(host_id) else {
+        return;
+    };
+    let mut keys: Vec<String> = ctx
+        .registry
+        .addresses()
+        .into_iter()
+        .filter(|key| host_of_key(key) == host_id)
+        .collect();
+    keys.extend(
+        host.display
+            .attachments()
+            .map(|(key, _, _)| key.to_string()),
+    );
+    keys.sort();
+    keys.dedup();
+    for key in keys {
+        if sessions.iter().any(|s| s.name == session_of_key(&key)) {
+            continue;
+        }
+        ctx.registry.remove(&key);
+        if let Some(host) = ctx.hosts.get_mut(host_id) {
+            host.display.clear(&key);
+            host.clear_display_tty(&key);
+        }
+    }
 }
 
 /// The attachment key for a selection.
-pub fn display_key(hosts: &Hosts, selection: &Selection) -> String {
-    hosts
-        .get(&selection.host)
-        .map(host_selection_key)
-        .unwrap_or_else(|| selection.host.clone())
+pub fn display_key(_hosts: &Hosts, selection: &Selection) -> String {
+    session_display_key(&selection.host, &selection.session)
 }
 
 fn run_lowered(lowered: crate::transport::LoweredSwitch) {
@@ -236,9 +290,11 @@ pub trait MuxDriver {
     fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>> {
         ctx.registry.grid(&ctx.display_key(sel))
     }
-    /// Reap a host's display terminal when its inventory has no sessions left.
-    /// Selection opens display connections; inventory updates never warm hidden hosts.
-    fn sync(&mut self, host: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx);
+    /// Reconcile the host's display connections with its inventory: a session no longer
+    /// listed loses its connection. Only a selection opens one.
+    fn sync(&mut self, host: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
+        reap_ended_sessions(host, sessions, ctx);
+    }
 }
 
 /// The host's mux driver - the DECISION is a Mux method (`host.mux.driver()`), not a
@@ -303,14 +359,13 @@ pub(crate) use log_display_inventory;
 /// readable only on the machine it runs on, so a host reached over ssh or through a WSL
 /// distribution has no such source of truth, and the local registry scope is what says whether a
 /// host's processes are this machine's processes.
-pub fn live_client_session(host: &Host, registry: &AttachRegistry) -> Option<String> {
-    let (key, var) = session_truth_source(host)?;
-    registry.child_env(&key, var)
+pub fn live_client_session(host: &Host, key: &str, registry: &AttachRegistry) -> Option<String> {
+    let var = session_truth_source(host)?;
+    registry.child_env(key, var)
 }
 
-/// Where a host's display client can be READ for the session it is on: the display key
-/// its attachment is registered under, and the environment variable the mux carries the
-/// session in. `None` when the host has no source of truth at all, which is the honesty gate the
+/// Where a host's display clients can be READ for the session each is on: the
+/// environment variable the mux carries the session in. `None` when the host has no source of truth at all, which is the honesty gate the
 /// read is built on and is decided WITHOUT looking at any attachment, so it answers the
 /// same before, during, and after one.
 ///
@@ -322,12 +377,11 @@ pub fn live_client_session(host: &Host, registry: &AttachRegistry) -> Option<Str
 /// whether a host's processes are this machine's processes. A host that fails either one has NO
 /// source of truth: nothing is read for it, and where its client sits is claimed from nothing
 /// else.
-pub(crate) fn session_truth_source(host: &Host) -> Option<(String, &str)> {
+pub(crate) fn session_truth_source(host: &Host) -> Option<&str> {
     if !host.transport.local_registry_scope() {
         return None;
     }
-    let var = host.mux.display_session_env()?;
-    Some((host_selection_key(host), var))
+    host.mux.display_session_env()
 }
 
 /// Whether an attach through `transport` runs in a POSIX machine shell, which can record
@@ -351,6 +405,7 @@ pub fn attach_records_client(transport: &dyn crate::transport::Transport) -> boo
 /// runs through a machine shell, since there the child is the transport's process.
 pub fn display_client_probe(
     host: &Host,
+    key: &str,
     registry: &AttachRegistry,
     instance_name: &str,
 ) -> Option<(u64, crate::transport::CommandSpec)> {
@@ -360,14 +415,13 @@ pub fn display_client_probe(
     if !host.transport.reuses_connection() {
         return None;
     }
-    let key = host_selection_key(host);
-    let attachment = registry.get(&key)?;
+    let attachment = registry.get(key)?;
     let client = if host.transport.runs_through_shell() {
         if !attach_records_client(host.transport.as_ref()) {
             return None;
         }
         crate::mux::DisplayClient::Recorded(crate::mux::display_tty_key(
-            &key,
+            key,
             instance_name,
             attachment.id(),
         ))
@@ -422,8 +476,7 @@ pub(crate) mod tests {
                 crate::transport::local(None),
                 crate::mux::for_binary(bin).unwrap(),
             );
-            let (key, var) = session_truth_source(&local).expect("this box's own client");
-            assert_eq!(key, "local", "read under the host's display key");
+            let var = session_truth_source(&local).expect("this box's own client");
             assert_eq!(var, expected);
 
             let remote = crate::model::Host::new(
@@ -476,13 +529,14 @@ pub(crate) mod tests {
             )
         };
         let mut registry = AttachRegistry::new();
-        registry.insert("jup", crate::display::attachment::fake_attachment(7));
+        registry.insert("jup/api", crate::display::attachment::fake_attachment(7));
 
-        let (id, command) = display_client_probe(&host("/tmp/cm", "zellij"), &registry, "run")
-            .expect("a shared connection to a zellij host is queried");
+        let (id, command) =
+            display_client_probe(&host("/tmp/cm", "zellij"), "jup/api", &registry, "run")
+                .expect("a shared connection to a zellij host is queried");
         assert_eq!(id, 7);
         assert_eq!(command.program(), "ssh");
-        let record = crate::mux::display_tty_key("jup", "run", 7);
+        let record = crate::mux::display_tty_key("jup/api", "run", 7);
         let token: String = record
             .chars()
             .map(|c| {
@@ -502,14 +556,19 @@ pub(crate) mod tests {
         );
 
         assert!(
-            display_client_probe(&host("", "zellij"), &registry, "run").is_none(),
+            display_client_probe(&host("", "zellij"), "jup/api", &registry, "run").is_none(),
             "a fresh login per query is never repeated on a cadence"
         );
-        assert!(display_client_probe(&host("/tmp/cm", "tmux"), &registry, "run").is_none());
         assert!(
-            display_client_probe(&host("/tmp/cm", "zellij"), &AttachRegistry::new(), "run")
-                .is_none()
+            display_client_probe(&host("/tmp/cm", "tmux"), "jup/api", &registry, "run").is_none()
         );
+        assert!(display_client_probe(
+            &host("/tmp/cm", "zellij"),
+            "jup/api",
+            &AttachRegistry::new(),
+            "run"
+        )
+        .is_none());
     }
 
     /// No attachment for the host means no client, and no client means NO SIGNAL - not a
@@ -522,7 +581,7 @@ pub(crate) mod tests {
             crate::mux::for_binary("psmux").unwrap(),
         );
         let registry = AttachRegistry::new();
-        assert!(live_client_session(&host, &registry).is_none());
+        assert!(live_client_session(&host, "local/api", &registry).is_none());
     }
 
     #[test]
@@ -576,26 +635,25 @@ pub(crate) mod tests {
         assert_eq!(driver_for(&psmux_host).kind(), "psmux");
     }
 
-    /// Through the driver boundary, a per-session mux selection REPLACES the host-keyed
-    /// display attachment (the per-session reattach). This pins the seam by its observable
-    /// effect rather than by which helper carries it out, because a per-session mux reaches
-    /// another session only by reattaching, whatever owns the decision. Headless: a fake
-    /// spawner, no live mux.
+    /// Through the driver boundary, a per-session mux selection opens the selected
+    /// session's own connection and leaves the one held for another session open. This
+    /// pins the seam by its observable effect rather than by which helper carries it out.
+    /// Headless: a fake spawner, no live mux.
     #[tokio::test(flavor = "current_thread")]
-    async fn seam_show_replaces_per_session_display_attachments() {
+    async fn seam_show_opens_a_connection_per_session_and_keeps_the_old_one() {
         for bin in ["psmux", "tuios", "herdr"] {
             let mut hosts = crate::model::Hosts::default();
             hosts.insert(crate::model::Host::new(
                 crate::transport::local(None),
                 crate::mux::for_binary(bin).unwrap(),
             ));
-            // A stale attachment + bookkeeping for a different session: show() must
-            // reattach for the selection while retaining the old frame until painted.
+            // A connection held for a different session: show() attaches the selection
+            // under its own key and leaves the other one open.
             hosts
                 .get_mut("local")
                 .unwrap()
                 .display
-                .set_shows("local", "old");
+                .set_shows("local/old", "old");
 
             let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
             let (viewport_tx, viewport_rx) = std::sync::mpsc::channel();
@@ -608,7 +666,7 @@ pub(crate) mod tests {
                 crate::mux::herdr_attach_runner(),
             );
             let mut registry = AttachRegistry::new();
-            registry.insert("local", crate::display::attachment::fake_attachment(99));
+            registry.insert("local/old", crate::display::attachment::fake_attachment(99));
             let mut attach_seq = 0u64;
             let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -644,17 +702,17 @@ pub(crate) mod tests {
             );
             let h = hosts.get("local").unwrap();
             assert_eq!(
-                h.display.shows("local"),
+                h.display.shows("local/target"),
                 Some("target"),
-                "{bin}: show records the selected session on the host key"
+                "{bin}: show records the selected session on its own key"
             );
             assert!(
-                h.display.in_flight_contains("local"),
-                "{bin}: show requests a fresh per-session reattach"
+                h.display.in_flight_contains("local/target"),
+                "{bin}: show requests a fresh attach for the selected session"
             );
             assert!(
-                registry.contains("local"),
-                "{bin}: the stale attachment remains until the fresh one is painted"
+                registry.contains("local/old"),
+                "{bin}: the other session keeps its connection"
             );
         }
     }
