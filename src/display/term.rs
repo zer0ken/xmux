@@ -308,6 +308,121 @@ impl CursorShape {
     }
 }
 
+/// The terminal's `OSC 22` pointer shape. A session never draws an OS pointer, so the
+/// shape is a pure app-side cue; writing only a change keeps it off the per-frame
+/// output. An empty shape puts the default pointer back.
+#[derive(Default)]
+pub struct PointerShape {
+    /// The shape last written, `None` once the pointer has no role.
+    written: Option<&'static str>,
+}
+
+impl PointerShape {
+    /// Writes `OSC 22 ; <shape> ST` when `shape` differs from the shape last written;
+    /// the empty shape puts the default pointer back.
+    pub fn apply(
+        &mut self,
+        shape: Option<&'static str>,
+        out: &mut impl std::io::Write,
+    ) -> std::io::Result<()> {
+        if shape == self.written {
+            return Ok(());
+        }
+        write!(out, "\x1b]22;{}\x1b\\", shape.unwrap_or(""))?;
+        out.flush()?;
+        self.written = shape;
+        Ok(())
+    }
+}
+
+/// The role the pointer plays under the cursor, which picks its shape.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PointerRole {
+    /// Over a clickable link.
+    Link,
+    /// Over a draggable box.
+    Grab,
+    /// Over the nav border, resizing a border that runs horizontally.
+    Resize { horizontal: bool },
+}
+
+/// The `OSC 22` name family a terminal takes, `None` when it does not answer the
+/// sequence. kitty and its peers take the CSS names; xterm takes the X cursor names;
+/// the emulators that ignore the sequence (VTE, alacritty, wezterm, foot) get none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShapeFamily {
+    Css,
+    X,
+}
+
+fn shape_family(name: Option<&str>) -> Option<ShapeFamily> {
+    let n = name?.to_ascii_lowercase();
+    if n.starts_with("kitty") || n.starts_with("ghostty") {
+        Some(ShapeFamily::Css)
+    } else if n.starts_with("xterm") {
+        Some(ShapeFamily::X)
+    } else {
+        None
+    }
+}
+
+/// The `OSC 22` shape names the terminal in use takes for each pointer role. A terminal
+/// that does not answer the sequence has `None` everywhere, so it never receives one.
+#[derive(Clone, Copy)]
+pub struct PointerShapes {
+    link: Option<&'static str>,
+    grab: Option<&'static str>,
+    resize_ew: Option<&'static str>,
+    resize_ns: Option<&'static str>,
+}
+
+impl PointerShapes {
+    /// The shape names the terminal xmux runs in takes, from what it answered at startup.
+    pub fn of_terminal() -> Self {
+        Self::of_family(shape_family(crate::display::outer::outer().name.as_deref()))
+    }
+
+    /// The shape names a terminal of `family` takes.
+    fn of_family(family: Option<ShapeFamily>) -> Self {
+        match family {
+            Some(ShapeFamily::Css) => Self {
+                link: Some("pointer"),
+                grab: Some("grab"),
+                resize_ew: Some("ew-resize"),
+                resize_ns: Some("ns-resize"),
+            },
+            Some(ShapeFamily::X) => Self {
+                link: Some("hand2"),
+                grab: Some("hand2"),
+                resize_ew: Some("sb_h_double_arrow"),
+                resize_ns: Some("sb_v_double_arrow"),
+            },
+            None => Self {
+                link: None,
+                grab: None,
+                resize_ew: None,
+                resize_ns: None,
+            },
+        }
+    }
+
+    /// The shape the `role` the pointer plays takes, `None` when the terminal does not
+    /// answer `OSC 22`.
+    pub fn role(&self, role: PointerRole) -> Option<&'static str> {
+        match role {
+            PointerRole::Link => self.link,
+            PointerRole::Grab => self.grab,
+            PointerRole::Resize { horizontal } => {
+                if horizontal {
+                    self.resize_ns
+                } else {
+                    self.resize_ew
+                }
+            }
+        }
+    }
+}
+
 /// Parse a prefix-key spec (the `[ui] prefix` config value) into a C0 control byte.
 ///
 /// Recognised forms:
@@ -351,6 +466,87 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    /// A grab shape is chosen for the terminal family in use, and unsupported
+    /// terminals get none.
+    #[test]
+    fn shape_family_follows_the_terminal_name() {
+        assert_eq!(shape_family(Some("kitty(0.41.1)")), Some(ShapeFamily::Css));
+        assert_eq!(shape_family(Some("ghostty 1.1.3")), Some(ShapeFamily::Css));
+        assert_eq!(shape_family(Some("xterm(396)")), Some(ShapeFamily::X));
+        assert_eq!(shape_family(Some("WezTerm 20240203")), None);
+        assert_eq!(shape_family(None), None);
+    }
+
+    /// Each role maps to the shape of the family in use; a terminal without `OSC 22`
+    /// has none for any role.
+    #[test]
+    fn pointer_shapes_name_every_role() {
+        let css = PointerShapes::of_family(Some(ShapeFamily::Css));
+        assert_eq!(css.role(PointerRole::Link), Some("pointer"));
+        assert_eq!(css.role(PointerRole::Grab), Some("grab"));
+        assert_eq!(
+            css.role(PointerRole::Resize { horizontal: false }),
+            Some("ew-resize")
+        );
+        assert_eq!(
+            css.role(PointerRole::Resize { horizontal: true }),
+            Some("ns-resize")
+        );
+        let x = PointerShapes::of_family(Some(ShapeFamily::X));
+        assert_eq!(x.role(PointerRole::Link), Some("hand2"));
+        assert_eq!(x.role(PointerRole::Grab), Some("hand2"));
+        assert_eq!(
+            x.role(PointerRole::Resize { horizontal: false }),
+            Some("sb_h_double_arrow")
+        );
+        assert_eq!(
+            x.role(PointerRole::Resize { horizontal: true }),
+            Some("sb_v_double_arrow")
+        );
+        let none = PointerShapes::of_family(None);
+        for role in [
+            PointerRole::Link,
+            PointerRole::Grab,
+            PointerRole::Resize { horizontal: false },
+            PointerRole::Resize { horizontal: true },
+        ] {
+            assert_eq!(none.role(role), None);
+        }
+    }
+
+    /// The pointer shape writes on hover and resets with the empty shape on exit.
+    #[test]
+    fn pointer_shape_grabs_on_hover_and_resets_on_exit() {
+        let all = |out: &RecordedWrites| out.0.iter().flatten().copied().collect::<Vec<u8>>();
+        let mut out = RecordedWrites::default();
+        let mut shape = PointerShape::default();
+        shape.apply(Some("grab"), &mut out).unwrap();
+        assert_eq!(all(&out), b"\x1b]22;grab\x1b\\");
+        // No change while the pointer stays on the box.
+        shape.apply(Some("grab"), &mut out).unwrap();
+        assert_eq!(all(&out), b"\x1b]22;grab\x1b\\");
+        // Exit resets with the empty shape.
+        shape.apply(None, &mut out).unwrap();
+        assert_eq!(all(&out), b"\x1b]22;grab\x1b\\\x1b]22;\x1b\\");
+        // And grabs again on the next hover.
+        shape.apply(Some("grab"), &mut out).unwrap();
+        assert_eq!(
+            all(&out),
+            b"\x1b]22;grab\x1b\\\x1b]22;\x1b\\\x1b]22;grab\x1b\\"
+        );
+    }
+
+    /// A terminal without `OSC 22` support yields `None` for every role, so the
+    /// writer never sends a sequence.
+    #[test]
+    fn pointer_shape_writes_nothing_without_support() {
+        let mut out = RecordedWrites::default();
+        let mut shape = PointerShape::default();
+        shape.apply(None, &mut out).unwrap();
+        shape.apply(None, &mut out).unwrap();
+        assert!(out.0.is_empty());
     }
 
     #[test]
