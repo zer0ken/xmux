@@ -641,7 +641,8 @@ pub(crate) mod tests {
     /// Headless: a fake spawner, no live mux.
     #[tokio::test(flavor = "current_thread")]
     async fn seam_show_opens_a_connection_per_session_and_keeps_the_old_one() {
-        for bin in ["psmux", "tuios", "herdr"] {
+        // herdr keeps one client per host; its driver's own test covers that.
+        for bin in ["psmux", "tuios"] {
             let mut hosts = crate::model::Hosts::default();
             hosts.insert(crate::model::Host::new(
                 crate::transport::local(None),
