@@ -404,6 +404,9 @@ impl Runtime {
                     Command::Attach(selection) => {
                         let started = std::time::Instant::now();
                         let nav = self.nav_size();
+                        let key = display_key(&self.hosts, &selection);
+                        let preview_opens =
+                            self.model.switcher.start_open() && !self.holds_display(&key);
                         // select_attach picks the host's driver and hands it the intent.
                         let shown = select_attach(
                             &selection,
@@ -418,7 +421,9 @@ impl Runtime {
                                 viewport: terminal_view_size(self.cols, self.body_rows, nav),
                             },
                         );
-                        let key = display_key(&self.hosts, &selection);
+                        if preview_opens && self.holds_display(&key) {
+                            self.preview_opened.insert(key.clone());
+                        }
                         if shown {
                             // Advance the display truth synchronously ONLY for a confirmed
                             // in-place path: a live grid for the key exists AND no reattach
@@ -1866,6 +1871,9 @@ struct Runtime {
     display_sync_held: bool,
     rescan_pending: bool,
     display_probe: DisplayProbe,
+    /// The display keys whose connection the start screen's preview opened. Each ends
+    /// once the preview leaves it; see [`Runtime::fit_displays`].
+    preview_opened: HashSet<String>,
     /// Terminal input typed for a selection whose attachment does not exist yet; see
     /// [`input_route`].
     held_input: Option<HeldInput>,

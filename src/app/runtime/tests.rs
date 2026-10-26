@@ -2508,6 +2508,7 @@ fn test_rt(env: Env) -> Runtime {
         display_sync_held: false,
         rescan_pending: false,
         display_probe: DisplayProbe::default(),
+        preview_opened: HashSet::new(),
         held_input: None,
         passthrough: Vec::new(),
         title: None,
@@ -5941,9 +5942,9 @@ async fn ready_adopts_the_pty_name_only_where_the_child_is_the_mux_client() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_hidden_attach_reply_is_discarded_before_the_next_frame() {
-    // A worker can finish between a selection move and frame housekeeping. Its
-    // reply must release the abandoned request without installing a hidden client.
+async fn an_attach_reply_off_view_installs_without_taking_the_view() {
+    // A worker can finish after the selection moved on. Its connection stays open for
+    // the session it attached, and the view stays on the selected session.
     let mut rt = a_settled_psmux_runtime();
     rt.hosts.insert(crate::model::Host::new(
         crate::transport::ssh("jup".into(), String::new(), "linux".into()),
@@ -5962,6 +5963,11 @@ async fn a_hidden_attach_reply_is_discarded_before_the_next_frame() {
         key: "jup".into(),
         attachment,
     });
+    let painted = std::time::Instant::now();
+    rt.registry
+        .mark_pending_painted_for_test(OWN_CLIENT + 2, painted);
+    rt.note_pending_output(OWN_CLIENT + 2);
+    rt.promote_due_pending(painted + crate::model::host::PAINT_SETTLE);
     assert_eq!(
         (
             rt.model.state.displayed.host.as_str(),
@@ -5970,11 +5976,12 @@ async fn a_hidden_attach_reply_is_discarded_before_the_next_frame() {
         ("local", "a"),
         "the view stays on the selected session"
     );
-    assert!(
-        !rt.registry.contains("jup"),
-        "an abandoned worker reply never installs a hidden connection"
+    assert_eq!(
+        rt.registry.get("jup").map(|att| att.id()),
+        Some(OWN_CLIENT + 2),
+        "the connection off view stays open"
     );
-    assert!(killed.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!killed.load(std::sync::atomic::Ordering::SeqCst));
     assert!(rt.hosts.get("jup").unwrap().display.in_flight_is_empty());
 }
 
@@ -9532,13 +9539,60 @@ fn newly_created_config_is_applied_without_a_second_edit() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn display_connections_follow_the_visible_session_for_every_mux() {
+async fn display_connections_stay_open_off_view_for_every_mux() {
     use std::sync::atomic::Ordering;
     for bin in [
         "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
     ] {
         let mut rt = test_rt(fake_env_with_machines(&[]));
         for host in ["first", "second"] {
+            rt.hosts.insert(crate::model::Host::new(
+                crate::transport::ssh(host.into(), String::new(), "linux".into()),
+                crate::mux::for_binary(bin).unwrap(),
+            ));
+        }
+        let (first, first_killed) =
+            crate::display::attachment::fake_attachment_with_teardown_flag(1);
+        rt.registry.insert("first", first);
+        let (second, second_killed) =
+            crate::display::attachment::fake_attachment_with_teardown_flag(2);
+        rt.registry.insert("second", second);
+        rt.model.state.selection = Selection {
+            host: "first".into(),
+            session: "main".into(),
+        };
+        rt.model.state.displayed = rt.model.state.selection.clone();
+        rt.fit_displays();
+        assert_eq!(
+            rt.registry.get("first").unwrap().size,
+            terminal_view_size(rt.cols, rt.body_rows, rt.nav_size()),
+            "{bin}: the session on view takes the view's size"
+        );
+
+        rt.model.state.selection.host = "second".into();
+        rt.fit_displays();
+        rt.model.state.displayed = rt.model.state.selection.clone();
+        rt.model.state.selection = Selection::default();
+        rt.fit_displays();
+        assert!(
+            !first_killed.load(Ordering::SeqCst) && !second_killed.load(Ordering::SeqCst),
+            "{bin}: leaving a session keeps its connection"
+        );
+        assert!(
+            rt.registry.contains("first") && rt.registry.contains("second"),
+            "{bin}: both connections stay registered"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn only_the_connections_the_start_preview_opened_end_for_every_mux() {
+    use std::sync::atomic::Ordering;
+    for bin in [
+        "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
+    ] {
+        let mut rt = test_rt(fake_env_with_machines(&[]));
+        for host in ["first", "second", "third"] {
             rt.hosts.insert(crate::model::Host::new(
                 crate::transport::ssh(host.into(), String::new(), "linux".into()),
                 crate::mux::for_binary(bin).unwrap(),
@@ -9554,62 +9608,63 @@ async fn display_connections_follow_the_visible_session_for_every_mux() {
         rt.model.state.displayed = rt.model.state.selection.clone();
         rt.model.switcher.open_start();
         rt.fit_displays();
-        assert!(
-            !first_killed.load(Ordering::SeqCst),
-            "{bin}: visible preview stays"
-        );
-        assert_eq!(
-            rt.registry.get("first").unwrap().size,
-            terminal_view_size(rt.cols, rt.body_rows, rt.nav_size()),
-            "{bin}: preview size"
-        );
 
+        // The preview opens a connection for the second host and moves on to the third.
         let (second, second_killed) =
             crate::display::attachment::fake_attachment_with_teardown_flag(2);
         rt.registry.insert("second", second);
+        rt.preview_opened.insert("second".into());
         rt.model.state.selection.host = "second".into();
         rt.fit_displays();
+        rt.model.state.displayed = rt.model.state.selection.clone();
+        let (third, third_killed) =
+            crate::display::attachment::fake_attachment_with_teardown_flag(3);
+        rt.registry.insert("third", third);
+        rt.preview_opened.insert("third".into());
+        rt.model.state.selection.host = "third".into();
+        rt.fit_displays();
         assert!(
-            first_killed.load(Ordering::SeqCst),
-            "{bin}: leaving the preview detaches"
+            second_killed.load(Ordering::SeqCst),
+            "{bin}: the preview's own connection ends once the preview leaves it"
         );
         assert!(
-            !rt.registry.contains("first"),
-            "{bin}: no hidden attachment"
+            !rt.registry.contains("second"),
+            "{bin}: no client stays registered for it"
         );
         assert!(
-            rt.registry.grid("first").is_some(),
-            "{bin}: the departed client leaves its last frame until the new one paints"
+            rt.registry.grid("second").is_some(),
+            "{bin}: its last frame stays until the new one paints"
         );
+        assert!(
+            !first_killed.load(Ordering::SeqCst),
+            "{bin}: a connection open before the start screen stays"
+        );
+
+        // Executing the preview keeps its connection at the terminal view's size.
         rt.model.state.displayed = rt.model.state.selection.clone();
         rt.model.switcher.close_start();
         rt.fit_displays();
         assert!(
-            rt.registry.grid("first").is_none(),
-            "{bin}: a confirmed replacement retires the old frame"
+            !third_killed.load(Ordering::SeqCst),
+            "{bin}: executing keeps the client"
         );
-        assert!(
-            !second_killed.load(Ordering::SeqCst),
-            "{bin}: executing retains the client"
-        );
+        assert!(rt.preview_opened.is_empty(), "{bin}: the preview is over");
         assert_eq!(
-            rt.registry.get("second").unwrap().size,
+            rt.registry.get("third").unwrap().size,
             terminal_view_size(rt.cols, rt.body_rows, rt.nav_size()),
             "{bin}: terminal size"
         );
-
         rt.model.state.selection = Selection::default();
         rt.fit_displays();
         assert!(
-            second_killed.load(Ordering::SeqCst),
-            "{bin}: a view screen keeps no PTY"
+            !third_killed.load(Ordering::SeqCst) && !first_killed.load(Ordering::SeqCst),
+            "{bin}: once executed, a connection stays off view"
         );
-        assert!(rt.registry.is_empty(), "{bin}: no display is visible");
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn leaving_a_preview_cancels_pending_connections_for_every_mux() {
+async fn leaving_a_preview_cancels_its_pending_connections_for_every_mux() {
     use std::sync::atomic::Ordering;
     for bin in [
         "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
@@ -9627,6 +9682,7 @@ async fn leaving_a_preview_cancels_pending_connections_for_every_mux() {
         host.display.mark_pending(3, "first");
         host.record_display_tty(Some("/dev/pts/3".into()));
         rt.model.switcher.open_start();
+        rt.preview_opened.insert("first".into());
         rt.model.state.selection = Selection::default();
         rt.fit_displays();
         assert!(
@@ -9651,7 +9707,7 @@ async fn leaving_a_preview_cancels_pending_connections_for_every_mux() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn inventory_does_not_revive_a_departed_preview_for_every_mux() {
+async fn inventory_neither_opens_nor_closes_a_connection_for_every_mux() {
     for bin in [
         "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
     ] {
@@ -9666,14 +9722,10 @@ async fn inventory_does_not_revive_a_departed_preview_for_every_mux() {
             mux: bin.into(),
             ..Default::default()
         }];
-        rt.registry.insert_fake("first", 1);
         rt.model.state.selection = Selection::default();
-        rt.fit_displays();
-        for start in [true, false] {
-            if start {
-                rt.model.switcher.open_start();
-            } else {
-                rt.model.switcher.close_start();
+        for held in [false, true] {
+            if held {
+                rt.registry.insert_fake("first", 1);
             }
             for effect in [
                 EventEffect::SyncInventorySessions {
@@ -9686,9 +9738,10 @@ async fn inventory_does_not_revive_a_departed_preview_for_every_mux() {
                 },
             ] {
                 rt.perform_host_effect(effect);
-                assert!(
-                    !rt.registry.contains("first"),
-                    "{bin}: inventory keeps the client detached"
+                assert_eq!(
+                    rt.registry.contains("first"),
+                    held,
+                    "{bin}: inventory leaves the connection as it was"
                 );
                 assert!(
                     rt.hosts.get("first").unwrap().display.in_flight_is_empty(),
@@ -9700,7 +9753,7 @@ async fn inventory_does_not_revive_a_departed_preview_for_every_mux() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn keys_and_ctl_release_departed_display_connections_for_every_mux() {
+async fn keys_and_ctl_keep_departed_display_connections_open_for_every_mux() {
     use std::sync::atomic::Ordering;
     for bin in [
         "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
@@ -9769,14 +9822,14 @@ async fn keys_and_ctl_release_departed_display_connections_for_every_mux() {
                 );
             }
             rt.fit_displays();
-            assert!(killed.load(Ordering::SeqCst), "{bin}: keys={keys}");
-            assert!(!rt.registry.contains("first"), "{bin}: keys={keys}");
+            assert!(!killed.load(Ordering::SeqCst), "{bin}: keys={keys}");
+            assert!(rt.registry.contains("first"), "{bin}: keys={keys}");
         }
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_rapid_ctl_round_trip_reconnects_the_confirmed_session_for_every_mux() {
+async fn a_rapid_ctl_round_trip_returns_to_the_open_connection_for_every_mux() {
     for bin in [
         "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
     ] {
@@ -9809,9 +9862,8 @@ async fn a_rapid_ctl_round_trip_reconnects_the_confirmed_session_for_every_mux()
                 .select_address(&crate::session::Address::new("first", "main"));
             settled(&mut rt);
             rt.model.state.focus = focus;
-            let (first, killed) =
-                crate::display::attachment::fake_attachment_with_teardown_flag(99);
-            first.grid.lock().unwrap().feed(b"last confirmed frame");
+            let (first, input) = crate::display::attachment::fake_attachment_with_input_log(99);
+            first.mark_painted_for_test(std::time::Instant::now());
             rt.registry.insert("first", first);
             rt.hosts
                 .get_mut("first")
@@ -9828,51 +9880,31 @@ async fn a_rapid_ctl_round_trip_reconnects_the_confirmed_session_for_every_mux()
                 sync_selection_from_switcher(&mut rt.model);
                 rt.fit_displays();
             }
-            assert!(killed.load(std::sync::atomic::Ordering::SeqCst));
             assert_eq!(rt.model.state.selection, rt.model.state.displayed);
-            let frame = rt
-                .registry
-                .grid("first")
-                .expect("retain the last confirmed frame");
-            rt.forward_input(b"typed while reconnecting".to_vec());
-            assert!(
-                rt.held_input.is_some(),
-                "{bin}: returning to a released display must hold input"
-            );
             let now = std::time::Instant::now();
             rt.drive_attach_beat(now);
             rt.drive_attach_beat(
                 now + std::time::Duration::from_millis(crate::state::ATTACH_DEBOUNCE_MS + 1),
             );
-            let seq = rt
-                .hosts
-                .get("first")
-                .unwrap()
-                .display
-                .in_flight_seq("first")
-                .expect("returning to a released display must reconnect");
-            let (fresh, input) = crate::display::attachment::fake_attachment_with_input_log(100);
-            rt.on_display_event(DisplayEvent::Ready {
-                seq,
-                key: "first".into(),
-                attachment: fresh,
-            });
-            rt.flush_held_input();
-            // herdr intentionally waits until its first frame before accepting input.
-            let painted = std::time::Instant::now();
-            rt.registry.mark_pending_painted_for_test(100, painted);
-            rt.note_pending_output(100);
-            assert!(rt.promote_due_pending(painted + crate::model::host::PAINT_SETTLE));
-            rt.flush_held_input();
-            assert_eq!(logged(&input), b"typed while reconnecting");
-            assert!(!Arc::ptr_eq(&frame, &rt.registry.grid("first").unwrap()));
-            assert_eq!(rt.registry.get("first").unwrap().id(), 100);
+            assert!(
+                rt.hosts
+                    .get("first")
+                    .unwrap()
+                    .display
+                    .in_flight_seq("first")
+                    .is_none(),
+                "{bin}: returning to an open connection attaches nothing"
+            );
+            rt.forward_input(b"typed after the round trip".to_vec());
+            assert!(rt.held_input.is_none(), "{bin}: nothing waits");
+            assert_eq!(logged(&input), b"typed after the round trip");
+            assert_eq!(rt.registry.get("first").unwrap().id(), 99);
         }
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_cross_host_ready_keeps_the_departed_frame_until_paint_for_every_mux() {
+async fn a_cross_host_ready_keeps_the_departed_session_on_view_until_paint_for_every_mux() {
     for bin in [
         "tmux", "psmux", "zellij", "screen", "abduco", "tuios", "herdr",
     ] {
@@ -9903,8 +9935,8 @@ async fn a_cross_host_ready_keeps_the_departed_frame_until_paint_for_every_mux()
             attachment: crate::display::attachment::fake_attachment(2),
         });
         assert!(
-            !rt.registry.contains("first"),
-            "{bin}: departed client closed"
+            rt.registry.contains("first"),
+            "{bin}: the departed client stays open"
         );
         assert!(
             rt.registry.contains_pending("second"),
@@ -9925,14 +9957,14 @@ async fn a_cross_host_ready_keeps_the_departed_frame_until_paint_for_every_mux()
         );
         rt.fit_displays();
         assert!(
-            rt.registry.grid("first").is_none(),
-            "{bin}: old frame released"
+            rt.registry.contains("first"),
+            "{bin}: the departed client stays open off view"
         );
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_hidden_paint_gate_cancels_the_client_before_the_next_frame() {
+async fn a_paint_gate_off_view_installs_the_client_without_taking_the_view() {
     let mut rt = a_settled_psmux_runtime();
     rt.model.state.selection.session = "b".into();
     rt.hosts
@@ -9953,10 +9985,15 @@ async fn a_hidden_paint_gate_cancels_the_client_before_the_next_frame() {
     });
     assert!(rt.registry.contains_pending("local"));
     rt.model.state.selection = Selection::default();
-    assert!(!rt.promote_due_pending(std::time::Instant::now() + std::time::Duration::from_secs(10)));
-    assert!(killed.load(std::sync::atomic::Ordering::SeqCst));
-    assert!(!rt.registry.contains("local"));
+    let displayed = rt.model.state.displayed.clone();
+    assert!(rt.promote_due_pending(std::time::Instant::now() + std::time::Duration::from_secs(10)));
+    assert!(!killed.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(rt.registry.get("local").map(|att| att.id()), Some(9));
     assert!(!rt.registry.contains_pending("local"));
+    assert_eq!(
+        rt.model.state.displayed, displayed,
+        "nothing off view is confirmed"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

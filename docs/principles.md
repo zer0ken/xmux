@@ -242,9 +242,10 @@ it open in other clients too. xmux owns the dimensions and lifetime of its displ
 the mux owns how attached clients determine the session's size. xmux fits its PTY to the
 visible view and leaves the mux's sizing policy and session options alone, so displaying
 a session does not become authority over the user's mux configuration. A display client
-exists only while its session is on view, including a preview. Leaving the view or
-ending xmux releases that client, so a session never keeps a size or an attachment for a
-viewer that is gone.
+xmux opened stays attached while xmux runs, so a switch back to its session is
+immediate; only the client on view is sized. A client the start screen's preview opened
+is the exception and ends once the preview leaves it. Ending xmux releases every client,
+so a session never keeps an attachment for a viewer that is gone.
 
 ## Separate Selection and Execution
 

@@ -530,10 +530,10 @@ def preview_lifetime(c):
             raise Failure("PTY dimensions oscillated after executing the preview")
     app.t.send("C-g", "Tab", gap=0.3)
     app.t.send("\x1b[1;5A")
-    wait_clients(c.h2, 0)
     time.sleep(2)
     wait_clients(c.h1, 0)
-    wait_clients(c.h2, 0)
+    if wait_clients(c.h2, 1) != shown:
+        raise Failure("leaving the executed session ended its display client")
 
 
 def rapid_switch(c):

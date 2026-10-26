@@ -63,7 +63,7 @@ The xmux behavior group:
 | Scenario | Passes when |
 | --- | --- |
 | `first-launch` | the start screen appears, choosing a session attaches it, and typed input runs in that session |
-| `preview-lifetime` | moving previews releases hidden display clients; executing retains the client, grows its PTY, and keeps its dimensions stable; leaving the session releases it |
+| `preview-lifetime` | moving the preview ends the display clients it opened; executing retains the client, grows its PTY, and keeps its dimensions stable; leaving the session keeps that client attached |
 | `switch` | after both sessions of a mux were shown, moving to a session of another mux on another host and back to the second session shows each one and runs what is typed there |
 | `rapid-switch` | jumping to another host or session and back before its display paints, then typing into the returned session |
 | `new-session` | `prefix n` creates a session that becomes selected, attached, and live on the host |

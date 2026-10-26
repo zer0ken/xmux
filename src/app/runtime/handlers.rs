@@ -853,6 +853,7 @@ impl Runtime {
             display_sync_held: false,
             rescan_pending: false,
             display_probe: DisplayProbe::default(),
+            preview_opened: HashSet::new(),
             held_input: None,
             passthrough: Vec::new(),
             title: None,
@@ -1540,7 +1541,7 @@ impl Runtime {
     /// the loop performs the registry install/teardown it alone can.
     pub(super) fn on_display_event(&mut self, ev: DisplayEvent) {
         // A selection may move between frames while a worker is still starting.
-        // Reconcile first so an abandoned reply cannot install a hidden client.
+        // Reconcile first so a reply for a preview the start screen left cannot install.
         self.fit_displays();
         match ev {
             DisplayEvent::Ready {
@@ -1740,11 +1741,15 @@ impl Runtime {
     /// Promotes one parked attachment after its paint gate opens.
     fn promote_pending(&mut self, pending: crate::model::PendingInstall) -> bool {
         let selection = &self.model.state.selection;
-        if selection.is_empty() || display_key(&self.hosts, selection) != pending.key {
+        let selected = !selection.is_empty() && display_key(&self.hosts, selection) == pending.key;
+        if !selected {
+            // A connection off view installs and stays open, unless it is one the start
+            // preview opened and has left.
             self.fit_displays();
-            return false;
-        }
-        if selection.session != pending.shown {
+            if !self.registry.contains_pending(&pending.key) {
+                return false;
+            }
+        } else if selection.session != pending.shown {
             self.registry.remove_pending(&pending.key);
             return false;
         }
@@ -2370,23 +2375,25 @@ impl Runtime {
         true
     }
 
-    /// Fits the visible client's PTY to the view and releases every hidden display.
-    /// Clearing in-flight requests also makes their late worker replies stale. Metadata
-    /// channels remain open; inventories never create display attachments.
+    /// Fits the attachment on view to the view and keeps every other display connection
+    /// open, so a switch to a session xmux already holds hands the view over at once.
+    /// The one exception is a connection the start screen's preview opened: it ends once
+    /// the preview leaves it, and when the start screen closes unless the selection shows
+    /// it, which the terminal view then keeps. Only the attachment on view is resized.
     pub(super) fn fit_displays(&mut self) {
         let selection = &self.model.state.selection;
         let shown = (!selection.is_empty()).then(|| display_key(&self.hosts, selection));
-        let prior = shown
-            .as_ref()
-            .map(|_| display_key(&self.hosts, &self.model.state.displayed));
-        let hidden: Vec<String> = self
-            .hosts
-            .ids()
+        let displayed = &self.model.state.displayed;
+        let prior =
+            (shown.is_some() && !displayed.is_empty()).then(|| display_key(&self.hosts, displayed));
+        let left: Vec<String> = self
+            .preview_opened
             .iter()
             .filter(|key| shown.as_ref() != Some(*key))
             .cloned()
             .collect();
-        for key in hidden {
+        for key in left {
+            self.preview_opened.remove(&key);
             if prior.as_ref() == Some(&key) {
                 // Keep only pixels while the replacement paints, never its client.
                 if let Some(id) = self.registry.get(&key).map(|att| att.id()) {
@@ -2401,10 +2408,23 @@ impl Runtime {
                 host.clear_display_tty();
             }
         }
+        if !self.model.switcher.start_open() {
+            self.preview_opened.clear();
+        }
         if let Some(key) = &shown {
             let (cols, rows) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
             self.registry.resize(key, cols, rows);
         }
+    }
+
+    /// Whether xmux holds a display connection under `key`, live, painting, or starting.
+    pub(super) fn holds_display(&self, key: &str) -> bool {
+        self.registry.contains(key)
+            || self.registry.contains_pending(key)
+            || self
+                .hosts
+                .get(host_of_key(key))
+                .is_some_and(|h| h.display.in_flight_contains(key))
     }
 
     /// Takes back the nav's note of a display client away from its card. Returns true

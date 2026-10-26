@@ -240,11 +240,13 @@ against, naming no source file, function, or test.
   mouse mode asks for, encoded in the form the client enabled, and a drag that starts in
   the terminal view reaches it until its release, with motion past the view at the
   view's nearest edge.
-- **FR-C10** - Only the session on view holds a display connection, at the terminal
-  view's size or the start preview's size. Leaving that session releases its display
-  connection, including a connection still starting; inventory updates never reopen
-  it. Executing the preview retains its connection and resizes its PTY to the terminal
-  view. Size changes set only PTY dimensions, without changing the mux's options or
+- **FR-C10** - A display connection xmux opened stays open when its session leaves the
+  view, so returning to it shows it at once without attaching again. Only the session
+  on view is sized, at the terminal view's size or the start preview's size. A
+  connection the start screen's preview opened ends once the preview leaves it,
+  including a connection still starting, and when the start screen closes unless the
+  selection shows it; executing the preview keeps that connection and resizes its PTY
+  to the terminal view. Inventory updates never open a connection. Size changes set only PTY dimensions, without changing the mux's options or
   display-client sizing flags. Other attached clients follow the mux's own sizing
   policy. A tmux window larger than the terminal view shows the part around the cursor,
   and a smaller one shows its edge with the rest of the view filled with dots.
