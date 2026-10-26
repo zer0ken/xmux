@@ -240,6 +240,25 @@ impl AttachRegistry {
         self.stale_grids.remove(addr);
     }
 
+    /// Moves everything held under `from` (the installed attachment, a parked one, a
+    /// kept last frame) to `to`, tearing down whatever `to` held: the client under
+    /// `from` now shows the session `to` names.
+    pub fn rekey(&mut self, from: &str, to: &str) {
+        if from == to {
+            return;
+        }
+        self.remove(to);
+        if let Some(att) = self.map.remove(from) {
+            self.map.insert(to.to_string(), att);
+        }
+        if let Some(att) = self.pending.remove(from) {
+            self.pending.insert(to.to_string(), att);
+        }
+        if let Some(grid) = self.stale_grids.remove(from) {
+            self.stale_grids.insert(to.to_string(), grid);
+        }
+    }
+
     /// Removes the attachment whose id == `id` (its master hit EOF), tearing it down
     /// and keeping its last grid under its key for rendering. Returns `true` if an
     /// attachment was removed, `false` if no attachment with that id was registered
@@ -286,6 +305,14 @@ impl AttachRegistry {
 
     /// The address whose attachment has id `id`, if any. Correlates a `PtyEvent`
     /// (which carries only the id) back to its display key / host.
+    /// The key whose installed attachment has `id`, leaving parked ones out.
+    pub fn installed_address_of_id(&self, id: u64) -> Option<String> {
+        self.map
+            .iter()
+            .find(|(_, a)| a.id() == id)
+            .map(|(addr, _)| addr.clone())
+    }
+
     pub fn address_of_id(&self, id: u64) -> Option<String> {
         self.map
             .iter()

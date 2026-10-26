@@ -21,8 +21,10 @@ resize, and tick input into update messages and executes the returned effects in
 - The nav selection and xmux's own display client name the same session, held by a
   comparison made on every pass and never by a recorded switch; focus alone decides
   which of the two moves.
-- Only the selection's own attach confirms the display; hidden displays and pending
-  requests are released, and late completions are discarded.
+- Only the selection's own attach confirms the display; an attach off view installs
+  and stays open. A display off view that ends on its own while its session is listed
+  is attached again after a doubling wait; a re-scan makes that wait end at once. Only a connection the start preview opened ends when the preview
+  leaves it, and its late completion is discarded.
 - A logout clears nothing of its machine until its key steps and the removal of the
   ssh config stanza its login recorded settle, and a login's follow-ups and a logout's
   key search take one per-machine gate in turn.

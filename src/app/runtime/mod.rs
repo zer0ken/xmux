@@ -31,7 +31,7 @@ use crate::display::attachment::PtyEvent;
 use crate::display::dispatch::Action;
 use crate::display::registry::AttachRegistry;
 use crate::display::{DisplayEvent, DisplayWorker};
-use crate::driver::{display_key, host_selection_key, DriverCtx};
+use crate::driver::{display_key, host_of_key, DriverCtx};
 use crate::link::{HostEvent, HostManager};
 use crate::model::Selection;
 use crate::provision::env::Env;
@@ -240,6 +240,7 @@ impl Runtime {
                     self.registry.remove(&key);
                     if let Some(host) = self.hosts.get_mut(&selection.host) {
                         host.display.clear(&key);
+                        host.clear_display_tty(&key);
                     }
                 }
                 // Both key steps run over the machine's transport, before the logout
@@ -370,6 +371,7 @@ impl Runtime {
                     }
                     Command::Rescan => {
                         self.rescan_pending = true;
+                        self.repair_now(None, std::time::Instant::now());
                     }
                     // The machine's reachability probe, marked as a re-scan so a machine
                     // that answers re-enumerates every host it serves; nothing else is
@@ -377,6 +379,7 @@ impl Runtime {
                     Command::RescanMachine(machine) => {
                         #[cfg(test)]
                         self.machine_rescans.push(machine.clone());
+                        self.repair_now(Some(&machine), std::time::Instant::now());
                         self.read_ssh_facts(machine.clone());
                         probe_machine(
                             &machine,
@@ -404,6 +407,9 @@ impl Runtime {
                     Command::Attach(selection) => {
                         let started = std::time::Instant::now();
                         let nav = self.nav_size();
+                        let key = display_key(&self.hosts, &selection);
+                        let preview_opens =
+                            self.model.switcher.start_open() && !self.holds_display(&key);
                         // select_attach picks the host's driver and hands it the intent.
                         let shown = select_attach(
                             &selection,
@@ -418,7 +424,9 @@ impl Runtime {
                                 viewport: terminal_view_size(self.cols, self.body_rows, nav),
                             },
                         );
-                        let key = display_key(&self.hosts, &selection);
+                        if preview_opens && self.holds_display(&key) {
+                            self.preview_opened.insert(key.clone());
+                        }
                         if shown {
                             // Advance the display truth synchronously ONLY for a confirmed
                             // in-place path: a live grid for the key exists AND no reattach
@@ -648,59 +656,6 @@ fn sync_selection_from_switcher(model: &mut AppModel) -> bool {
     model.state.selection != previous
 }
 
-/// The session a host's display client is ON: the one fact the nav selection is held
-/// against. It is the host's display record, which each mux keeps true its own way - the
-/// control notice a mux pushes when it moves a client, and, for a mux that moves its
-/// client inside the client process and pushes nothing, the live client read on the
-/// animation beat. `None` while no display has been established for the host, which is
-/// the first attach's own case and not a disagreement.
-///
-/// It is not what xmux last decided to show: that is `state.displayed`, and a session
-/// change the mux made moves the client without touching it, which is precisely how the
-/// nav and the terminal view came to name different sessions.
-fn display_session<'a>(hosts: &'a crate::model::Hosts, id: &str) -> Option<&'a str> {
-    let host = hosts.get(id)?;
-    host.display.shows(&host_selection_key(host))
-}
-
-/// Whether the display client sits on a session the selection does not name AND the
-/// selection is the one to keep, so the attach beat must carry the client back to it.
-///
-/// A CONDITION, evaluated here every beat and stored nowhere. Nothing records that a
-/// switch happened, when it happened, or that a move is owed for it, so there is no
-/// policy for when to pay such a record and none for when to cancel it: while the client
-/// is away from the selection the answer is yes, and the moment either side moves to the
-/// other it is no.
-///
-/// FOCUS decides which of the two moves, and it is the only thing that does. In nav focus
-/// the selection is the user's own, so the client comes back to it - this. In terminal
-/// focus the user is driving the mux, so the SELECTION goes to the client instead
-/// ([`Runtime::follow_selection_to_display`]) and this stays false, since carrying the
-/// client back would undo the switch the user just made with the mux's own keys.
-/// An explicit selection still awaiting its debounce owes a switch in either focus.
-///
-/// WHY IT SETTLES, being a condition rather than an event. Each answer makes the two
-/// names EQUAL and nothing here makes them differ: this attaches the client to the
-/// session the selection already names, the follow moves the selection to the session the
-/// client is already on, and neither one moves the side it is comparing against. So the
-/// condition is false as soon as one of them has acted, and stays false until something
-/// outside - the user, or the mux - moves one of the two again, which is the difference
-/// that ought to be answered. The two can never take turns undoing each other either,
-/// because the focus admits exactly one of them at a time. The debounce and the in-flight
-/// gate bound the rate rather than the outcome: while an attach is under way this is not
-/// re-armed, so the client is carried once and not once per beat until it arrives.
-fn display_astray(state: &crate::state::State, hosts: &crate::model::Hosts) -> bool {
-    if state.selection.is_empty()
-        || (state.focus.is_terminal_focused()
-            && !state.attach_pending
-            && state.attach_deadline.is_none())
-    {
-        return false;
-    }
-    display_session(hosts, &state.selection.host)
-        .is_some_and(|shown| shown != state.selection.session)
-}
-
 /// The size to give a PTY attachment: the terminal view (right of the nav +
 /// nav border), NOT the whole terminal. Sizing a session to the full terminal makes
 /// the remote wrap at a width wider than the visible view, so a line overflows the
@@ -725,12 +680,6 @@ pub(crate) fn terminal_view_size(
         t = crate::ui::switcher::start_preview_inner(t);
     }
     (t.width.max(1), t.height.max(1))
-}
-
-/// The host id owning a display key: Shared keys ARE the host id; PerSession keys are
-/// `host/session`, so the host id is the part before the first '/'.
-fn host_of_key(key: &str) -> &str {
-    key.split_once('/').map_or(key, |(h, _)| h)
 }
 
 /// The runtime attach facts the debounce gate needs, fed to [`State::apply`] as DATA
@@ -821,10 +770,9 @@ fn input_route(state: &crate::state::State, hosts: &crate::model::Hosts) -> Inpu
 ///
 /// The per-mux DECISION lives in the host's [`MuxDriver`](crate::driver::MuxDriver):
 /// this dispatcher picks the driver off the host's model ([`driver_for`]) and hands it
-/// the supervisor capabilities via [`DriverCtx`]. Shared (tmux) keeps one PTY per host,
-/// moved with `switch-client`; PerSession (psmux) reattaches a per-host PTY on each
-/// session change. The bookkeeping (current session per key + in-flight spawn) lives on
-/// the owning `host.display`.
+/// the supervisor capabilities via [`DriverCtx`]. Every mux keeps one PTY per session,
+/// so a session xmux already holds attaches nothing. The bookkeeping (current session
+/// per key + in-flight spawn) lives on the owning `host.display`.
 ///
 /// [`driver_for`]: crate::driver::driver_for
 /// [`DriverCtx`]: crate::driver::DriverCtx
@@ -1421,10 +1369,10 @@ fn record_display_tty(
     tty: String,
 ) -> Option<String> {
     if let Some(addr) = registry.address_of_id(id) {
-        let host_id = addr.split('/').next().unwrap_or(&addr).to_string();
+        let host_id = host_of_key(&addr).to_string();
         if let Some(h) = hosts.get_mut(&host_id) {
             tracing::info!(id, addr, tty, "tty_recorded");
-            h.display_tty = crate::model::DisplayTty(Some(tty));
+            h.record_display_tty(&addr, Some(tty));
             return Some(host_id);
         }
         None
@@ -1445,9 +1393,8 @@ fn clear_display_tty_for_attach(
     id: u64,
 ) {
     if let Some(addr) = registry.address_of_id(id) {
-        let host_id = addr.split('/').next().unwrap_or(&addr).to_string();
-        if let Some(h) = hosts.get_mut(&host_id) {
-            h.clear_display_tty();
+        if let Some(h) = hosts.get_mut(host_of_key(&addr)) {
+            h.clear_display_tty(&addr);
         }
     }
 }
@@ -1743,8 +1690,8 @@ async fn shutdown_detach(registry: &AttachRegistry, hosts: &crate::model::Hosts)
         .addresses()
         .iter()
         .filter_map(|addr| {
-            let host = hosts.get(addr.split('/').next().unwrap_or(addr))?;
-            let tty = host.display_tty.0.as_deref().filter(|t| !t.is_empty())?;
+            let host = hosts.get(host_of_key(addr))?;
+            let tty = host.display_tty(addr).filter(|t| !t.is_empty())?;
             let argv = host.mux.detach_client_plan(tty)?;
             Some(host.transport.exec_argv(false, &argv))
         })
@@ -1766,6 +1713,28 @@ const OWN_TITLE: &str = "xmux";
 /// client makes inside itself reaches the nav within this long, and a query rides the
 /// host's open connection, so a second costs one short command per second.
 const DISPLAY_PROBE_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A display connection that ended on its own while its session stood, waiting to be
+/// attached again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Repair {
+    /// How many of its last attaches ended soon after starting, which stretches the wait.
+    attempts: u32,
+    /// When it is attached again; `None` while an attach for it is under way.
+    at: Option<std::time::Instant>,
+}
+
+/// The wait before a connection that ended is attached again, doubling with each attach
+/// that ended soon after starting up to [`REPAIR_MAX`], so a session whose client keeps
+/// ending is retried ever less often instead of hammered.
+const REPAIR_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
+const REPAIR_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn repair_delay(attempts: u32) -> std::time::Duration {
+    REPAIR_FIRST
+        .saturating_mul(1u32.checked_shl(attempts).unwrap_or(u32::MAX))
+        .min(REPAIR_MAX)
+}
 
 /// The cadence of the host-side display-client query: when the next may start, and
 /// whether one is still out. One query at a time, so a slow host never stacks them.
@@ -1866,6 +1835,14 @@ struct Runtime {
     display_sync_held: bool,
     rescan_pending: bool,
     display_probe: DisplayProbe,
+    /// Where the mux moved the client on view, until the nav follows it there.
+    client_moved: Option<Selection>,
+    /// Display connections off view that ended on their own, keyed by display key, to be
+    /// attached again; see [`Runtime::repair_displays`].
+    display_repairs: HashMap<String, Repair>,
+    /// The display keys whose connection the start screen's preview opened. Each ends
+    /// once the preview leaves it; see [`Runtime::fit_displays`].
+    preview_opened: HashSet<String>,
     /// Terminal input typed for a selection whose attachment does not exist yet; see
     /// [`input_route`].
     held_input: Option<HeldInput>,

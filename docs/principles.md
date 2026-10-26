@@ -21,8 +21,8 @@ screen keeps it whole.
 
 xmux reaches a machine only when something asked it to: the launch scan, a user action
 (a re-scan, a login, selecting a card, managing machine access, or an operation on a
-session), or a push stream that is already open. No failure raises its own retry, and a machine is
-asked one thing at a time.
+session), or a push stream that is already open. No failure raises its own retry beyond
+the two bounded ones below, and a machine is asked one thing at a time.
 
 A request that answers a failed request cannot stop. A machine that refuses one
 connection refuses the next identically, so a client that reconnects on every refusal
@@ -31,10 +31,19 @@ as an attack. A machine also counts the connections that have not authenticated 
 drops those past its limit, so work fans out across machines and never within one.
 xmux is a guest on every machine it reaches: recovering is the user's to ask for, which
 costs a keystroke and is the only kind of recovery that stops. What the user sees
-follows from this deliberately: a dropped channel stays dropped, a display whose client
-died keeps its last frame, a display that failed to start is not started again, and an
-unreachable card stays unreachable, each until the user asks again by selecting the card,
-executing it, or re-scanning.
+follows from this deliberately: a dropped channel stays dropped, the display on view
+whose client died keeps its last frame, a display that failed to start is not started
+again, and an unreachable card stays unreachable, each until the user asks again by
+selecting the card, executing it, or re-scanning, which re-attaches every display that
+ended at once.
+
+A display client off view that ends on its own is the one connection xmux restores
+unasked, since the user cannot see it end and switching back to it must be immediate.
+It is attached again only while its session is still listed, so a machine whose listing
+fails is not reached for it, and the wait before each attempt doubles from one second
+up to thirty while its clients keep ending right after starting, so a session that
+cannot hold a client costs a connection every half minute at most. The client on view is
+left alone because it may have ended at the user's own detach.
 
 One exception answers a defect in zellij 0.45. zellij can give an attaching client the
 id that its own session probe has just released, and the probe's late cleanup then
@@ -242,9 +251,10 @@ it open in other clients too. xmux owns the dimensions and lifetime of its displ
 the mux owns how attached clients determine the session's size. xmux fits its PTY to the
 visible view and leaves the mux's sizing policy and session options alone, so displaying
 a session does not become authority over the user's mux configuration. A display client
-exists only while its session is on view, including a preview. Leaving the view or
-ending xmux releases that client, so a session never keeps a size or an attachment for a
-viewer that is gone.
+xmux opened stays attached while xmux runs, so a switch back to its session is
+immediate; only the client on view is sized. A client the start screen's preview opened
+is the exception and ends once the preview leaves it. Ending xmux releases every client,
+so a session never keeps an attachment for a viewer that is gone.
 
 ## Separate Selection and Execution
 

@@ -1,12 +1,14 @@
-//! The tmux display driver: a shared-server mux keeps ONE PTY per host, opened on
-//! selection and moved to another session with `switch-client`. `Tmux::driver`
-//! constructs it, so mux selection lives in the tmux implementation, not a central match.
+//! The tmux display driver: one display client per session, each kept attached while
+//! xmux runs, so a switch to a session xmux already holds only changes which grid is on
+//! view. `Tmux::driver` constructs it, so mux selection lives in the tmux
+//! implementation, not a central match.
 
 use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
-/// Shared-server mux (tmux): ONE PTY per host, opened on selection and moved to
-/// another session with `switch-client`. `Tmux::driver` constructs it for a `Shared` host.
+/// tmux: one display client per session. A remote attach records its own tty before it
+/// execs the client, so the control connection's notices about a client can be matched
+/// to the attachment they are about. `Tmux::driver` constructs it.
 pub struct TmuxDriver;
 
 impl MuxDriver for TmuxDriver {
@@ -23,193 +25,45 @@ impl MuxDriver for TmuxDriver {
             return false;
         };
         let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
-        let already = ctx.registry.contains(&key);
-
-        if !already {
-            // Off-loop first-attach: request the spawn ONLY if one is not already in flight.
-            // Do NOT overwrite display.current while an attach is in flight - the in-flight
-            // attach lands on its ORIGINAL target session, and the post-Ready re-evaluation
-            // (see the Ready arm) issues a switch-client to the current selection. Overwriting
-            // it here would make the switch-client guard think the PTY is already on the new
-            // session.
-            if !host.display.in_flight_contains(&key) {
-                tracing::info!(
-                    host = %sel.host,
-                    model = "shared",
-                    decision = "reattach",
-                    reason = "no-live-client",
-                    session = %sel.session,
-                    "display_show"
-                );
-                // Build the argv (immutable mux/transport reads) BEFORE taking &mut display.
-                let mux_argv = host.mux.display_attach_plan(&sel.session);
-                let command = host.transport.exec_argv(true, &mux_argv);
-                // A remote shared attach records its own tty before exec (for a later
-                // in-place switch); the record snippet is a remote-shell mechanism, so a
-                // local attach stays bare.
-                let runs_through_shell = host.transport.runs_through_shell();
-                let id = ctx
-                    .request_attach_with_id(sel, |id, key, instance_name| {
-                        let tty_key = super::display_tty_key(key, instance_name, id);
-                        with_display_tty_record(command, runs_through_shell, &tty_key)
-                    })
-                    .expect("the selected host exists");
-                tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
-            }
-        } else if host.display.shows(&key) != Some(sel.session.as_str()) {
-            let attach_id = ctx
-                .registry
-                .get(&key)
-                .expect("a contained attachment has an id")
-                .id();
-            let tty_key = super::display_tty_key(&key, ctx.instance_name, attach_id);
-            // IN-PLACE SWITCH: move the live display client to the selected session, so
-            // `switch-client -c <that tty>` moves xmux's OWN client and never the user's
-            // own attached client (which `list-clients` cannot tell apart, the class of
-            // bug a "first non-control client" capture caused).
-            //
-            // The shared grid is REUSED across sessions, so it is marked to clear at
-            // the START of the new repaint's first feed: the prior session's content
-            // stays on screen until the mux's fresh redraw arrives (no blank window
-            // between the switch and the repaint), and the grid wipes the instant the
-            // new content lands, so a switch to a session whose repaint does not clear
-            // every prior cell (a partial or interrupted switch-client repaint, e.g. a
-            // rapid jump that is cancelled) never leaves the prior session's stale
-            // cells lingering behind the new content.
-            //
-            // A machine that runs a machine shell reads, in-shell, the tty the attach
-            // recorded to its per-host file. A machine that runs no shell has no such
-            // file, but its attach child IS the mux client and runs in a PTY xmux opened,
-            // whose name the supervisor recorded on the host - hand that over instead.
-            ctx.registry.clear_grid_on_next_feed(&key);
-            // The display client's tty, whichever way it was learned: the attach child's
-            // own PTY (a shell-less host) or a captured `list-clients` reply (a shell-
-            // routed host). A shell-routed host that still has none (its display client
-            // registered after the Ready-time capture) re-probes once, so the next
-            // switch can ride the control connection.
-            let tty = host.display_tty.0.clone().filter(|t| !t.is_empty());
-            if host.transport.runs_through_shell() && tty.is_none() {
-                if let Some(client) = ctx.mgr.get(&sel.host) {
-                    client.capture_display_tty(&tty_key, attach_id);
-                }
-            }
-            // A shell-routed host keeps an open `-CC` control connection, so the switch
-            // rides THAT connection instead of spawning a fresh process per switch - each
-            // would pay a full connect+auth handshake on Windows, where ssh has no
-            // ControlMaster. The server moves the named client regardless of which client
-            // issues the command. A host with no control client (or no tty) falls back to
-            // the recorded-tty plan below.
-            let over_control = host.transport.runs_through_shell()
-                && tty.as_deref().is_some()
-                && ctx.mgr.get(&sel.host).is_some();
-            let (switched, reason) = if over_control {
-                let client = ctx.mgr.get(&sel.host).unwrap();
-                // A control connection whose writer has returned on a broken pipe still
-                // has a live HostClient, so its presence is no proof that a command can
-                // still be sent. Take the send's own answer: a refused send is a switch
-                // that never reached the host, and reporting it as done would record the
-                // client on a session it never moved to. The belief and the selection
-                // would then agree, which is the one condition that asks for a switch, so
-                // nothing would ever ask again and the terminal view would hold the old
-                // session for the rest of the run. A refusal falls through to the reattach
-                // below instead - the same answer this arm already gives when the recorded
-                // tty plan cannot switch, and still one attempt answering one user action.
-                let sent = client.switch_client_on(tty.as_deref().unwrap(), &sel.session)
-                    && client.refresh_client_on(tty.as_deref().unwrap());
-                if !sent {
-                    tracing::warn!(
-                        host = %sel.host,
-                        session = %sel.session,
-                        tty = tty.as_deref().unwrap_or(""),
-                        "control_switch_not_sent"
-                    );
-                }
-                (sent, "control")
-            } else {
-                let switched = host
-                    .mux
-                    .switch_in_place(&tty_key, &sel.session, tty.as_deref())
-                    .map(|plan| ctx.run_switch_plan(&sel.host, plan))
-                    .unwrap_or(false);
-                (
-                    switched,
-                    if tty.is_some() {
-                        "pty-tty"
-                    } else {
-                        "recorded-tty"
-                    },
-                )
-            };
-            if switched {
-                tracing::info!(
-                    host = %sel.host,
-                    model = "shared",
-                    decision = "switch",
-                    reason,
-                    session = %sel.session,
-                    "display_show"
-                );
-                ctx.hosts
-                    .get_mut(&sel.host)
-                    .expect("the selected host exists")
-                    .display
-                    .set_shows(&key, &sel.session);
-            } else if !host.display.in_flight_contains(&key) {
-                // No in-place switch (a LOCAL shared host has no remote shell to record /
-                // read the tty, or the mux uses no recorded-tty strategy): reattach the
-                // host PTY to the new session. Reattach needs no tty and repaints fully;
-                // the held grid stays on screen until the fresh attachment's paint gate
-                // opens after settled output or the bounded wait.
-                tracing::info!(
-                    host = %sel.host,
-                    model = "shared",
-                    decision = "reattach",
-                    reason = "no-switch",
-                    session = %sel.session,
-                    "display_show"
-                );
-                let mux_argv = host.mux.display_attach_plan(&sel.session);
-                let command = host.transport.exec_argv(true, &mux_argv);
-                let runs_through_shell = host.transport.runs_through_shell();
-                let id = ctx
-                    .request_attach_with_id(sel, |id, key, instance_name| {
-                        let tty_key = super::display_tty_key(key, instance_name, id);
-                        with_display_tty_record(command, runs_through_shell, &tty_key)
-                    })
-                    .expect("the selected host exists");
-                tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
-            }
-        } else {
+        if crate::driver::holds_connection(ctx, sel) {
             tracing::info!(
                 host = %sel.host,
-                model = "shared",
                 decision = "warm",
                 reason = "already-on",
                 session = %sel.session,
                 "display_show"
             );
+            crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
+            return true;
         }
-
+        tracing::info!(
+            host = %sel.host,
+            decision = "attach",
+            reason = "no-live-client",
+            session = %sel.session,
+            "display_show"
+        );
+        // A remote attach records its own tty before exec, so a control notice naming
+        // a client can be matched to this attachment; a local attach stays bare.
+        let mux_argv = host.mux.display_attach_plan(&sel.session);
+        let command = host.transport.exec_argv(true, &mux_argv);
+        let runs_through_shell = host.transport.runs_through_shell();
+        let id = ctx
+            .request_attach_with_id(sel, |id, key, instance_name| {
+                let tty_key = super::display_tty_key(key, instance_name, id);
+                with_display_tty_record(command, runs_through_shell, &tty_key)
+            })
+            .expect("the selected host exists");
+        tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
     }
-
-    fn sync(&mut self, host_id: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
-        // Inventory changes reap an empty host, but only show() opens a display.
-        if sessions.is_empty() {
-            ctx.registry.remove(host_id);
-            if let Some(host) = ctx.hosts.get_mut(host_id) {
-                host.display.clear(host_id);
-                host.clear_display_tty();
-            }
-        }
-    }
 }
 
-/// Folds the tmux record prefix into a shell-based shared attach's command (the last argv
+/// Folds the tmux record prefix into a shell-based attach's command (the last argv
 /// element), so the attach shell records its OWN tty before exec'ing the attach - the
-/// value a later `switch_in_place` reads back to target xmux's own display client, never
-/// the user's own attached client. An attach that does not run through a machine shell has
+/// value the control connection reads back to tell xmux's own display client from the
+/// user's own attached clients. An attach that does not run through a machine shell has
 /// nowhere to run the snippet, so it is returned unchanged: folded into a local attach,
 /// the prefix would corrupt the argv's session-name argument. The transport's
 /// `runs_through_shell` answer gates the record here, in the driver, so the mux itself
@@ -286,23 +140,14 @@ mod tests {
         assert_eq!(out, argv, "local attach is untouched");
     }
 
-    /// A LOCAL shared host runs no shell, so it can neither record nor read the tty file
-    /// the in-place switch normally reads. Its attach child IS the mux client though, and
-    /// the PTY xmux opened for it carries the client's tty, so a host holding that tty
-    /// switches IN PLACE: the live attachment stays (the terminal view never blanks) and
-    /// no reattach is requested.
-    #[tokio::test(flavor = "current_thread")]
-    async fn tmux_driver_show_switches_a_shell_less_host_in_place_when_tty_known() {
-        let mut hosts = crate::model::Hosts::default();
-        hosts.insert(crate::model::Host::new(
-            crate::transport::local(None),
-            crate::mux::for_binary("tmux").unwrap(),
-        ));
-        {
-            let h = hosts.get_mut("local").unwrap();
-            h.display.set_shows("local", "old");
-            h.record_display_tty(Some("/dev/pts/3".into()));
-        }
+    /// The worker, channels, and counters a `show` or `sync` runs against, with a
+    /// spawner that answers every attach with a fake.
+    fn run_driver<R>(
+        hosts: &mut crate::model::Hosts,
+        registry: &mut AttachRegistry,
+        f: impl FnOnce(&mut TmuxDriver, &mut DriverCtx) -> R,
+    ) -> R {
+        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let worker = crate::display::DisplayWorker::with_spawner(
             ptx,
@@ -310,372 +155,116 @@ mod tests {
                 Ok(crate::display::attachment::fake_attachment(id))
             }),
         );
-        let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::display::attachment::fake_attachment(42));
         let mut attach_seq = 0u64;
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let sel = Selection {
-            host: "local".into(),
-            session: "target".into(),
+        let mut ctx = DriverCtx {
+            registry,
+            hosts,
+            instance_name: "test",
+            mgr: &mgr,
+            worker: &worker,
+            pty_tx: &cap_tx,
+            attach_seq: &mut attach_seq,
+            viewport: (31, 25),
         };
-        let mut driver = TmuxDriver;
-        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
-        {
-            let mut ctx = DriverCtx {
-                registry: &mut registry,
-                hosts: &mut hosts,
-                instance_name: "test",
-                mgr: &mgr,
-                worker: &worker,
-                pty_tx: &cap_tx,
-                attach_seq: &mut attach_seq,
-                viewport: (31, 25),
-            };
-            assert!(driver.show(&sel, &mut ctx));
-        }
-        assert!(
-            registry.contains("local"),
-            "in-place switch keeps the live client, so the terminal view never blanks"
-        );
-        assert!(
-            hosts.get("local").unwrap().display.in_flight_is_empty(),
-            "in-place switch requests NO reattach"
-        );
-        assert_eq!(
-            hosts.get("local").unwrap().display.shows("local"),
-            Some("target"),
-            "the shown session updates to the switched-to session"
-        );
+        f(&mut TmuxDriver, &mut ctx)
     }
 
-    /// A REMOTE (shell-routed) shared host with a live `-CC` control client switches
-    /// IN PLACE over THAT connection: no fresh attach is requested, the shown session
-    /// updates, and the shared grid is marked to clear on the next feed. This is the
-    /// fast path the switch lag fix exists for - a fresh process per switch would pay a
-    /// full connect+auth handshake on Windows, where ssh has no ControlMaster.
-    #[tokio::test(flavor = "current_thread")]
-    async fn tmux_driver_show_switches_a_shell_routed_host_over_control_when_tty_known() {
+    fn jup_hosts() -> crate::model::Hosts {
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::ssh("jup".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux").unwrap(),
-        ));
-        {
-            let h = hosts.get_mut("jup").unwrap();
-            h.display.set_shows("jup", "old");
-            h.record_display_tty(Some("/dev/pts/3".into()));
-        }
-        let (host_evt_tx, _host_evt_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut mgr = crate::link::HostManager::new(host_evt_tx);
-        let commands = mgr.insert_recording("jup");
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
-        let worker = crate::display::DisplayWorker::with_spawner(
-            ptx,
-            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
-                Ok(crate::display::attachment::fake_attachment(id))
-            }),
-        );
-        let mut registry = AttachRegistry::new();
-        registry.insert("jup", crate::display::attachment::fake_attachment(42));
-        if let Some(g) = registry.grid("jup") {
-            g.lock().unwrap().feed(b"stale prior-session residue");
-        }
-        let mut attach_seq = 0u64;
-        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let sel = Selection {
-            host: "jup".into(),
-            session: "target".into(),
-        };
-        let mut driver = TmuxDriver;
-        {
-            let mut ctx = DriverCtx {
-                registry: &mut registry,
-                hosts: &mut hosts,
-                instance_name: "test",
-                mgr: &mgr,
-                worker: &worker,
-                pty_tx: &cap_tx,
-                attach_seq: &mut attach_seq,
-                viewport: (31, 25),
-            };
-            assert!(driver.show(&sel, &mut ctx));
-        }
-        let sent: Vec<_> = commands.try_iter().collect();
-        assert_eq!(
-            sent.len(),
-            2,
-            "switch and redraw use the live control channel"
-        );
-        assert!(
-            matches!(&sent[0], crate::link::HostCmd::Send(line) if line.contains("switch-client") && line.contains("/dev/pts/3") && line.contains("target"))
-        );
-        assert!(
-            matches!(&sent[1], crate::link::HostCmd::Send(line) if line.contains("refresh-client") && line.contains("/dev/pts/3"))
-        );
-        assert!(
-            hosts.get("jup").unwrap().display.in_flight_is_empty(),
-            "the control-routed switch requests NO reattach"
-        );
-        assert_eq!(
-            hosts.get("jup").unwrap().display.shows("jup"),
-            Some("target"),
-            "the shown session updates to the switched-to session"
-        );
-        assert!(
-            !registry.grid("jup").unwrap().lock().unwrap().is_blank(),
-            "the prior content stays on screen until the new repaint's first feed"
-        );
-        if let Some(g) = registry.grid("jup") {
-            g.lock().unwrap().feed(b"fresh target content");
-        }
-        assert_eq!(
-            registry
-                .grid("jup")
-                .unwrap()
-                .lock()
-                .unwrap()
-                .last_line()
-                .as_deref(),
-            Some("fresh target content"),
-            "the next feed wipes the prior residue and applies the new content"
-        );
-    }
-
-    /// The IN-PLACE SWITCH marks the shared grid to clear at the START of the next
-    /// feed: the prior session's content stays on screen until the mux's fresh repaint
-    /// arrives (no blank window), and the grid wipes just before the new content is
-    /// applied (no residue). The one host PTY mirrors one screen; a switch to a session
-    /// whose repaint does not clear every prior cell would otherwise leave the old
-    /// session's residue behind the new content.
-    #[tokio::test(flavor = "current_thread")]
-    async fn tmux_driver_in_place_switch_defers_the_shared_grid_clear_to_the_next_feed() {
-        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
-        let mut hosts = crate::model::Hosts::default();
-        hosts.insert(crate::model::Host::new(
-            crate::transport::local(None),
-            crate::mux::for_binary("tmux").unwrap(),
-        ));
-        {
-            let h = hosts.get_mut("local").unwrap();
-            h.display.set_shows("local", "old");
-            h.record_display_tty(Some("/dev/pts/3".into()));
-        }
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
-        let worker = crate::display::DisplayWorker::with_spawner(
-            ptx,
-            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
-                Ok(crate::display::attachment::fake_attachment(id))
-            }),
-        );
-        let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::display::attachment::fake_attachment(42));
-        // The shared grid holds the prior session's content.
-        if let Some(g) = registry.grid("local") {
-            g.lock().unwrap().feed(b"stale prior-session residue");
-            assert!(
-                !g.lock().unwrap().is_blank(),
-                "precondition: grid has content"
-            );
-        }
-        let mut attach_seq = 0u64;
-        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let sel = Selection {
-            host: "local".into(),
-            session: "target".into(),
-        };
-        let mut driver = TmuxDriver;
-        {
-            let mut ctx = DriverCtx {
-                registry: &mut registry,
-                hosts: &mut hosts,
-                instance_name: "test",
-                mgr: &mgr,
-                worker: &worker,
-                pty_tx: &cap_tx,
-                attach_seq: &mut attach_seq,
-                viewport: (31, 25),
-            };
-            assert!(driver.show(&sel, &mut ctx));
-        }
-        assert!(
-            !registry.grid("local").unwrap().lock().unwrap().is_blank(),
-            "the prior content stays on screen until the new repaint's first feed"
-        );
-        // The deferred clear fires at the start of the next feed.
-        if let Some(g) = registry.grid("local") {
-            g.lock().unwrap().feed(b"fresh target content");
-        }
-        assert_eq!(
-            registry
-                .grid("local")
-                .unwrap()
-                .lock()
-                .unwrap()
-                .last_line()
-                .as_deref(),
-            Some("fresh target content"),
-            "the next feed wipes the prior residue and applies the new content"
-        );
-        assert_eq!(
-            hosts.get("local").unwrap().display.shows("local"),
-            Some("target"),
-            "the shown session still updates to the switched-to session"
-        );
-    }
-
-    /// The tmux driver owns the shared-switch decision: the first `show()` for a host
-    /// with no live attachment WARMS the one host-keyed PTY (records the shown session +
-    /// an in-flight spawn), the shared behavior, now owned by the driver type.
-    #[tokio::test(flavor = "current_thread")]
-    async fn tmux_driver_show_warms_the_shared_host_pty_on_first_attach() {
-        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
-        let mut hosts = crate::model::Hosts::default();
-        hosts.insert(crate::model::Host::new(
-            crate::transport::ssh("jup".into(), String::new(), "linux".into()),
-            crate::mux::for_binary("tmux").unwrap(),
-        ));
-
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
-        let worker = crate::display::DisplayWorker::with_spawner(
-            ptx,
-            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
-                Ok(crate::display::attachment::fake_attachment(id))
-            }),
-        );
-        let mut registry = AttachRegistry::new();
-        let mut attach_seq = 0u64;
-        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let sel = Selection {
-            host: "jup".into(),
-            session: "api".into(),
-        };
-
-        let mut driver = TmuxDriver;
-        let shown = {
-            let mut ctx = DriverCtx {
-                registry: &mut registry,
-                hosts: &mut hosts,
-                instance_name: "test",
-                mgr: &mgr,
-                worker: &worker,
-                pty_tx: &cap_tx,
-                attach_seq: &mut attach_seq,
-                viewport: (31, 25),
-            };
-            driver.show(&sel, &mut ctx)
-        };
-
-        assert!(shown);
-        let h = hosts.get("jup").unwrap();
-        assert_eq!(
-            h.display.shows("jup"),
-            Some("api"),
-            "the shared host PTY is keyed by host id and shows the first session"
-        );
-        assert!(
-            h.display.in_flight_contains("jup"),
-            "the first shared attach is requested off-loop"
-        );
-    }
-
-    /// An inventory never opens an unviewed display. Only selection attaches it.
-    #[tokio::test(flavor = "current_thread")]
-    async fn tmux_driver_sync_does_not_attach_an_unviewed_host() {
-        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
-        let mut hosts = crate::model::Hosts::default();
-        hosts.insert(crate::model::Host::new(
-            crate::transport::local(None),
-            crate::mux::for_binary("tmux").unwrap(),
-        ));
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
-        let worker = crate::display::DisplayWorker::with_spawner(
-            ptx,
-            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
-                Ok(crate::display::attachment::fake_attachment(id))
-            }),
-        );
-        let mut registry = AttachRegistry::new();
-        let mut attach_seq = 0u64;
-        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
-        let sessions = vec![
-            crate::driver::tests::sess("local", "api"),
-            crate::driver::tests::sess("local", "build"),
-        ];
-
-        let mut driver = TmuxDriver;
-        {
-            let mut ctx = DriverCtx {
-                registry: &mut registry,
-                hosts: &mut hosts,
-                instance_name: "test",
-                mgr: &mgr,
-                worker: &worker,
-                pty_tx: &cap_tx,
-                attach_seq: &mut attach_seq,
-                viewport: (31, 25),
-            };
-            driver.sync("local", &sessions, &mut ctx);
-        }
-        let h = hosts.get("local").unwrap();
-        assert_eq!(h.display.shows("local"), None);
-        assert!(
-            h.display.in_flight_is_empty(),
-            "inventory cannot open a hidden display"
-        );
-    }
-
-    /// The tmux driver's `sync` reaps the host PTY when the host has NO sessions left.
-    #[tokio::test(flavor = "current_thread")]
-    async fn tmux_driver_sync_reaps_the_host_pty_when_empty() {
-        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
-        let mut hosts = crate::model::Hosts::default();
-        hosts.insert(crate::model::Host::new(
-            crate::transport::local(None),
             crate::mux::for_binary("tmux").unwrap(),
         ));
         hosts
-            .get_mut("local")
+    }
+
+    fn sel(session: &str) -> Selection {
+        Selection {
+            host: "jup".into(),
+            session: session.into(),
+        }
+    }
+
+    /// Each session gets its own display client: showing a second session of the same
+    /// host opens a connection for it and leaves the first one attached.
+    #[tokio::test(flavor = "current_thread")]
+    async fn tmux_driver_show_opens_one_connection_per_session() {
+        let mut hosts = jup_hosts();
+        let mut registry = AttachRegistry::new();
+        registry.insert("jup/api", crate::display::attachment::fake_attachment(5));
+        hosts
+            .get_mut("jup")
             .unwrap()
             .display
-            .set_shows("local", "api");
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
-        let worker = crate::display::DisplayWorker::with_spawner(
-            ptx,
-            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
-                Ok(crate::display::attachment::fake_attachment(id))
-            }),
-        );
-        let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::display::attachment::fake_attachment(5));
-        let mut attach_seq = 0u64;
-        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
+            .set_shows("jup/api", "api");
 
-        let mut driver = TmuxDriver;
-        {
-            let mut ctx = DriverCtx {
-                registry: &mut registry,
-                hosts: &mut hosts,
-                instance_name: "test",
-                mgr: &mgr,
-                worker: &worker,
-                pty_tx: &cap_tx,
-                attach_seq: &mut attach_seq,
-                viewport: (31, 25),
-            };
-            driver.sync("local", &[], &mut ctx);
-        }
+        assert!(run_driver(&mut hosts, &mut registry, |d, ctx| d
+            .show(&sel("build"), ctx)));
+        let h = hosts.get("jup").unwrap();
         assert!(
-            !registry.contains("local"),
-            "no sessions ⇒ the host PTY is reaped"
+            h.display.in_flight_contains("jup/build"),
+            "the second session is attached off-loop under its own key"
         );
+        assert_eq!(h.display.shows("jup/build"), Some("build"));
         assert_eq!(
-            hosts.get("local").unwrap().display.shows("local"),
-            None,
-            "the reaped PTY's bookkeeping is forgotten"
+            registry.get("jup/api").map(|att| att.id()),
+            Some(5),
+            "the first session keeps its client"
         );
+    }
+
+    /// A session whose client xmux holds is shown without attaching anything.
+    #[tokio::test(flavor = "current_thread")]
+    async fn tmux_driver_show_of_a_held_session_attaches_nothing() {
+        let mut hosts = jup_hosts();
+        let mut registry = AttachRegistry::new();
+        registry.insert("jup/api", crate::display::attachment::fake_attachment(5));
+        hosts
+            .get_mut("jup")
+            .unwrap()
+            .display
+            .set_shows("jup/api", "api");
+
+        assert!(run_driver(&mut hosts, &mut registry, |d, ctx| d.show(&sel("api"), ctx)));
+        assert!(hosts.get("jup").unwrap().display.in_flight_is_empty());
+        assert_eq!(registry.get("jup/api").map(|att| att.id()), Some(5));
+    }
+
+    /// An inventory never opens a display, and it ends only the connection of a session
+    /// it no longer lists.
+    #[tokio::test(flavor = "current_thread")]
+    async fn tmux_driver_sync_ends_only_unlisted_sessions() {
+        let mut hosts = jup_hosts();
+        let mut registry = AttachRegistry::new();
+        for (key, id) in [("jup/api", 5), ("jup/gone", 6)] {
+            registry.insert(key, crate::display::attachment::fake_attachment(id));
+            hosts
+                .get_mut("jup")
+                .unwrap()
+                .display
+                .set_shows(key, crate::driver::session_of_key(key));
+        }
+        let sessions = vec![
+            crate::driver::tests::sess("jup", "api"),
+            crate::driver::tests::sess("jup", "build"),
+        ];
+        run_driver(&mut hosts, &mut registry, |d, ctx| {
+            d.sync("jup", &sessions, ctx)
+        });
+        let h = hosts.get("jup").unwrap();
+        assert!(
+            registry.contains("jup/api"),
+            "a listed session keeps its client"
+        );
+        assert!(!registry.contains("jup/gone"), "an unlisted one loses it");
+        assert_eq!(h.display.shows("jup/gone"), None);
+        assert!(
+            h.display.in_flight_is_empty(),
+            "inventory cannot open a display"
+        );
+
+        run_driver(&mut hosts, &mut registry, |d, ctx| d.sync("jup", &[], ctx));
+        assert!(registry.is_empty(), "no sessions ⇒ no connection");
     }
 }

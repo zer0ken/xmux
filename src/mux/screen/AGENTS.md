@@ -4,8 +4,8 @@
 
 `mux/screen` is the GNU screen implementation: one daemon per session under a per-user
 socket directory, no control-mode channel, every query a separate `screen` process, and
-a display that reattaches on every session change because screen has no in-place
-client switch and no session switch from inside a session.
+one display client per session, since screen has no in-place client switch and no
+session switch from inside a session.
 
 ## Module Seams
 

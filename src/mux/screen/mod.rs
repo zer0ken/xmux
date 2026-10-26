@@ -1,6 +1,6 @@
 //! screen: one daemon PER SESSION, all of them under one per-user socket directory, no
 //! control-mode channel, every query a separate `screen` process. There is no
-//! `switch-client`, so the display reattaches on every session change (the zellij shape).
+//! `switch-client`, so each session is shown through its own client (the zellij shape).
 
 use super::*;
 

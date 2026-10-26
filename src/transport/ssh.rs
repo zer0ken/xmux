@@ -10,6 +10,12 @@ use super::Transport;
 /// describes itself with, so what is SHOWN and what is passed to ssh are one value.
 pub(crate) const CONNECT_TIMEOUT: &str = "5";
 
+/// How often ssh asks a quiet connection whether its far side still answers, and how many
+/// unanswered asks end it. A connection that drops without a reset (a network change, a
+/// machine that went to sleep) otherwise hangs forever, and every client and command
+/// sharing its master hangs with it; ending it lets each of them end and be reopened.
+const KEEPALIVE: [&str; 2] = ["ServerAliveInterval=10", "ServerAliveCountMax=3"];
+
 /// A remote over ssh. `control_path` is the ControlMaster socket (empty ⇒ no
 /// multiplex, e.g. a Windows local side); `os` is the LOCAL platform (gates
 /// ControlMaster). `alias` is the ssh DESTINATION, and `id` is the HOST id this
@@ -136,6 +142,10 @@ impl Ssh {
         }
         a.push("-o".into());
         a.push(format!("ConnectTimeout={CONNECT_TIMEOUT}"));
+        for option in KEEPALIVE {
+            a.push("-o".into());
+            a.push(option.into());
+        }
         let strict = self
             .credentials
             .profile(&self.alias)
@@ -610,6 +620,10 @@ mod tests {
         let joined = a.join(" ");
         assert!(joined.contains("BatchMode=yes"), "{a:?}");
         assert!(joined.contains("ConnectTimeout=5"), "{a:?}");
+        assert!(
+            joined.contains("ServerAliveInterval=10") && joined.contains("ServerAliveCountMax=3"),
+            "a silently dropped connection ends instead of hanging: {a:?}"
+        );
         assert!(joined.contains("ControlMaster=auto"), "{a:?}");
         assert_eq!(a[a.len() - 2], "--");
         assert_eq!(a[a.len() - 1], "prod");

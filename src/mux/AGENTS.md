@@ -6,9 +6,9 @@
 reads, identity detection, the control-protocol trait that hides a mux's control-mode
 wire details from the connection layer, and the shared argv builders and row parsers.
 Each mux owns its metadata mux AND its `MuxDriver`, and constructs that driver itself.
-tmux keeps one aggregate server, a host-level control stream, and one PTY per host
-moved in place; every other mux reattaches on each session change, because none can
-name a client from outside its own session. The command-plan verbs default to
+Every mux is displayed through one client per session, opened on selection and kept
+while xmux runs, so a switch to a session xmux already holds attaches nothing and moves
+no client. The command-plan verbs default to
 tmux-compatible argv; a mux that shares no argv with tmux overrides every verb and its
 listing parse with it, since a plan and the shape of what it prints are one decision.
 
@@ -30,12 +30,13 @@ listing parse with it, since a plan and the shape of what it prints are one deci
 
 - A reachable empty mux enumerates as an empty list; an unreachable host is an
   error, and so is a listing that exceeds the fixed per-command budget.
-- A per-session reattach HOLDS the stale attachment, so its grid stays on screen until
-  the fresh attachment paints or reaches its bounded wait (stale-while-revalidate).
-  Input goes to the fresh attachment while it waits, except that a mux whose client
-  drops keys read before its first frame holds them until that attachment draws.
-- A per-session driver never pre-warms; sync only reaps the host PTY when the host
-  has no sessions left.
+- A show for a session whose client xmux holds, live or starting, attaches nothing.
+- A first attach for a session HOLDS the grid on view, so it stays on screen until the
+  fresh attachment paints or reaches its bounded wait (stale-while-revalidate). Input
+  goes to the fresh attachment while it waits, except that a mux whose client drops
+  keys read before its first frame holds them until that attachment draws.
+- No driver pre-warms; sync ends only the clients of sessions the inventory no longer
+  lists.
 
 ## Common Pitfalls
 

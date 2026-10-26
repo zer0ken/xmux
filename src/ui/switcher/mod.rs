@@ -866,8 +866,14 @@ impl Switcher {
         std::mem::take(&mut self.rescan_kick)
     }
 
-    /// Consumes the re-attach kick (set by an `R` re-scan): the loop tears down the
-    /// current display attachment so the next attach re-creates a fresh client.
+    /// Asks for the selection's display to be attached afresh, as a re-scan of its
+    /// machine does.
+    pub(crate) fn kick_reattach(&mut self) {
+        self.reattach_kick = true;
+    }
+
+    /// Consumes the re-attach kick (set by a re-scan): the loop tears down the current
+    /// display attachment so the next attach re-creates a fresh client.
     pub fn take_reattach_kick(&mut self) -> bool {
         std::mem::take(&mut self.reattach_kick)
     }

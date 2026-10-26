@@ -9,6 +9,7 @@ usage: python3 suite.py [--client linux|windows] [--os debian,alpine]
                         [--mux tmux,...] [--scenario first-launch,...] [--out DIR]
 """
 import argparse
+import glob
 import os
 import random
 import re
@@ -48,6 +49,9 @@ NOT_APPLICABLE = {("in-client-switch", "screen"), ("in-client-switch", "abduco")
                   ("native-keys", "abduco")}
 # Only herdr moves its client to a session on another host from inside it.
 NOT_APPLICABLE |= {("in-client-away", m) for m in MUXES if m != "herdr"}
+# herdr keeps one display client per host, since its clients on one machine share one
+# saved-machine selection.
+NOT_APPLICABLE |= {("kept-clients", "herdr")}
 
 # The in-client keys that detach a mux's own client, and the input that moves the client
 # from <mux>1 to <mux>2 from inside it: tmux's next-session key, zellij's action, which
@@ -471,6 +475,16 @@ def first_launch(c):
     app.whereami(c.path(c.h1, f"{m}1"))
 
 
+def display_clients(c, host):
+    """The pids of the mux clients holding a terminal on `host`. Servers have no
+    controlling PTY, and the tmux metadata channel's -CC client carries notifications
+    rather than a display."""
+    rows = c.hosts.sh(host, "ps -u dev -o pid=,tty=,args=").splitlines()
+    return {int(pid) for row in rows for pid, tty, args in [row.split(None, 2)]
+            if tty.startswith("pts/") and os.path.basename(args.split()[0]) in MUXES
+            and "-CC" not in args.split()}
+
+
 def preview_lifetime(c):
     """Only the visible preview owns a PTY; Enter reuses it at the full view size."""
     app = c.launch(c.h1, c.h2)
@@ -486,18 +500,10 @@ def preview_lifetime(c):
             app.t.send("Down", gap=0.15)
         raise Failure(f"preview never reached {section}/{name}")
 
-    def clients(host):
-        # Servers have no controlling PTY. The tmux metadata channel also uses a PTY,
-        # but its -CC client carries notifications rather than a display.
-        rows = c.hosts.sh(host, "ps -u dev -o pid=,tty=,args=").splitlines()
-        return {int(pid) for row in rows for pid, tty, args in [row.split(None, 2)]
-                if tty.startswith("pts/") and os.path.basename(args.split()[0]) in MUXES
-                and "-CC" not in args.split()}
-
     def wait_clients(host, count):
         end = time.monotonic() + 15
         while True:
-            found = clients(host)
+            found = display_clients(c, host)
             if len(found) == count:
                 return found
             if time.monotonic() >= end:
@@ -530,10 +536,37 @@ def preview_lifetime(c):
             raise Failure("PTY dimensions oscillated after executing the preview")
     app.t.send("C-g", "Tab", gap=0.3)
     app.t.send("\x1b[1;5A")
-    wait_clients(c.h2, 0)
     time.sleep(2)
     wait_clients(c.h1, 0)
-    wait_clients(c.h2, 0)
+    if wait_clients(c.h2, 1) != shown:
+        raise Failure("leaving the executed session ended its display client")
+
+
+def kept_clients(c):
+    """Every session shown keeps its own client: returning to it attaches nothing."""
+    # A client of the previous scenario's xmux may still be ending.
+    end = time.monotonic() + 15
+    while any(display_clients(c, host) for host in (c.h1, c.h2)):
+        if time.monotonic() >= end:
+            raise Failure("display clients of an earlier run are still attached")
+        time.sleep(0.2)
+    app = c.launch(c.h1, c.h2)
+    stops = [(c.h1, f"{c.mux}1"), (c.h1, f"{c.mux}2"), (c.h2, f"{c.mux}1")]
+    for host, name in stops:
+        app.open(f"{host}/{c.mux}", name)
+        app.whereami(c.path(host, name))
+    time.sleep(1)
+    # A jump previews the cards its digits name on the way, so other cards may hold a
+    # client too; what matters is that the shown sessions keep theirs.
+    before = {host: display_clients(c, host) for host in (c.h1, c.h2)}
+    if len(before[c.h1]) < 2 or not before[c.h2]:
+        raise Failure(f"expected a client for each shown session, found {before}")
+    for host, name in stops + stops:
+        app.open(f"{host}/{c.mux}", name)
+        app.whereami(c.path(host, name), timeout=5)
+    after = {host: display_clients(c, host) for host in (c.h1, c.h2)}
+    if any(not before[host] <= after[host] for host in before):
+        raise Failure(f"returning to a shown session replaced its client: {before} -> {after}")
 
 
 def rapid_switch(c):
@@ -869,6 +902,7 @@ GROUPS = {
     "xmux behavior": {
         "first-launch": first_launch,
         "preview-lifetime": preview_lifetime,
+        "kept-clients": kept_clients,
         "switch": switch,
         "rapid-switch": rapid_switch,
         "new-session": new_session,
@@ -910,6 +944,11 @@ def run_cell(scenario, cell, out):
             f.write(f"{result}\n{traceback.format_exc()}\n")
             for app in cell.apps:
                 f.write("\n" + "\n".join(l.rstrip() for l in app.t.lines()) + "\n")
+                # The log rolls daily, so its name carries the date.
+                for path in sorted(glob.glob(os.path.join(app.home, ".xmux", "xmux.log*")))[-1:]:
+                    with open(path, encoding="utf-8", errors="replace") as logf:
+                        f.write(f"\n--- {os.path.basename(path)} (last 300 lines) ---\n")
+                        f.writelines(logf.readlines()[-300:])
         log(f"{result}: {scenario} {cell.mux}/{cell.system}: {str(e).splitlines()[0]}")
     finally:
         for app in cell.apps:

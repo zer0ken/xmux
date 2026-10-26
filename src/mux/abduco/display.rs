@@ -1,6 +1,5 @@
-//! The abduco display driver: a per-session mux (one server per session) displayed
-//! through ONE per-host PTY that is REATTACHED whenever the selected session changes.
-//! `Abduco::driver` constructs it, so mux selection lives in the abduco implementation, not a
+//! The abduco display driver: a per-session mux (one server per session) shown through
+//! one client per session, kept while xmux runs. `Abduco::driver` constructs it, so mux selection lives in the abduco implementation, not a
 //! central match.
 //!
 //! abduco cannot move an attached client to another session. Its whole option surface
@@ -16,10 +15,8 @@
 use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
-/// Per-session mux (abduco): one server per session, displayed through ONE per-host
-/// PTY that is REATTACHED whenever the selected session changes (`abduco -a <name>`
-/// attaches to that session's own server). `Abduco::driver` constructs it for a
-/// `PerSession` host.
+/// Per-session mux (abduco): one server per session, each shown through its own
+/// `abduco -a <name>` client. `Abduco::driver` constructs it for a `PerSession` host.
 pub struct AbducoDriver;
 
 impl MuxDriver for AbducoDriver {
@@ -32,47 +29,35 @@ impl MuxDriver for AbducoDriver {
             return false;
         }
         let key = ctx.display_key(sel);
-        let live = ctx.registry.contains(&key);
-        let (pre_mismatch, command) = {
-            let Some(host) = ctx.hosts.get_mut(&sel.host) else {
-                return false;
-            };
-            let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
-            host.display.clear(&key);
-            let mux_argv = host.mux.display_attach_plan(&sel.session);
-            let command = host.transport.exec_argv(true, &mux_argv);
-            (pre_mismatch, command)
+        let Some(host) = ctx.hosts.get(&sel.host) else {
+            return false;
         };
-
-        // REATTACH, always: the only way to move abduco's display. The stale attachment
-        // is KEPT in the registry so its grid stays on screen until the fresh client
-        // paints or reaches its bounded wait (stale-while-revalidate). At first display
-        // there is nothing to keep, so Ready installs immediately.
-        let reason = if live { "reshow" } else { "no-live-client" };
+        let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
+        if crate::driver::holds_connection(ctx, sel) {
+            tracing::info!(
+                host = %sel.host,
+                decision = "warm",
+                reason = "already-on",
+                session = %sel.session,
+                "display_show"
+            );
+            crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
+            return true;
+        }
         tracing::info!(
             host = %sel.host,
-            model = "per-session",
-            decision = "reattach",
-            reason,
+            decision = "attach",
+            reason = "no-live-client",
             session = %sel.session,
             "display_show"
         );
+        let mux_argv = host.mux.display_attach_plan(&sel.session);
+        let command = host.transport.exec_argv(true, &mux_argv);
         let id = ctx
             .request_attach(sel, command)
             .expect("the selected host exists");
         tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
-    }
-
-    fn sync(&mut self, id: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
-        // Per-session attaches are selected on demand by `show`, not pre-warmed: sync
-        // only tears down the host PTY when the host has no sessions left.
-        if sessions.is_empty() {
-            ctx.registry.remove(id);
-            if let Some(host) = ctx.hosts.get_mut(id) {
-                host.display.clear(id);
-            }
-        }
     }
 }

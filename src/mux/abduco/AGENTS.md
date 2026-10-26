@@ -6,13 +6,13 @@
 is its own server process owning its own unix socket under `~/.abduco`, with no windows
 (a session is one PTY running one command), no control-mode channel, no server-socket
 flag, and no per-session query. One listing is the whole answer, and the display
-reattaches with `abduco -a <name>` on every session change.
+keeps one `abduco -a <name>` client per session.
 
 ## Module Seams
 
 - The implementation root holds the mux itself and the listing parser; the bare binary
   is the listing.
-- The driver sits beside it and owns the per-host display orchestration.
+- The driver sits beside it and owns the per-session display orchestration.
 - Identity detection is this implementation's own: one `-v` question, answered by the
   name in its output.
 

@@ -3,31 +3,29 @@
 ## Purpose
 
 `mux/tmux` is the tmux implementation, the one shared-server mux: one aggregate server
-holds every session and serves a `-CC` control stream. The display driver keeps ONE PTY
-per host, opened on selection and MOVED to another session with
-`switch-client`, an in-place move with no teardown. A remote shared attach records its
-OWN controlling tty to a file unique to that process run and attachment before exec, so
-a later switch targets xmux's own display client and never the user's own attached
-client. A LOCAL shared host has no remote shell to record or read the tty, so it
-reattaches instead.
+holds every session and serves a `-CC` control stream. The display driver keeps one
+client per session, like every other mux. A remote attach records its OWN controlling
+tty to a file unique to that process run and attachment before exec, so a control
+notice about a client is matched to xmux's own attachment and never to the user's own
+attached client. A LOCAL attach has no shell to run the record; its tty is the PTY xmux
+opened for it.
 
 ## Module Seams
 
 - The implementation root holds the mux itself, the per-attach display-tty file helpers
-  (the path, the implementation-private record prefix, and the in-place switch plan
-  that reads the recorded tty), the control argv, and the control-protocol
-  implementation.
+  (the path and the implementation-private record prefix), the control argv, and the
+  control-protocol implementation.
 - The driver sits beside it with the tmux-only attach helper that wraps the tty record.
 - The control-mode wire module holds the pure, headlessly testable line
   classification, the notification-to-event table, and the command-line builders.
 
 ## Invariants
 
-- A shared host keeps ONE PTY, keyed by host id; a session change MOVES it rather
-  than tearing it down.
-- A remote in-place switch reads the tty the live attach recorded to its own file and
-  never runs with an empty client tty.
-- Inventory sync only reaps an empty host; selection alone opens a display PTY.
+- Each session's client is keyed by its session. When tmux moves one of xmux's clients
+  to another session (`%client-session-changed`), the client is re-keyed to that
+  session rather than moved back.
+- Inventory sync ends only the clients of sessions it no longer lists; selection alone
+  opens a display PTY.
 - The `-CC` metadata client sets `ignore-size` and never sends a client size, so it
   cannot shrink the session it lands in, which is often the one xmux itself runs in.
 - tmux counts the metadata client on the session it is attached to, so the session

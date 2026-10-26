@@ -1,6 +1,5 @@
 //! The leaf value types a `Mux` method returns: how a session's death is
-//! detected (`DeathSignal`), where change events come from (`EventSource`), and the
-//! captured display tty (`DisplayTty`). No logic — these are the shapes the supervisor
+//! detected (`DeathSignal`) and where change events come from (`EventSource`). No logic — these are the shapes the supervisor
 //! matches on. `DeathSignal` is defined HERE and nowhere else; the death-as-a-push
 //! helpers in `model::death` build over this one enum.
 
@@ -33,12 +32,6 @@ pub enum EventSource {
     Poll,
 }
 
-/// xmux's own display-client tty, captured in memory (not a `/tmp` file). Passed to
-/// `Mux::switch_in_place` so its `SwitchPlan` targets xmux's display client, and filtered
-/// against by `DeathSignal::ControlNotice`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DisplayTty(pub Option<String>);
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,10 +56,5 @@ mod tests {
         // downstream can start re-enumerating on its own.
         assert_eq!(EventSource::Poll, EventSource::Poll);
         assert_ne!(EventSource::Control, EventSource::Poll);
-    }
-
-    #[test]
-    fn display_tty_default_is_none() {
-        assert_eq!(DisplayTty::default(), DisplayTty(None));
     }
 }

@@ -153,11 +153,11 @@ impl HostClient {
     }
 
     /// Probes this host's display-client tty over the -CC control connection. The reply
-    /// resolves to a [`HostEvent::DisplayTty`] the supervisor records on
-    /// `Host.display_tty` only while the queried attachment `id` is live. Carried over the control connection, NOT via an in-band
-    /// attach-shell marker - a Windows ConPTY consumes the marker's OSC before the
+    /// resolves to a [`HostEvent::DisplayTty`] the supervisor records for the queried
+    /// attachment `id` while it is live. Carried over the control connection, NOT via an
+    /// in-band attach-shell marker - a Windows ConPTY consumes the marker's OSC before the
     /// display pump can read it, so the marker never lands for a remote host. With the
-    /// tty known, a session switch is an in-place `switch-client -c <tty>`.
+    /// tty known, a control notice naming that client is matched to the attachment.
     /// Probes this host's display-client tty for `host_key`, the key the display attach
     /// recorded itself under. Returns whether the probe reached the writer thread. A
     /// writer that has returned on a broken pipe has dropped the receiver, so the send

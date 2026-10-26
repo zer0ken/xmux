@@ -256,10 +256,10 @@ pub enum EventEffect {
     /// registry + the recover-from-detach rearm, so the match + reap run there.
     ReapDisplayAttach { host: String, client: String },
     /// `ClientSessionChanged`: some client's session changed. IFF `client` matches the
-    /// host's recorded display tty, xmux's OWN display PTY was moved to `session` by the
-    /// mux itself (e.g. the user's `prefix`+`s`); the loop syncs the display belief (so no
-    /// spurious switch-client fires) and follows the nav selection to that session. The tty
-    /// match needs `Host.display_tty` (behind the loop's reach), so it runs in the loop.
+    /// tty recorded for one of xmux's attachments, the mux itself moved that client to
+    /// `session` (e.g. the user's `prefix`+`s`); the loop re-keys the attachment to that
+    /// session and, for the client on view, the nav follows. The tty match needs the
+    /// host's recorded ttys (behind the loop's reach), so it runs in the loop.
     FollowDisplaySession {
         host: String,
         client: String,
@@ -295,10 +295,10 @@ pub enum EventEffect {
         host: String,
         sessions: Vec<Session>,
     },
-    /// `DisplayTty`: record `host`'s display-client tty (probed over the -CC connection
-    /// by `list-clients`) on the Host, behind the loop's reach. With the tty known, a
-    /// session switch is an in-place `switch-client -c <tty>`. The attachment `id`
-    /// must still be live; `None` clears that attachment's tty.
+    /// `DisplayTty`: record the display-client tty of attachment `id` (probed over the
+    /// -CC connection by `list-clients`) on its Host, behind the loop's reach, so a
+    /// control notice naming that client is matched to it. The attachment must still be
+    /// live; `None` clears its tty.
     RecordDisplayTty {
         host: String,
         id: u64,

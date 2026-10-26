@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use crate::link::HostInventory;
 use crate::model::host_def::Runner;
-use crate::model::DisplayTty;
 use crate::mux::Mux;
 use crate::transport::Transport;
 
@@ -141,13 +140,29 @@ impl HostDisplay {
     pub fn shows(&self, key: &str) -> Option<&str> {
         self.current.get(key).map(String::as_str)
     }
-    /// Carry every record of `from` across to `to`: the session was renamed under the
-    /// attachment, which still shows the same session.
-    pub fn rename_session(&mut self, from: &str, to: &str) {
-        for shown in self.current.values_mut() {
-            if shown == from {
-                *shown = to.to_string();
+    /// Moves every record of the attachment under key `from` to key `to`, dropping
+    /// whatever `to` held: the client under `from` now shows the session `to` names.
+    pub fn rekey(&mut self, from: &str, to: &str) {
+        self.clear(to);
+        if self.current.remove(from).is_some() {
+            self.current.insert(
+                to.to_string(),
+                crate::driver::session_of_key(to).to_string(),
+            );
+        }
+        if let Some(seq) = self.in_flight.remove(from) {
+            self.in_flight.insert(to.to_string(), seq);
+        }
+        for key in self.pending.values_mut() {
+            if key == from {
+                *key = to.to_string();
             }
+        }
+        if let Some(paint) = self.painting.remove(from) {
+            self.painting.insert(to.to_string(), paint);
+        }
+        if let Some(started) = self.started.remove(from) {
+            self.started.insert(to.to_string(), started);
         }
     }
     /// Record that `key`'s attachment now shows `session`.
@@ -381,11 +396,11 @@ pub struct Host {
     pub inventory: HostInventory,
     /// Which session each display_key shows + what spawn is in flight.
     pub display: HostDisplay,
-    /// xmux's own display-client tty, captured in memory. Passed to the mux's
-    /// `switch_in_place` so its `SwitchPlan` targets xmux's own display client.
-    pub display_tty: DisplayTty,
+    /// display_key -> xmux's own display-client tty there, captured in memory, so a
+    /// mux's report about a client names which of xmux's attachments it is about.
+    display_ttys: HashMap<String, String>,
     /// The session each client the mux reported moving was last on, kept only while
-    /// `display_tty` is unknown. A remote attach records its tty on the host before it
+    /// its tty is not yet known as one of xmux's. A remote attach records its tty on the host before it
     /// execs the mux client, so a capture made as the attach starts can find no record
     /// yet; the mux's report of that client arriving is what proves the record exists,
     /// and the report has to wait here until the capture it prompts names which client
@@ -404,7 +419,7 @@ impl Host {
             mux,
             inventory: HostInventory::new(),
             display: HostDisplay::default(),
-            display_tty: DisplayTty::default(),
+            display_ttys: HashMap::new(),
             reported_sessions: HashMap::new(),
             liveness: Liveness::Connecting,
             detected: false,
@@ -498,46 +513,72 @@ impl Host {
         self.transport.cli_attach_argv(&attach)
     }
 
-    /// Record xmux's display-client tty for this host, captured in memory from the
-    /// PTY marker (no `/tmp` file). The driver passes it to the mux's `switch_in_place`
-    /// so the resulting `SwitchPlan` targets xmux's own display client only.
-    pub fn record_display_tty(&mut self, tty: Option<String>) {
-        self.display_tty = DisplayTty(tty);
+    /// Record xmux's display-client tty for the attachment under `key`, captured in
+    /// memory; `None` forgets it.
+    pub fn record_display_tty(&mut self, key: &str, tty: Option<String>) {
+        match tty {
+            Some(tty) => {
+                self.display_ttys.insert(key.to_string(), tty);
+            }
+            None => {
+                self.display_ttys.remove(key);
+            }
+        }
     }
 
-    /// Remember that the mux moved `client` to `session` while xmux's own display tty is
-    /// still unknown, so the move can be matched once the tty is captured.
+    /// xmux's display-client tty for the attachment under `key`, once it is known.
+    pub fn display_tty(&self, key: &str) -> Option<&str> {
+        self.display_ttys.get(key).map(String::as_str)
+    }
+
+    /// Remember that the mux moved `client` to `session` while that client is not yet
+    /// known as one of xmux's, so the move can be matched once its tty is captured.
     pub fn note_reported_session(&mut self, client: &str, session: &str) {
         self.reported_sessions
             .insert(client.to_string(), session.to_string());
     }
 
-    /// The session the mux last reported xmux's own display client on, once its tty is
-    /// known. Every other remembered client is someone else's and is dropped with it.
-    pub fn take_reported_session(&mut self) -> Option<String> {
-        let tty = self.display_tty.0.as_deref()?;
-        let session = self.reported_sessions.remove(tty);
-        self.reported_sessions.clear();
-        session
+    /// The session the mux last reported the client under `key` on, once its tty is
+    /// known.
+    pub fn take_reported_session(&mut self, key: &str) -> Option<String> {
+        let tty = self.display_ttys.get(key)?;
+        self.reported_sessions.remove(tty)
     }
 
-    /// Forget the display tty when the attachment dies, so no later `switch-client`
-    /// is aimed at a detached/dead client (the blank-pane class). Moves reported for the
-    /// dead attachment's clients go with it, so the next attachment's tty cannot claim one.
-    pub fn clear_display_tty(&mut self) {
-        self.display_tty = DisplayTty(None);
+    /// Forget the tty of the attachment under `key` when it ends, so a later report
+    /// about a client reusing that tty is not taken for xmux's.
+    pub fn clear_display_tty(&mut self, key: &str) {
+        if let Some(tty) = self.display_ttys.remove(key) {
+            self.reported_sessions.remove(&tty);
+        }
+    }
+
+    /// Forget every display-client tty of this host.
+    pub fn clear_display_ttys(&mut self) {
+        self.display_ttys.clear();
         self.reported_sessions.clear();
     }
 
-    /// True when `client` (a `%client-detached` client tty) is xmux's OWN display
-    /// client under this mux's death signal. Delegates to the free
-    /// `matches_display_tty` so the filter logic has one home.
-    pub fn matches_display_tty(&self, client: &str) -> bool {
-        crate::model::death::matches_display_tty(
-            &self.mux.death_signal(),
-            client,
-            &self.display_tty,
-        )
+    /// The display key of xmux's own client whose tty is `client` (a client a mux's
+    /// control notice names), under this mux's death signal.
+    pub fn own_display_key(&self, client: &str) -> Option<String> {
+        let signal = self.mux.death_signal();
+        self.display_ttys
+            .iter()
+            .find(|(_, tty)| {
+                crate::model::death::matches_display_tty(&signal, client, Some(tty.as_str()))
+            })
+            .map(|(key, _)| key.clone())
+    }
+
+    /// Moves every record of the attachment under `from` to `to`: its client now shows
+    /// the session `to` names. Whatever was recorded under `to` is dropped.
+    pub fn rekey_display(&mut self, from: &str, to: &str) {
+        self.display.rekey(from, to);
+        self.display_ttys.remove(to);
+        if let Some(tty) = self.display_ttys.remove(from) {
+            self.display_ttys.insert(to.to_string(), tty);
+        }
     }
 
     /// True when `session` is still live under this mux's death signal. A psmux host
@@ -680,7 +721,7 @@ mod tests {
         );
         assert_eq!(h.liveness, Liveness::Connecting);
         assert!(h.inventory.sessions.is_empty());
-        assert!(h.display_tty.0.is_none());
+        assert!(h.own_display_key("/dev/pts/3").is_none());
     }
 
     #[test]
@@ -1305,35 +1346,44 @@ mod tests {
             crate::transport::ssh("jup".into(), String::new(), "linux".into()),
             Box::new(StubMux(ServerModel::Shared)),
         );
-        assert!(h.display_tty.0.is_none(), "starts with no tty");
-        h.record_display_tty(Some("/dev/pts/3".into()));
-        assert_eq!(h.display_tty.0.as_deref(), Some("/dev/pts/3"));
-        // The display attachment died: the tty is cleared so no later switch-client targets it.
-        h.clear_display_tty();
+        assert!(h.display_tty("jup/api").is_none(), "starts with no tty");
+        h.record_display_tty("jup/api", Some("/dev/pts/3".into()));
+        h.record_display_tty("jup/build", Some("/dev/pts/4".into()));
+        assert_eq!(h.display_tty("jup/api"), Some("/dev/pts/3"));
+        // The api attachment died: only its tty is cleared, so no later report about a
+        // client reusing that tty is taken for xmux's.
+        h.clear_display_tty("jup/api");
         assert!(
-            h.display_tty.0.is_none(),
+            h.display_tty("jup/api").is_none(),
             "clear forgets the dead client's tty"
+        );
+        assert_eq!(
+            h.display_tty("jup/build"),
+            Some("/dev/pts/4"),
+            "another session's client keeps its tty"
         );
     }
 
     #[test]
-    fn matches_display_tty_only_for_our_own_client_under_control_notice() {
-        use crate::model::DisplayTty;
+    fn own_display_key_names_only_our_own_client_under_control_notice() {
         let mut h = Host::new(
             crate::transport::ssh("jup".into(), String::new(), "linux".into()),
             crate::mux::for_binary("tmux").unwrap(), // Shared → DeathSignal::ControlNotice
         );
-        assert!(
-            !h.matches_display_tty("/dev/pts/3"),
+        assert_eq!(
+            h.own_display_key("/dev/pts/3"),
+            None,
             "no captured tty → inert"
         );
-        h.display_tty = DisplayTty(Some("/dev/pts/3".into()));
-        assert!(
-            h.matches_display_tty("/dev/pts/3"),
-            "our own client's tty matches"
+        h.record_display_tty("jup/api", Some("/dev/pts/3".into()));
+        assert_eq!(
+            h.own_display_key("/dev/pts/3").as_deref(),
+            Some("jup/api"),
+            "our own client's tty names its attachment"
         );
-        assert!(
-            !h.matches_display_tty("/dev/pts/9"),
+        assert_eq!(
+            h.own_display_key("/dev/pts/9"),
+            None,
             "an unrelated client never matches"
         );
     }
