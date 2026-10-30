@@ -242,6 +242,9 @@ impl<H: Hooks> Parser<H> {
                     (Some(b'$'), None, 'x') => self.screen.fill(&params),
                     _ => processor.advance(&mut self.screen.term, held),
                 }
+                if matches!((i1, i2, c), (None, None, 'X' | 'K' | 'J')) {
+                    self.screen.clear_orphaned_spacers();
+                }
                 self.hooks.csi(self.screen.view(), i1, i2, &params, c);
             }
             Event::Osc { ref params } => {
@@ -441,6 +444,23 @@ impl Screen {
             let row = &mut grid[Line(y as i32)];
             for (x, cell) in outside().zip(cells) {
                 row[Column(x)] = cell;
+            }
+        }
+    }
+
+    /// A partial erase can leave a spacer without its wide glyph. Keeping its flag
+    /// lets the emulator's next wide write clear the new glyph while placing its
+    /// right half. Only the spacer loses its flag; surviving wide glyphs stay intact.
+    fn clear_orphaned_spacers(&mut self) {
+        let grid = self.term.grid_mut();
+        let columns = grid.columns();
+        let line = grid.cursor.point.line;
+        let row = &mut grid[line];
+        for col in 1..columns {
+            if row[Column(col)].flags.contains(Flags::WIDE_CHAR_SPACER)
+                && !row[Column(col - 1)].flags.contains(Flags::WIDE_CHAR)
+            {
+                row[Column(col)].flags.remove(Flags::WIDE_CHAR_SPACER);
             }
         }
     }
@@ -1204,6 +1224,25 @@ mod tests {
             !p.screen().cell(0, 1).unwrap().is_wide_continuation(),
             "a right half whose wide char is gone is a blank cell"
         );
+    }
+
+    #[test]
+    fn a_wide_glyph_survives_repainting_its_erased_leading_cell() {
+        for erase in ["\x1b[X", "\x1b[0X", "\x1b[1X", "\x1b[1K", "\x1b[1J"] {
+            let input = format!("가b다\x1b[1G{erase}나");
+            for chunk in [1, input.len()] {
+                let mut p = Parser::new(1, 6, ());
+                for bytes in input.as_bytes().chunks(chunk) {
+                    p.process(bytes);
+                }
+                assert_eq!(p.screen().cell(0, 0).unwrap().contents(), "나", "{erase:?}");
+                assert!(p.screen().cell(0, 0).unwrap().is_wide());
+                assert!(p.screen().cell(0, 1).unwrap().is_wide_continuation());
+                assert_eq!(p.screen().cell(0, 2).unwrap().contents(), "b");
+                assert_eq!(p.screen().cell(0, 3).unwrap().contents(), "다");
+                assert!(p.screen().cell(0, 4).unwrap().is_wide_continuation());
+            }
+        }
     }
 
     /// A 3x6 screen of rows `abcdef`, `ghijkl`, and `mnopqr`, with left and right
