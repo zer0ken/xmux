@@ -542,7 +542,7 @@ pub static TABLE: &[KeyEntry] = &[
         section: Section::View,
         keys: Keys::Prefix(&[(Chord::Char('p'), KeyCommand::Position)]),
         label: "p",
-        help: "place the nav one side clockwise (left · top · right · bottom · default)",
+        help: "place the nav one side clockwise (left · top · right · bottom · floating)",
         long: "place nav",
         short: "place",
         rank: 4,
