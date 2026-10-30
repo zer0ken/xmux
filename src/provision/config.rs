@@ -206,7 +206,7 @@ pub struct UiConfig {
     #[serde(rename = "braille-animation", default = "default_braille_animation")]
     pub braille_animation: bool,
     /// The nav placement when nothing is pinned by `prefix p`: `left` | `top` | `right`
-    /// | `bottom`. An unknown word falls back to `left`. The nav never moves on its own;
+    /// | `bottom` | `floating`. The default and fallback for unknown words is `floating`;
     /// `prefix p` pins a side (persisted to `~/.xmux/nav_position`) and this default
     /// applies while no pin is set.
     #[serde(rename = "nav-position", default = "default_nav_position")]

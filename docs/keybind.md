@@ -82,10 +82,9 @@ Shift+Enter, when the terminal running xmux has the protocol too.
 The nav rides on one of four sides of the terminal view: a left or right column, or a
 top or bottom horizontal nav, or floats as a box over the terminal's empty space.
 `[ui] nav-position` (`left`, `top`, `right`, `bottom`, or `floating`; an unknown
-word falls back to `left`) names the default, and `prefix p` pins the next side
-clockwise in `~/.xmux/nav_position`. The cycle unpins at `floating`, the last position:
-the default applies again, and the next step re-pins from it. The nav never moves on
-its own.
+word falls back to `floating`) defaults to `floating`, and `prefix p` pins the next
+position clockwise in `~/.xmux/nav_position`. The cycle is `left`, `top`, `right`,
+`bottom`, `floating`, then `left` again. Every step keeps a position pinned.
 
 The floating nav is a box over the full-screen terminal: as wide as the nav width the
 user set, as tall as the card list it shows plus its border, with the prefix hint on

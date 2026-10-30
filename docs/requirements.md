@@ -103,7 +103,7 @@ against, naming no source file, function, or test.
   opens its login pane.
 - **FR-B25** - The nav attaches on the left, top, right, or bottom of the terminal view,
   or floats as a box over the terminal's empty space, with `prefix p` cycling the side
-  clockwise and unpinning at `floating`, the last position, and the layout inside the
+  clockwise through all five positions with no unpinned step, and the layout inside the
   nav identical at every side. The floating box is as wide as the nav width the user
   set and as tall as the card list it shows plus its border, with the prefix hint on
   its top border's left, and moves in real time to the topmost text-free area the box

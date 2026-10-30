@@ -184,7 +184,7 @@ auto-hide-nav = false                 # initial auto-hide-nav state
 renumbering = true                     # keep card numbers in sorted nav order
 notifications = true                  # show results as toasts (the prefix m history keeps them either way)
 braille-animation = true             # show the central Braille X on scanning, machine, and host screens
-nav-position = "left"                 # the nav's default side (left|top|right|bottom|floating)
+nav-position = "floating"             # the nav's default side (left|top|right|bottom|floating)
 max-fps = 30                          # maximum xmux draws per second (10 to 120)
 nav-active-border-style = "green"   # focused nav-border colour
 selection-style = ""                  # selection background; empty: the theme's accent
@@ -217,7 +217,7 @@ The supported settings and their application times are:
 | `[update]` | `check` | `true`; controls release checks and updates before the app starts; restart required. |
 | `[ui]` | `prefix` | `"C-g"`; restart required. |
 | `[ui]` | `auto-hide-nav` | `false`; startup default, overridden by the saved `prefix t` toggle. |
-| `[ui]` | `nav-position` | `"left"`; applied live unless a saved position is pinned. |
+| `[ui]` | `nav-position` | `"floating"`; applied live unless a saved position is pinned. |
 | `[ui]` | `theme`, `max-fps` | `"auto-dark"` and `30`; applied live. Themes are `"auto-dark"` or `"auto-light"`; frame rate is 10 through 120. |
 | `[ui]` | `renumbering`, `notifications`, `braille-animation` | All `true`; applied live. |
 | `[ui]` | `nav-active-border-style`, `nav-border-style`, `nav-border-hover-style`, `selection-style` | Empty strings use theme defaults; applied live. |
@@ -241,11 +241,10 @@ provider; explicit entries and other enabled providers still apply.
 
 - **Nav position.** The nav rides on one of the four sides of the terminal view
   (a left or right column, a top or bottom horizontal nav) or floats as a box over the
-  terminal's empty space. `[ui] nav-position` picks the default, and the nav never moves
-  on its own. `prefix p` places it one side clockwise
-  (left → top → right → bottom → floating) and remembers the choice in
-  `~/.xmux/nav_position`, which wins over the default. The cycle unpins at `floating`,
-  the last position: the default applies again, and the next step re-pins from it.
+  terminal's empty space. `[ui] nav-position` picks the default, `floating`.
+  `prefix p` places it one position clockwise
+  (left → top → right → bottom → floating → left) and remembers the choice in
+  `~/.xmux/nav_position`, which wins over the default. Every step keeps a position pinned.
 - **Machines.** Machines you write down scan first: `[[hosts]]` and `[[wsl]]` entries
   lead, then discovery adds `~/.ssh/config` aliases and neighbors. The config file
   augments discovery and never replaces it.

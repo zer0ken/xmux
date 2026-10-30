@@ -4506,52 +4506,41 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
 }
 
 #[test]
-fn prefix_p_cycles_the_nav_position_and_persists_it() {
-    use crate::ui::switcher::{NavPosition, Scan, Switcher};
-    // `prefix p` moves the pin one step clockwise from the CURRENT effective position
-    // and saves it at once, the same moment `prefix t` saves the auto-hide toggle. The
-    // cycle unpins at floating, the last position: a pinned side cycles forward, the
-    // unpin hands the position back to the config default, and a step after it re-pins
-    // from the effective position.
-    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
-    let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_machines(&["local"]));
-    rt.model.state = state;
-    rt.model.switcher = switcher;
-    rt.model.nav_position = NavPosition::Left; // effective = left (unpinned)
-    let out = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Top));
-    assert!(
-        std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
-            .unwrap()
-            .contains("top"),
-        "the pin is saved the moment the key cycles"
-    );
-    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Right));
-    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Bottom));
-    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Floating));
-    assert!(
-        std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
-            .unwrap()
-            .contains("floating"),
-        "the fifth step pins floating"
-    );
-    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(
-        rt.model.nav_position_pinned, None,
-        "the sixth step unpins at floating, the last position"
-    );
-    let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(
-        rt.model.nav_position_pinned,
-        Some(NavPosition::Top),
-        "a step after the unpin re-pins from the effective position"
-    );
-    // The cycle itself does not claim the focus flags the outcome carries.
-    assert!(!out.focus_terminal && !out.focus_nav && !out.quit);
+fn keys_and_ctl_cycle_the_nav_position_and_persist_it() {
+    use crate::link::control::{parse_ctl_op, CtlRequest};
+    use crate::ui::switcher::NavPosition;
+
+    for keys in [true, false] {
+        let mut rt = test_rt(fake_env_with_machines(&["local"]));
+        rt.model.nav_default = rt.env.roster().cfg.ui.nav_position();
+        rt.model.nav_position = rt.model.nav_default;
+        assert_eq!(rt.model.nav_position, NavPosition::Floating);
+        for position in [
+            NavPosition::Left,
+            NavPosition::Top,
+            NavPosition::Right,
+            NavPosition::Bottom,
+            NavPosition::Floating,
+            NavPosition::Left,
+        ] {
+            let bytes = if keys {
+                b"\x07p".to_vec()
+            } else {
+                let CtlRequest::RawBytes(bytes) = parse_ctl_op("raw:keys 0770") else {
+                    panic!("raw:keys resolves to terminal bytes");
+                };
+                bytes
+            };
+            let out = rt.handle_stdin_bytes(&bytes, &Selection::default());
+            assert_eq!(rt.model.nav_position_pinned, Some(position), "keys={keys}");
+            assert_eq!(
+                crate::app::prefs::load_nav_position(&rt.env.xmux_dir),
+                Some(position),
+                "each step persists its pin: keys={keys}"
+            );
+            assert!(!out.focus_terminal && !out.focus_nav && !out.quit);
+        }
+    }
 }
 
 #[test]
